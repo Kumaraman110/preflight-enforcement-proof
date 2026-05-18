@@ -1,0 +1,47 @@
+{
+  "$schema_note": "Copy this file to your project as .code-forge/config.json and edit for your project.",
+
+  "mode": "generic",
+
+  "_comment_rubric": "Path to your project's review rubric. If omitted, plugin defaults are used based on mode.",
+  "rubric": null,
+
+  "_comment_capture": "Paths for the self-improvement capture files. Created on first use.",
+  "capture": {
+    "calibrationLog": "docs/review/calibration-log.md",
+    "checklistAdditions": "docs/review/checklist-additions.md",
+    "falsePositives": "docs/review/false-positives.md"
+  },
+
+  "review": {
+    "copilotReviewerLogin": "copilot-pull-request-reviewer[bot]",
+    "pollIntervalSeconds": 200,
+    "initialWaitSeconds": 90
+  },
+
+  "loop": {
+    "rubricEditCadence": 5,
+    "oscillation": {
+      "stopOnSameFilesAcrossConsecutiveIterations": true,
+      "stopOnSameLineModifiedConsecutively": 3
+    }
+  },
+
+  "branch": {
+    "base": "main",
+    "remote": "origin"
+  },
+
+  "test": {
+    "_comment": "Command to run tests. Auto-detected if null (dotnet test for .NET, npm test for Node).",
+    "command": null,
+    "coverageBaseline": null
+  },
+
+  "_comment_migration": "Only used when mode is 'migration'.",
+  "migration": {
+    "legacyRepoPath": null,
+    "servicesRoot": "src",
+    "referenceService": null
+  }
+}

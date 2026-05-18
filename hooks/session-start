@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# Detects the project type by looking for config files in the current working directory.
+# Injects project context into the session so all skills/agents know the mode without re-detecting.
+
+set -euo pipefail
+
+CONFIG_FILE=""
+MODE="generic"
+RUBRIC=""
+CAPTURES=""
+
+# Search order for project config
+for candidate in ".code-forge/config.json" ".cpsl/config.json" ".forge.json"; do
+  if [ -f "$candidate" ]; then
+    CONFIG_FILE="$candidate"
+    break
+  fi
+done
+
+if [ -n "$CONFIG_FILE" ]; then
+  # Find a working Python or jq for JSON parsing
+  # Note: on Windows, python3 may be a Microsoft Store stub that doesn't actually work.
+  # Test by running it, not just checking if the command exists.
+  PYTHON=""
+  if python3 -c "pass" &>/dev/null; then
+    PYTHON="python3"
+  elif python -c "pass" &>/dev/null; then
+    PYTHON="python"
+  fi
+
+  # Extract mode from config
+  if command -v jq &>/dev/null; then
+    MODE=$(jq -r '.mode // "generic"' "$CONFIG_FILE" 2>/dev/null || echo "generic")
+    RUBRIC=$(jq -r '.rubric // ""' "$CONFIG_FILE" 2>/dev/null || echo "")
+  elif [ -n "$PYTHON" ]; then
+    MODE=$($PYTHON -c "import json; d=json.load(open('$CONFIG_FILE')); print(d.get('mode','generic'))" 2>/dev/null || echo "generic")
+    RUBRIC=$($PYTHON -c "import json; d=json.load(open('$CONFIG_FILE')); print(d.get('rubric','') or '')" 2>/dev/null || echo "")
+  fi
+
+  # Count capture files that exist
+  CAPTURE_COUNT=0
+  for cap in "calibrationLog" "checklistAdditions" "falsePositives"; do
+    CAP_PATH=""
+    if command -v jq &>/dev/null; then
+      CAP_PATH=$(jq -r ".capture.$cap // \"\"" "$CONFIG_FILE" 2>/dev/null || echo "")
+    elif [ -n "$PYTHON" ]; then
+      CAP_PATH=$($PYTHON -c "import json; d=json.load(open('$CONFIG_FILE')); print(d.get('capture',{}).get('$cap',''))" 2>/dev/null || echo "")
+    fi
+    [ -n "$CAP_PATH" ] && [ -f "$CAP_PATH" ] && CAPTURE_COUNT=$((CAPTURE_COUNT + 1))
+  done
+  CAPTURES="$CAPTURE_COUNT capture files active"
+fi
+
+# Build the context string
+if [ "$MODE" = "generic" ] && [ -z "$CONFIG_FILE" ]; then
+  CTX="code-forge active | mode=generic (no project config) | using default rubric | Skills: /code-forge:self-review, /code-forge:fix-and-close, /code-forge:forge-new"
+elif [ "$MODE" = "migration" ]; then
+  CTX="code-forge active | mode=migration | config=$CONFIG_FILE | rubric=$RUBRIC | $CAPTURES | Skills: /code-forge:self-review, /code-forge:fix-and-close, /code-forge:migrate-service"
+elif [ "$MODE" = "api-new" ]; then
+  CTX="code-forge active | mode=api-new | config=$CONFIG_FILE | rubric=$RUBRIC | $CAPTURES | Skills: /code-forge:self-review, /code-forge:fix-and-close, /code-forge:forge-new"
+else
+  CTX="code-forge active | mode=$MODE | config=$CONFIG_FILE | rubric=$RUBRIC | $CAPTURES"
+fi
+
+# Output in Claude Code hook format
+cat <<EOF
+{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"$CTX"}}
+EOF
