@@ -1,0 +1,10 @@
+{
+  "expected_grouping": "independent",
+  "reason": "Dockerfile and launchSettings.json share no imports, no call chain, no DI registration",
+  "coupling_signals": [],
+  "validator_checks": {
+    "shared_imports": false,
+    "verifiable_call_chain": false,
+    "di_cross_reference": false
+  }
+}

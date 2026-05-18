@@ -1,0 +1,20 @@
+[
+  {
+    "file": "known-bad-logging.cs",
+    "line": 14,
+    "severity": "major",
+    "category": "§M9.1",
+    "dimension": "correctness",
+    "issue_contains": "unsanitized",
+    "suggestion_contains": "LogSanitizer"
+  },
+  {
+    "file": "known-bad-logging.cs",
+    "line": 22,
+    "severity": "major",
+    "category": "§M9.2",
+    "dimension": "correctness",
+    "issue_contains": "token",
+    "suggestion_contains": "remove"
+  }
+]

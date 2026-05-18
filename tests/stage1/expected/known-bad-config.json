@@ -1,0 +1,20 @@
+[
+  {
+    "file": "known-bad-config.cs",
+    "line": 15,
+    "severity": "blocker",
+    "category": "§M3.1",
+    "dimension": "correctness",
+    "issue_contains": "ConfigurationManager",
+    "suggestion_contains": "IOptions"
+  },
+  {
+    "file": "known-bad-config.cs",
+    "line": 22,
+    "severity": "major",
+    "category": "§M2.2",
+    "dimension": "correctness",
+    "issue_contains": "Service Locator",
+    "suggestion_contains": "constructor injection"
+  }
+]

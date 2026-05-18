@@ -11,6 +11,18 @@ You are running a standalone Stage 1 self-review. This is the same gate that `/c
 
 The user may have passed `$ARGUMENTS` as scope hint. Treat it as advisory — actual scope is always the current diff.
 
+## Step 0 — Environment Detection
+
+If session context already contains `code-forge active | mode=...` with config path and rubric path, trust it — the session-start hook already parsed the config. Skip to step 5 (rubric existence check only).
+
+If session context is empty or this skill was invoked cold (no hook ran):
+
+1. Search for config: `.code-forge/config.json` > `.cpsl/config.json` > `.forge.json` (in working directory, then up to 5 parent levels).
+2. If found: extract `mode`, `rubric`, `branch.base`, `test.command`, `loop.*`, `capture.*`.
+3. If not found: use defaults — mode `generic`, rubric from `${CLAUDE_PLUGIN_ROOT}/defaults/rubric-generic.md`, base branch `main`, test command auto-detected.
+4. Check for `CLAUDE.md` at project root for supplementary conventions.
+5. Confirm the rubric file exists at the resolved path. If missing, warn and fall back to the generic default.
+
 ## The Behavior Contract
 
 You orchestrate the **`rubric-reviewer`** sub-agent. You do NOT review code yourself — that is the sub-agent's job. Your job is loop control and fixing.
@@ -39,8 +51,8 @@ Always invoke the rubric-reviewer sub-agent. Do not skip invocation because the 
 
 3. **Invoke `rubric-reviewer` sub-agent.** Pass diff scope context.
 
-4. **Read the sub-agent's output:**
-   - `CLEAN` → declare success, summarize, exit. Do not push, commit.
+4. **Read the sub-agent's output** (verification discipline: the sub-agent's report is a CLAIM — verify the diff it reviewed matches your current state):
+   - `CLEAN` → verify the sub-agent's "Files reviewed" list matches current diff (`git diff --name-only`). If it does, declare success, summarize, exit. Do not push, commit.
    - `NEEDS_FIXES` → continue to step 5.
    - `ERROR` → surface to user, exit.
 
@@ -76,5 +88,11 @@ Always invoke the rubric-reviewer sub-agent. Do not skip invocation because the 
 - Show finding counts and severity breakdown
 - When you fix something, explain what and why (cite rubric section)
 - When you stop, summarize: iterations, findings fixed, what's unresolved
+
+## Proactive Triggering
+
+This skill self-activates (see `${CLAUDE_PLUGIN_ROOT}/lib/proactive-triggering.md`) when:
+- The session is about to run `git push` and gate evidence is stale or missing
+- The parent agent has just finished writing code and is about to claim "done"
 
 Begin now. Invoke the `rubric-reviewer` sub-agent.

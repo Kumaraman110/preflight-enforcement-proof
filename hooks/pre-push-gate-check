@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# PreToolUse hook for Bash commands. Only activates the gate when
+# the command is a git push. All other bash commands pass through.
+#
+# Receives the tool input as $1 (JSON with "command" field).
+# Exit 0 = allow the tool call
+# Exit 1 = block the tool call (hook framework shows the stderr message)
+
+set -euo pipefail
+
+TOOL_INPUT="${1:-}"
+
+# Extract the command from the tool input
+# The input is the raw command string passed to Bash tool
+COMMAND="$TOOL_INPUT"
+
+# Only gate on git push commands
+if ! echo "$COMMAND" | grep -qE '(^|&&|\|\||;)\s*git\s+push'; then
+  exit 0
+fi
+
+# This IS a git push — run the full pre-push gate
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec bash "$SCRIPT_DIR/pre-push-gate"

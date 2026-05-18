@@ -12,6 +12,30 @@
           }
         ]
       }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.cmd\" pre-push-gate-check \"$TOOL_INPUT\"",
+            "timeout": 10000,
+            "async": false
+          }
+        ]
+      },
+      {
+        "matcher": "Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.cmd\" coupled-edit-gate \"$TOOL_INPUT\"",
+            "timeout": 5000,
+            "async": false
+          }
+        ]
+      }
     ]
   }
 }

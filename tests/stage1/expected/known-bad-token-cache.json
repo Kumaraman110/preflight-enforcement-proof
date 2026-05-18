@@ -1,0 +1,11 @@
+[
+  {
+    "file": "known-bad-token-cache.cs",
+    "line": 18,
+    "severity": "major",
+    "category": "§M4.3",
+    "dimension": "correctness",
+    "issue_contains": "GetOrCreateAsync",
+    "suggestion_contains": "SemaphoreSlim"
+  }
+]

@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# Mechanical pre-push gate. Checks that Stage 1 and tests have passed
+# before allowing a push. This cannot be bypassed by prompt manipulation.
+#
+# Exit 0 = allow push
+# Exit 1 = block push (outputs reason to stderr)
+#
+# Evidence files written by the review loop:
+#   .code-forge/gate/stage1-clean   — written when Stage 1 returns CLEAN
+#   .code-forge/gate/tests-pass     — written when dotnet test returns 0
+#   .code-forge/gate/map-validated  — written when dependency-map validation passes
+#
+# Each evidence file contains a timestamp and the git HEAD at time of check.
+# If HEAD has moved since the evidence was written, the evidence is STALE.
+
+set -euo pipefail
+
+GATE_DIR=".code-forge/gate"
+CURRENT_HEAD=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
+
+check_evidence() {
+  local file="$1"
+  local label="$2"
+
+  if [ ! -f "$GATE_DIR/$file" ]; then
+    echo "BLOCKED: $label has not run. Run /code-forge:fix-and-close or /code-forge:self-review first." >&2
+    exit 1
+  fi
+
+  local evidence_head
+  evidence_head=$(grep "^HEAD=" "$GATE_DIR/$file" 2>/dev/null | cut -d= -f2)
+
+  if [ "$evidence_head" != "$CURRENT_HEAD" ]; then
+    echo "BLOCKED: $label evidence is stale (was at $evidence_head, now at $CURRENT_HEAD). Code changed since last check — re-run Stage 1." >&2
+    exit 1
+  fi
+}
+
+# Gate 1: Tests must pass
+check_evidence "tests-pass" "Test suite"
+
+# Gate 2: Stage 1 must be clean
+check_evidence "stage1-clean" "Stage 1 review"
+
+# Gate 3: Dependency map validation (if a map exists)
+if [ -f "dependency-map.json" ] || find . -name "dependency-map.json" -maxdepth 2 2>/dev/null | grep -q .; then
+  check_evidence "map-validated" "Dependency map validation"
+fi
+
+# All gates pass
+exit 0

@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+# PreToolUse hook for Edit commands. Blocks edits to files that belong to
+# an active coupling group when other files in that group have unresolved findings.
+#
+# This prevents the #1 cascade cause: fixing coupled findings independently.
+# The LLM must acknowledge the full group (by writing a .code-forge/gate/group-ack file)
+# before editing any member of the group.
+#
+# Inputs:
+#   $1 — the file_path being edited (from tool input)
+#
+# Evidence:
+#   .code-forge/gate/active-groups.json — written by the orchestrator when Stage 1
+#     returns NEEDS_FIXES with grouped findings. Contains:
+#     [{"files": ["A.cs", "B.cs"], "findings": [...], "acknowledged": false}, ...]
+#
+#   When the orchestrator reads ALL findings in a group and designs a coherent fix,
+#   it sets "acknowledged": true for that group. Only then can edits proceed.
+#
+# Exit 0 = allow the edit
+# Exit 1 = block the edit (outputs reason to stderr)
+
+set -euo pipefail
+
+TOOL_INPUT="${1:-}"
+GATE_DIR=".code-forge/gate"
+GROUPS_FILE="$GATE_DIR/active-groups.json"
+
+# Extract file_path from tool input (JSON with "file_path" field)
+# When called from hooks.json, input is the serialized tool parameters
+FILE_PATH=""
+if command -v jq &>/dev/null; then
+  FILE_PATH=$(echo "$TOOL_INPUT" | jq -r '.file_path // empty' 2>/dev/null || echo "")
+elif echo "$TOOL_INPUT" | grep -q "file_path"; then
+  # Fallback: grep extraction
+  FILE_PATH=$(echo "$TOOL_INPUT" | grep -o '"file_path"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"file_path"[[:space:]]*:[[:space:]]*"//;s/"$//')
+fi
+
+# If we couldn't extract a file path (might be plain path in test mode), use raw input
+if [ -z "$FILE_PATH" ]; then
+  FILE_PATH="$TOOL_INPUT"
+fi
+
+# If no active groups file exists, no coupling enforcement is active
+if [ ! -f "$GROUPS_FILE" ]; then
+  exit 0
+fi
+
+# If the file isn't tracked at all, allow (it's outside any coupling group)
+if ! grep -q "$(basename "$FILE_PATH")" "$GROUPS_FILE" 2>/dev/null; then
+  exit 0
+fi
+
+# Find which group this file belongs to and check acknowledgment
+# Parse with available tools (jq preferred, python fallback, grep last resort)
+if command -v jq &>/dev/null; then
+  # Find groups containing this file where acknowledged is false
+  UNACKED=$(jq -r --arg fp "$FILE_PATH" '
+    [.[] | select(.acknowledged == false) | select(.files[] | contains($fp))] | length
+  ' "$GROUPS_FILE" 2>/dev/null || echo "0")
+elif python3 -c "pass" &>/dev/null || python -c "pass" &>/dev/null; then
+  PY=$(python3 -c "pass" 2>/dev/null && echo "python3" || echo "python")
+  UNACKED=$($PY -c "
+import json,sys
+fp='$FILE_PATH'
+groups=json.load(open('$GROUPS_FILE'))
+count=sum(1 for g in groups if not g.get('acknowledged',False) and any(fp in f or f in fp for f in g.get('files',[])))
+print(count)
+" 2>/dev/null || echo "0")
+else
+  # Last resort: grep for the file + check if "acknowledged": false nearby
+  # Imprecise but safe (false positives = extra blocks, never false negatives = missed blocks)
+  if grep -B5 "$(basename "$FILE_PATH")" "$GROUPS_FILE" | grep -q '"acknowledged": false'; then
+    UNACKED="1"
+  else
+    UNACKED="0"
+  fi
+fi
+
+if [ "$UNACKED" != "0" ] && [ "$UNACKED" != "" ]; then
+  cat >&2 <<EOF
+BLOCKED: This file belongs to a coupling group with unresolved findings.
+
+You MUST read ALL findings in this group before editing ANY file in it.
+Fixing coupled findings independently is the #1 cause of cascading regressions
+(48% of the 70-round cost on AccountLookup).
+
+To proceed:
+1. Read all findings for this coupling group
+2. Design ONE coherent change that addresses all findings simultaneously
+3. Write acknowledgment: bash "\${CLAUDE_PLUGIN_ROOT}/hooks/write-group-ack" "<group-index>"
+4. Then edit the files
+
+File: $FILE_PATH
+EOF
+  exit 1
+fi
+
+exit 0

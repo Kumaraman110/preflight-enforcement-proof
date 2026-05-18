@@ -13,6 +13,17 @@ You are in TDD mode. Every piece of new functionality follows the cycle:
 2. **GREEN:** Write the minimum code to make the test pass
 3. **REFACTOR:** Clean up without changing behavior (tests stay green)
 
+## Step 0 — Environment Detection
+
+If session context already contains `code-forge active | mode=...` with config data, trust it. Skip to the HARD-GATE below.
+
+If session context is empty or this skill was invoked cold:
+
+1. Search for config: `.code-forge/config.json` > `.cpsl/config.json` > `.forge.json` (in working directory, then up to 5 parent levels).
+2. If found: extract `test.command`, `test.coverageBaseline`.
+3. If not found: auto-detect test command (`dotnet test` if `.csproj`/`.sln`, `npm test` if `package.json`).
+4. Check for `CLAUDE.md` at project root for test conventions (framework, naming, etc.).
+
 <HARD-GATE>
 Do NOT write implementation code before a failing test exists for the behavior you're about to implement. A test written after implementation proves nothing — it's always green because you wrote it to match what you already built.
 </HARD-GATE>

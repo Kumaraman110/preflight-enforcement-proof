@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Write the active coupling groups file. Called by the orchestrator after
+# Stage 1 returns NEEDS_FIXES and the findings have been grouped by coupling.
+#
+# Usage: write-active-groups '<json-array>'
+#   json-array: JSON string of groups, e.g.:
+#   [{"files":["A.cs","B.cs"],"findings":["§4.2 on A:15","§4.3 on B:22"],"acknowledged":false}]
+#
+# The coupled-edit-gate reads this file to enforce group acknowledgment before edits.
+# When all groups are acknowledged and fixes are applied, clear with: write-active-groups '[]'
+
+set -euo pipefail
+
+GROUPS_JSON="${1:-[]}"
+GATE_DIR=".code-forge/gate"
+GROUPS_FILE="$GATE_DIR/active-groups.json"
+
+mkdir -p "$GATE_DIR"
+echo "$GROUPS_JSON" > "$GROUPS_FILE"

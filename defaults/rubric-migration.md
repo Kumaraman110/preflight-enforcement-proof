@@ -60,6 +60,23 @@ Projects with their own rubric (e.g., the CPSL migration rubric at `docs/cpsl-mi
 **Severity:** blocker
 **Fix:** Replace with ASP.NET Core equivalents (`Microsoft.AspNetCore.Http`).
 
+### §M4.3 Token cache thundering herd
+**Detect:** `IMemoryCache.GetOrCreateAsync` used for caching auth tokens or any shared credential. This method is NOT single-flight — concurrent callers all enter the factory simultaneously.
+**Severity:** major
+**BAD:**
+```csharp
+return await _cache.GetOrCreateAsync("oauth_token", async entry => {
+    entry.AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(55);
+    return await FetchTokenAsync(ct);
+});
+```
+**GOOD:**
+```csharp
+private static readonly SemaphoreSlim _semaphore = new(1, 1);
+// Double-checked lock with SemaphoreSlim for single-flight token refresh
+```
+**Fix:** Replace with `static SemaphoreSlim` + double-checked lock pattern. Only one caller enters the token fetch; others wait on the semaphore and read the cached value.
+
 ---
 
 ## §M5 Serialization
@@ -120,3 +137,25 @@ Projects with their own rubric (e.g., the CPSL migration rubric at `docs/cpsl-mi
 **Detect:** Docker push with `:latest` tag when the registry enforces immutable tags.
 **Severity:** blocker
 **Fix:** Use SHA-based tags only. Remove `:latest` from build/push scripts.
+
+---
+
+## §M9 Logging and Observability
+
+### §M9.1 Unsanitized user input in logs
+**Detect:** `_logger.Log*` calls where the argument is user-controlled (from HTTP request, query string, path, headers, form data) and is NOT passed through a sanitization method (e.g., `LogSanitizer.Sanitize()`, custom masking, or explicit truncation).
+**Severity:** major
+**BAD:**
+```csharp
+_logger.LogInformation("Lookup for: {Input}", userInput);
+```
+**GOOD:**
+```csharp
+_logger.LogInformation("Lookup for: {Input}", LogSanitizer.Sanitize(userInput));
+```
+**Fix:** Wrap user-controlled values in `LogSanitizer.Sanitize()` or equivalent masking before passing to any `ILogger` method. This prevents CWE-117 (log injection) and limits PII exposure in log aggregation systems.
+
+### §M9.2 Credentials or tokens in log output
+**Detect:** Session tokens, OAuth tokens, API keys, passwords, or connection strings passed as arguments to `_logger.Log*` calls.
+**Severity:** major
+**Fix:** Remove the credential from the log call entirely. Log a correlation ID or masked suffix (`***{last4}`) instead.

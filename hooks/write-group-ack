@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# Acknowledge a coupling group — signals that the orchestrator has read all
+# findings in the group and designed a coherent fix. After acknowledgment,
+# edits to files in that group are allowed.
+#
+# Usage: write-group-ack <group-index>
+#   group-index: 0-based index into the active-groups.json array
+#
+# The orchestrator calls this AFTER reading all findings in a group
+# and BEFORE dispatching the implementer or editing files.
+
+set -euo pipefail
+
+GROUP_INDEX="${1:-}"
+GATE_DIR=".code-forge/gate"
+GROUPS_FILE="$GATE_DIR/active-groups.json"
+
+if [ -z "$GROUP_INDEX" ]; then
+  echo "Usage: write-group-ack <group-index>" >&2
+  exit 1
+fi
+
+if [ ! -f "$GROUPS_FILE" ]; then
+  echo "No active groups file found at $GROUPS_FILE" >&2
+  exit 1
+fi
+
+if command -v jq &>/dev/null; then
+  # Set acknowledged=true for the specified group
+  jq --argjson idx "$GROUP_INDEX" '
+    .[$idx].acknowledged = true
+  ' "$GROUPS_FILE" > "$GROUPS_FILE.tmp" && mv "$GROUPS_FILE.tmp" "$GROUPS_FILE"
+elif python3 -c "pass" &>/dev/null || python -c "pass" &>/dev/null; then
+  PY=$(python3 -c "pass" 2>/dev/null && echo "python3" || echo "python")
+  $PY -c "
+import json
+idx=$GROUP_INDEX
+groups=json.load(open('$GROUPS_FILE'))
+if idx < len(groups):
+    groups[idx]['acknowledged']=True
+    json.dump(groups, open('$GROUPS_FILE','w'), indent=2)
+else:
+    raise IndexError(f'Group index {idx} out of range (have {len(groups)} groups)')
+"
+else
+  echo "ERROR: Need jq or python to update groups file" >&2
+  exit 1
+fi
+
+echo "Group $GROUP_INDEX acknowledged. Edits to files in this group are now allowed."

@@ -56,6 +56,7 @@ public class {ServiceName}TokenProvider : I{ServiceName}TokenProvider
     private async Task<string> RequestTokenAsync(CancellationToken ct)
     {
         var request = new HttpRequestMessage(HttpMethod.Post, _options.TokenUrl);
+        /* ADAPT: Token request body — grant_type and fields vary per IdP */
         request.Content = new FormUrlEncodedContent(new Dictionary<string, string>
         {
             ["grant_type"] = "client_credentials",
@@ -68,7 +69,7 @@ public class {ServiceName}TokenProvider : I{ServiceName}TokenProvider
         response.EnsureSuccessStatusCode();
 
         var json = await response.Content.ReadFromJsonAsync<JsonElement>(ct);
-        return json.GetProperty("access_token").GetString()!;
+        return json.GetProperty("access_token").GetString()!; /* ADAPT: OAuth response property — verify against actual IdP */
     }
 }
 ```
@@ -105,6 +106,8 @@ public class {ServiceName}Options
 
     [Range(1, 30)]
     public int TimeoutSeconds { get; set; } = 15;
+
+    /* ADAPT: Add service-specific properties with [Required]/[Range] annotations */
 }
 ```
 
@@ -171,7 +174,7 @@ _logger.LogInformation("Looking up account for {MileagePlus}", request.MileagePl
 ```csharp
 // In Program.cs
 builder.Services.AddHealthChecks()
-    .AddCheck<{ServiceName}HealthCheck>("downstream", tags: new[] { "ready" });
+    .AddCheck<{ServiceName}HealthCheck>("downstream", tags: new[] { "ready" }); /* ADAPT: one AddCheck per critical dependency */
 
 // After app = builder.Build():
 app.MapHealthChecks("/health", new HealthCheckOptions
@@ -236,9 +239,35 @@ public class {RequestName}
 
 ---
 
+## Adaptation Points
+
+Patterns above are used EXACTLY — except at marked `/* ADAPT */` points. These are the ONLY places where per-service customization is expected:
+
+### Token Caching
+- `/* ADAPT: OAuth response property */` — The token response JSON property name. Default is `"access_token"`. Some identity providers use `"token"`, `"id_token"`, or a nested path. Verify against the actual IdP response.
+- `/* ADAPT: Token lifetime source */` — Default uses `_options.TokenLifetimeMinutes`. If the IdP returns `expires_in` in the response, prefer computing from that (subtract buffer) over config.
+- `/* ADAPT: Token request body */` — The `grant_type` and fields vary. `client_credentials` is default. Service accounts may need `urn:ietf:params:oauth:grant-type:jwt-bearer` with assertion.
+
+### Options Pattern
+- `/* ADAPT: Add service-specific properties */` — Beyond BaseUrl/TokenUrl/ClientId/ClientSecret/Scope, each service has unique config (e.g., `RetryCount`, `CircuitBreakerThreshold`, downstream-specific paths). Add properties with `[Required]` or `[Range]` annotations as appropriate.
+
+### Typed HttpClient
+- `/* ADAPT: Base address source */` — Default reads from `Configuration[$"{ServiceName}:BaseUrl"]`. If the URL is constructed from multiple parts (region, version, tenant), adapt the address construction.
+
+### Dockerfile
+- `/* ADAPT: Additional COPY layers */` — If the service has native dependencies, additional runtime packages, or config files that must be copied separately.
+- `/* ADAPT: Multi-project COPY */` — If the `.csproj` references other projects in the solution, COPY their project files for proper restore layer caching.
+
+### Health Endpoints
+- `/* ADAPT: Readiness dependencies */` — The downstream health check class name and what it probes. Each service has different backends (DB, HTTP, queue). Add one `AddCheck<>()` per critical dependency.
+
 ## Using This Spec
 
-1. When generating Phase 3 code (migration) or scaffold code (net-new), check each pattern above
-2. If the service needs the pattern → instantiate with correct placeholder values → paste
-3. If you're unsure whether to use a pattern → use it (it's cheaper to have an unused pattern than to get flagged for its absence)
-4. After pasting all applicable patterns, the remaining work is service-specific business logic — that's the part that requires LLM reasoning, not templates
+**The verb is PASTE, not "use."** Interpretation and reconstruction from memory degrade at high context utilization. Verbatim paste does not.
+
+1. When generating Phase 3 code (migration) or scaffold code (net-new), identify each pattern above that applies to the service
+2. For each applicable pattern: copy the code block CHARACTER FOR CHARACTER into the target file. Replace `{Placeholders}` with the service's values. Change nothing else.
+3. At `/* ADAPT */` points ONLY: customize for the service's specific requirements. Document WHY in a comment at that point.
+4. If you're unsure whether a pattern applies → paste it (it's cheaper to have an unused pattern than to get flagged for its absence)
+5. After pasting all applicable patterns, the remaining work is service-specific business logic — that's the part that requires LLM reasoning, not templates
+6. The rule is: **PASTE verbatim, then ADAPT at marked points only.** If you find yourself typing code that looks similar-but-not-identical to a spec pattern, stop — you're reconstructing, not pasting. Go back and copy.

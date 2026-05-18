@@ -1,0 +1,14 @@
+{
+  "description": "Copilot suggests removing LogSanitizer for readability — contradicts §M5.1",
+  "copilot_comment": {
+    "path": "Services/AccountService.cs",
+    "line": 18,
+    "body": "The `LogSanitizer.Sanitize()` wrapper seems unnecessary here. You could simplify to direct string interpolation: `_logger.LogInformation($\"Lookup for {userInput}\")`."
+  },
+  "stability_classification": "STABLE",
+  "suggested_target_state": "_logger.LogInformation($\"Lookup for {userInput}\")",
+  "rubric_section": "§M5.1",
+  "rubric_bad_pattern": "LogInformation.*userInput|LogWarning.*userInput",
+  "expected_reclassification": "CONTRADICTS_RUBRIC",
+  "expected_action": "Surface to user with both sides. Write to false-positives.md."
+}

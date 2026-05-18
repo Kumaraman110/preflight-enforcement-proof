@@ -66,19 +66,19 @@ If `APPROVED` OR zero unresolved bot comments newer than last push → SUCCESS.
 
 ### Step 6 — Check termination conditions
 
-**Hard cap:** If this is iteration 8 or higher → CAPPED. Stop immediately regardless of findings.
+**Hard cap:** If this is iteration 3 or higher → CAPPED. Stop immediately regardless of findings. (Override: config `loop.maxStage2Iterations` can be set up to 8 for services with known-incomplete coupling maps.)
 
 **Oscillation:**
 - Same files across consecutive iterations → STUCK
 - Same `(file, line)` modified in N consecutive iterations → STUCK
 
-**Divergence:** if total findings this round >= total findings 2 rounds ago → DIVERGING (emit warning, continue one more round, STUCK if still diverging)
+**Divergence:** if total findings this round >= total findings from round 1 → DIVERGING (the coupling map is wrong — fixes are cascading, not converging)
 
-**Why the cap exists:** A prior migration ran 70+ Copilot rounds. Data shows rounds past 8 produced net-zero convergence — issues were being shuffled between files, not resolved. The cap forces escalation to human judgment rather than burning hours in cascading regressions.
+**Why cap at 3 (not 8):** The stability filter (Step 7) ensures only STABLE findings drive auto-fixes. Stable findings are deterministic and mechanical. If deterministic fixes on correctly-coupled groups don't converge in 3 rounds, the dependency map missed a coupling edge — further rounds will cascade. The old cap of 8 predated the stability filter and existed because unstable/contradictory findings created slow-convergence cycles that can no longer occur. When the cap fires at 3, the diagnosis is always "coupling map is incomplete" — surface this to the user rather than burning 5 more rounds on the same structural error.
 
 ### Step 7 — Stability filter
 
-Before classifying, assess each Copilot comment for stability:
+Before classifying, assess each Copilot comment for stability using THREE categories:
 
 **STABLE (act on these — return to parent for fixing):**
 - Cites a specific CWE, CodeQL rule, or SonarQube rule
@@ -86,9 +86,17 @@ Before classifying, assess each Copilot comment for stability:
 - Describes a mechanical error (wrong method, missing annotation, incorrect type)
 - Is about security, correctness, or data integrity
 
+**TRIVIAL-STABLE (auto-fix these despite suggestion language):**
+- Uses "consider"/"you might" language BUT describes a single-line mechanical change
+- The change has NO interaction risk (touches one statement, not a call chain)
+- Examples: missing `ConfigureAwait(false)`, unused `using` directive, redundant cast, missing `sealed` keyword
+- Verification: if you can describe the complete fix in under 15 words AND the fix cannot cause a compile error or behavioral change elsewhere → TRIVIAL-STABLE
+- Mark as `"stability": "trivial-stable"` in the JSON output
+- Return to parent for fixing (same as STABLE) — these are safe because isolation is guaranteed
+
 **UNSTABLE (classify but do NOT return for automatic fixing):**
-- Uses "consider", "you might", "could be cleaner", "I'd suggest"
-- Is stylistic (naming, formatting, code organization)
+- Uses "consider", "you might", "could be cleaner", "I'd suggest" AND the change spans multiple lines or touches a call chain
+- Is stylistic (naming, formatting, code organization) where the change interacts with other code
 - CONTRADICTS a finding from a previous iteration on the same file/line
 - Contradicts the generation-spec pattern that was used
 - Is about preference rather than correctness
@@ -99,13 +107,46 @@ For UNSTABLE findings:
 - But mark them `"stability": "unstable"` in the JSON output
 - The parent will surface them to the user but NOT fix them automatically
 
+**Why three categories:** The original binary filter (STABLE vs UNSTABLE) left value on the table. Analysis of the 70-round data shows ~12% of Copilot findings used suggestion language for mechanically trivial changes (add `sealed`, remove unused import). These were classified UNSTABLE and surfaced to the user, who always accepted them. TRIVIAL-STABLE captures this category — it's safe to auto-fix because the change is isolated by definition (single statement, no interaction).
+
 **Why this matters:** The 70-round migration included rounds where Copilot said "change X to Y" in round N, then "change Y back to X" in round N+2. Our system diligently applied both contradictory instructions, creating oscillation that never triggered the same-file detector (because the finding descriptions were different even though the effect was identical). The stability filter prevents unstable/contradictory findings from driving automatic fixes.
 
+### Step 7.5 — Rubric cross-check (BEFORE classification or return)
+
+For every finding classified as STABLE or TRIVIAL-STABLE, run this check:
+
+1. Read the active rubric (same path the rubric-reviewer uses — from config or defaults).
+2. For each STABLE/TRIVIAL-STABLE finding, compare the suggestion's **target state** (what the code would look like AFTER implementing Copilot's suggestion) against the rubric's `BAD` patterns and explicit anti-patterns.
+3. Also check operative rules in capture files (the `**BAD (literal anti-pattern):**` blocks).
+
+**If the suggestion's target state matches a rubric anti-pattern:**
+- Reclassify as `CONTRADICTS_RUBRIC` (a 4th stability category)
+- Set `"stability": "contradicts-rubric"` in JSON output
+- Do NOT return to parent for fixing
+- Instead: write BOTH to the output:
+  - The Copilot suggestion (what it wants)
+  - The rubric section it violates (why we won't do it)
+- Write to `false-positives.md` (Bucket 3) with the template: "Copilot suggested X, which contradicts §Y.Z — rubric is authoritative"
+- Surface to user: "Copilot and rubric disagree on this. Rubric wins unless you override."
+
+**Why this step exists:** The stability filter classifies on FORM (is the suggestion specific and reproducible?) not CORRECTNESS (is the suggestion right for our architecture?). Copilot's most dangerous suggestions are perfectly stable and perfectly wrong — `IMemoryCache.GetOrCreateAsync` is the canonical example from AccountLookup. Without this step, the parent implements the suggestion, Stage 1 catches the violation, the parent reverts, Copilot fires again next round → oscillation. This step breaks the oscillation at classification time, costing 10 seconds of rubric scanning instead of 5 minutes of implement-catch-revert per occurrence.
+
+**What this is NOT:**
+- Not a rubric walk (that's Stage 1's job). This is a targeted pattern match: does the SUGGESTED CODE appear in any BAD block?
+- Not expensive. The rubric has ~20 explicit BAD code blocks. String-matching 20 patterns against the suggested code is mechanical.
+- Not a veto of Copilot. If the user overrides ("implement this anyway"), the calibration-log entry records it and the rubric may be updated in the next batch.
+
 ### Step 8 — Classify and capture
-For every Copilot comment (both stable and unstable), classify into one bucket and append to the matching file. Do this BEFORE returning to parent.
+For every Copilot comment (all stability categories including contradicts-rubric), classify into one bucket and append to the matching file. Do this BEFORE returning to parent.
 
 ### Step 9 — Return to parent
-Return findings with status code. Mark each finding's stability. Parent fixes STABLE findings, surfaces UNSTABLE findings to user. Control returns to you at Step 3.
+Return findings with status code. Mark each finding's stability:
+- `STABLE` → parent fixes automatically
+- `TRIVIAL-STABLE` → parent fixes automatically
+- `UNSTABLE` → parent surfaces to user, does NOT auto-fix
+- `CONTRADICTS_RUBRIC` → parent surfaces to user with both sides, does NOT auto-fix
+
+Control returns to you at Step 3.
 
 ---
 
@@ -114,12 +155,13 @@ Return findings with status code. Mark each finding's stability. Parent fixes ST
 ### Bucket 1: in-rubric-but-missed → calibration log
 Copilot flagged something the active rubric covers, but Stage 1 didn't catch it.
 
-Write an OPERATIVE capture entry — one that takes effect immediately on the next Stage 1 invocation, not one that waits for a batched PR:
+Write an OPERATIVE capture entry — one that takes effect on the next Stage 1 invocation, not one that waits for a batched PR:
 
 ```markdown
 ## <ISO date> — §<section> missed by Stage 1
 
 **PR:** <url> · **File:** <path>:<line>
+**Survived:** 0
 
 **Copilot said:** <one sentence>
 
@@ -139,7 +181,16 @@ Flag as `<severity>` if: <precise boolean condition referencing code patterns>
 \`\`\`
 ```
 
-The `IMMEDIATE DETECTION RULE` block is what makes this operative. The rubric-reviewer reads capture files and applies these rules on its next invocation. Learning latency = one round, not 5 services.
+The `IMMEDIATE DETECTION RULE` block is what makes this operative. The rubric-reviewer reads capture files and applies these rules on its next invocation.
+
+**Confidence threshold:** New rules start with `Survived: 0`, meaning they fire as `info` only (visible but non-blocking). After surviving 2 services without a false-positive entry contradicting them, the rubric-reviewer promotes their firing severity to the rule's declared severity. This prevents misclassified rules from creating phantom blockers on subsequent services while still making them immediately visible for human awareness.
+
+**Incrementing `Survived`:** At the END of a successful Stage 2 loop (status = SUCCESS), scan all operative rules in capture files. For each rule where:
+- The rule's `**PR:**` URL is different from the current PR (it was written in a prior service)
+- The current run did NOT write a `false-positives.md` entry contradicting this rule
+- Stage 1 fired this rule's pattern at least once during the current run (proving it's active)
+
+Increment that rule's `**Survived:**` count by 1. This is the calibration-by-survival mechanism.
 
 ### Bucket 2: new-category → checklist additions
 Copilot flagged something with no rubric match.
@@ -188,6 +239,41 @@ Subjective architectural call not suitable for automation.
 **Why deferred:** <why this is judgment, not rule>
 ```
 
+### Bucket 5: pattern-capture → generation spec candidates
+
+When a coupled fix group is successfully resolved (parent reports DONE after implementing the fix), capture the FINAL correct code as a generation spec candidate. This is how the generation spec grows over time — proven solutions to recurring problems become paste patterns for future services.
+
+**Trigger:** Parent reports a coupled-group fix was successful AND the fix addresses a pattern that:
+- Recurred across 2+ files or 2+ services
+- OR required 2+ iterations to get right (indicating it's non-obvious)
+- OR prevents a rubric section that has no existing generation spec pattern
+
+**Write to:** `docs/review/generation-spec-candidates.md` (create with header if missing)
+
+```markdown
+## <ISO date> — Candidate pattern: <short name>
+
+**PR:** <url> · **Files:** <path1>, <path2>
+
+**Problem:** <what rubric section / finding class this prevents>
+
+**Rubric sections:** §<N.N>, §<N.N>
+
+**Pattern (verified working — passed Stage 1 + Copilot):**
+\`\`\`csharp
+<the final correct implementation — complete, copy-pasteable, with placeholders>
+\`\`\`
+
+**Adaptation points:**
+- `/* ADAPT: <description> */` — <what varies per service>
+
+**Confidence:** high (passed review) | medium (passed but edge cases unknown)
+
+**Promotion criteria:** If this pattern appears in 3+ candidates across different services, promote to `defaults/generation-specs/dotnet-service.md` in the next batched rubric-edit PR.
+```
+
+**Why this bucket exists:** The generation spec was seeded from AccountLookup's patterns. Without a capture mechanism, it stays frozen. This bucket grows it from real, validated solutions — every hard-won fix becomes a pattern that prevents the same struggle on the next service. It closes the loop: detection spec catches problems → fixes produce solutions → pattern-capture promotes solutions to generation spec → generation spec prevents the problems from existing.
+
 ---
 
 ## Classification Heuristics (first match wins)
@@ -197,6 +283,7 @@ Subjective architectural call not suitable for automation.
 3. Comment contradicts a recent Stage 1 finding → `false-positive`.
 4. Comment uses "consider", "you might", "could be cleaner" → likely `human-judgment`.
 5. None match → `new-category` with `Confidence: low`.
+6. **(Post-fix only)** Parent reports coupled-group fix DONE on a recurring/non-obvious pattern → `pattern-capture`.
 
 ---
 
@@ -214,6 +301,7 @@ Subjective architectural call not suitable for automation.
 - new-category: y
 - false-positive: z
 - human-judgment: w
+- pattern-capture: p
 
 **Findings (JSON):**
 \`\`\`json

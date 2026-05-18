@@ -1,0 +1,14 @@
+{
+  "description": "Copilot suggests adding ConfigureAwait(false) — does NOT contradict any rubric section",
+  "copilot_comment": {
+    "path": "Services/TokenProvider.cs",
+    "line": 32,
+    "body": "Add `ConfigureAwait(false)` to this await since this is library code that doesn't need to capture the synchronization context."
+  },
+  "stability_classification": "TRIVIAL-STABLE",
+  "suggested_target_state": "await _httpClient.PostAsync(...).ConfigureAwait(false)",
+  "rubric_section": null,
+  "rubric_bad_pattern": null,
+  "expected_reclassification": null,
+  "expected_action": "Remains TRIVIAL-STABLE. Return to parent for auto-fix."
+}

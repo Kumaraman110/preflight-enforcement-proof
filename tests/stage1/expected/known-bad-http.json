@@ -1,0 +1,20 @@
+[
+  {
+    "file": "known-bad-http.cs",
+    "line": 13,
+    "severity": "major",
+    "category": "§M4.1",
+    "dimension": "correctness",
+    "issue_contains": "WebClient",
+    "suggestion_contains": "HttpClient"
+  },
+  {
+    "file": "known-bad-http.cs",
+    "line": 20,
+    "severity": "blocker",
+    "category": "§M4.2",
+    "dimension": "correctness",
+    "issue_contains": "HttpContext.Current",
+    "suggestion_contains": "ASP.NET Core"
+  }
+]

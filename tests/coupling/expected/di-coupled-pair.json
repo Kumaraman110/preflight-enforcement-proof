@@ -1,0 +1,14 @@
+{
+  "expected_grouping": "coupled",
+  "reason": "DI injection — AccountClient depends on ITokenProvider via constructor",
+  "coupling_signals": [
+    "AccountClient.cs imports ITokenProvider",
+    "AccountClient constructor takes ITokenProvider parameter",
+    "AccountClient.LookupAsync calls _tokenProvider.GetTokenAsync"
+  ],
+  "validator_checks": {
+    "shared_imports": true,
+    "verifiable_call_chain": true,
+    "di_cross_reference": true
+  }
+}

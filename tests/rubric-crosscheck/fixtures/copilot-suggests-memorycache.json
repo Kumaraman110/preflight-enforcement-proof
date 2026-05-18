@@ -1,0 +1,14 @@
+{
+  "description": "Copilot suggests IMemoryCache.GetOrCreateAsync — contradicts §M4.3",
+  "copilot_comment": {
+    "path": "Services/TokenProvider.cs",
+    "line": 25,
+    "body": "Consider using `IMemoryCache.GetOrCreateAsync` here for simpler token caching instead of the manual semaphore pattern."
+  },
+  "stability_classification": "STABLE",
+  "suggested_target_state": "_cache.GetOrCreateAsync(\"oauth_token\", async entry => { ... })",
+  "rubric_section": "§M4.3",
+  "rubric_bad_pattern": "IMemoryCache.GetOrCreateAsync",
+  "expected_reclassification": "CONTRADICTS_RUBRIC",
+  "expected_action": "Surface to user with both sides. Write to false-positives.md."
+}

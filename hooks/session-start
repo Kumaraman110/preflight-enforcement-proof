@@ -1,8 +1,18 @@
 #!/usr/bin/env bash
-# Detects the project type by looking for config files in the current working directory.
-# Injects project context into the session so all skills/agents know the mode without re-detecting.
+# Session bootstrap hook. Injects behavioral routing into the session context
+# so the LLM knows WHEN to use each skill without being told.
+#
+# Two responsibilities:
+# 1. Detect project config (mode, rubric, captures)
+# 2. Inject the routing skill content as additionalContext
+#
+# The routing document is the decision tree the agent follows before every action.
+# Without it, skills exist but the agent doesn't know when to activate them.
 
 set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PLUGIN_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 CONFIG_FILE=""
 MODE="generic"
@@ -18,9 +28,6 @@ for candidate in ".code-forge/config.json" ".cpsl/config.json" ".forge.json"; do
 done
 
 if [ -n "$CONFIG_FILE" ]; then
-  # Find a working Python or jq for JSON parsing
-  # Note: on Windows, python3 may be a Microsoft Store stub that doesn't actually work.
-  # Test by running it, not just checking if the command exists.
   PYTHON=""
   if python3 -c "pass" &>/dev/null; then
     PYTHON="python3"
@@ -28,7 +35,6 @@ if [ -n "$CONFIG_FILE" ]; then
     PYTHON="python"
   fi
 
-  # Extract mode from config
   if command -v jq &>/dev/null; then
     MODE=$(jq -r '.mode // "generic"' "$CONFIG_FILE" 2>/dev/null || echo "generic")
     RUBRIC=$(jq -r '.rubric // ""' "$CONFIG_FILE" 2>/dev/null || echo "")
@@ -37,7 +43,6 @@ if [ -n "$CONFIG_FILE" ]; then
     RUBRIC=$($PYTHON -c "import json; d=json.load(open('$CONFIG_FILE')); print(d.get('rubric','') or '')" 2>/dev/null || echo "")
   fi
 
-  # Count capture files that exist
   CAPTURE_COUNT=0
   for cap in "calibrationLog" "checklistAdditions" "falsePositives"; do
     CAP_PATH=""
@@ -51,18 +56,35 @@ if [ -n "$CONFIG_FILE" ]; then
   CAPTURES="$CAPTURE_COUNT capture files active"
 fi
 
-# Build the context string
+# Build status line (short metadata)
 if [ "$MODE" = "generic" ] && [ -z "$CONFIG_FILE" ]; then
-  CTX="code-forge active | mode=generic (no project config) | using default rubric | Skills: /code-forge:self-review, /code-forge:fix-and-close, /code-forge:forge-new"
+  STATUS="code-forge active | mode=generic (no project config) | default rubric"
 elif [ "$MODE" = "migration" ]; then
-  CTX="code-forge active | mode=migration | config=$CONFIG_FILE | rubric=$RUBRIC | $CAPTURES | Skills: /code-forge:self-review, /code-forge:fix-and-close, /code-forge:migrate-service"
+  STATUS="code-forge active | mode=migration | config=$CONFIG_FILE | rubric=$RUBRIC | $CAPTURES"
 elif [ "$MODE" = "api-new" ]; then
-  CTX="code-forge active | mode=api-new | config=$CONFIG_FILE | rubric=$RUBRIC | $CAPTURES | Skills: /code-forge:self-review, /code-forge:fix-and-close, /code-forge:forge-new"
+  STATUS="code-forge active | mode=api-new | config=$CONFIG_FILE | rubric=$RUBRIC | $CAPTURES"
 else
-  CTX="code-forge active | mode=$MODE | config=$CONFIG_FILE | rubric=$RUBRIC | $CAPTURES"
+  STATUS="code-forge active | mode=$MODE | config=$CONFIG_FILE | rubric=$RUBRIC | $CAPTURES"
+fi
+
+# Load the routing skill content — this is the behavioral decision tree
+ROUTING_FILE="$PLUGIN_ROOT/skills/routing/SKILL.md"
+ROUTING_CONTENT=""
+if [ -f "$ROUTING_FILE" ]; then
+  # Strip YAML frontmatter (everything between first --- and second ---)
+  ROUTING_CONTENT=$(sed -n '/^---$/,/^---$/!p' "$ROUTING_FILE" | sed '/^$/N;/^\n$/d')
+fi
+
+# Combine status + routing into additionalContext
+# The status line gives metadata. The routing content gives behavioral rules.
+FULL_CONTEXT="$STATUS"
+if [ -n "$ROUTING_CONTENT" ]; then
+  # Escape for JSON: newlines, quotes, backslashes
+  ESCAPED_ROUTING=$(echo "$ROUTING_CONTENT" | sed 's/\\/\\\\/g' | sed 's/"/\\"/g' | sed ':a;N;$!ba;s/\n/\\n/g')
+  FULL_CONTEXT="$STATUS\\n\\n$ESCAPED_ROUTING"
 fi
 
 # Output in Claude Code hook format
 cat <<EOF
-{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"$CTX"}}
+{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"$FULL_CONTEXT"}}
 EOF

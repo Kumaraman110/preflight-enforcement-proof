@@ -22,9 +22,21 @@ Net-new development suffers from the same review churn that migration does — e
 
 The review loop catches both. The rubric is different (API design rules vs migration detection rules), but the machinery is identical.
 
+## Step 0 — Environment Detection
+
+If session context already contains `code-forge active | mode=...` with config path and rubric path, trust it — the session-start hook already parsed the config. Skip to step 5 (rubric existence check only).
+
+If session context is empty or this skill was invoked cold (no hook ran):
+
+1. Search for config: `.code-forge/config.json` > `.cpsl/config.json` > `.forge.json` (in working directory, then up to 5 parent levels).
+2. If found: extract `mode`, `rubric`, `branch.base`, `branch.remote`, `test.*`, `loop.*`, `capture.*`.
+3. If not found: use defaults — mode `generic`, rubric from `${CLAUDE_PLUGIN_ROOT}/defaults/rubric-api-design.md`, base branch `main`.
+4. Check for `CLAUDE.md` at project root for supplementary conventions.
+5. Confirm the rubric file exists at the resolved path. If missing, fall back to `${CLAUDE_PLUGIN_ROOT}/defaults/rubric-api-design.md`.
+
 ## Pre-requisites
 
-Read project config. If `mode` is `migration`, warn: "This project is configured for migration. Use `/code-forge:migrate-service` instead, or update config to `mode: api-new`."
+If `mode` is `migration`, warn: "This project is configured for migration. Use `/code-forge:migrate-service` instead, or update config to `mode: api-new`."
 
 If no config exists, that's fine — use default API rubric from `${CLAUDE_PLUGIN_ROOT}/defaults/rubric-api-design.md`.
 
@@ -50,7 +62,7 @@ If no config exists, that's fine — use default API rubric from `${CLAUDE_PLUGI
 ## Phase 2 — Generation
 
 <HARD-GATE>
-Before writing ANY code, read `${CLAUDE_PLUGIN_ROOT}/defaults/generation-specs/dotnet-service.md`. For every pattern that applies, USE IT EXACTLY. Do not improvise. The generation spec is pre-validated against the detection spec — patterns from it will never be flagged by Stage 1. Improvised patterns WILL be flagged, adding review rounds.
+Before writing ANY code, read `${CLAUDE_PLUGIN_ROOT}/defaults/generation-specs/dotnet-service.md`. For every pattern that applies, PASTE the code block verbatim into the target file — character for character. Then modify ONLY at marked `/* ADAPT */` points. Do not reconstruct from memory. Do not "use" or "apply" patterns. PASTE them. Reconstruction drifts at high context (a `SemaphoreSlim(1, 1)` becomes `SemaphoreSlim(1)`, an `EnsureSuccessStatusCode()` moves above the await). Verbatim paste eliminates this class of error entirely.
 </HARD-GATE>
 
 Generate the service skeleton reading patterns from (in priority order):
