@@ -3,14 +3,14 @@
 # an active coupling group when other files in that group have unresolved findings.
 #
 # This prevents the #1 cascade cause: fixing coupled findings independently.
-# The LLM must acknowledge the full group (by writing a .code-forge/gate/group-ack file)
+# The LLM must acknowledge the full group (by writing a .preflight/gate/group-ack file)
 # before editing any member of the group.
 #
 # Inputs:
 #   $1 — the file_path being edited (from tool input)
 #
 # Evidence:
-#   .code-forge/gate/active-groups.json — written by the orchestrator when Stage 1
+#   .preflight/gate/active-groups.json — written by the orchestrator when Stage 1
 #     returns NEEDS_FIXES with grouped findings. Contains:
 #     [{"files": ["A.cs", "B.cs"], "findings": [...], "acknowledged": false}, ...]
 #
@@ -23,7 +23,7 @@
 set -euo pipefail
 
 TOOL_INPUT="${1:-}"
-GATE_DIR=".code-forge/gate"
+GATE_DIR=".preflight/gate"
 GROUPS_FILE="$GATE_DIR/active-groups.json"
 
 # Extract file_path from tool input (JSON with "file_path" field)

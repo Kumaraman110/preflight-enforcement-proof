@@ -1,4 +1,4 @@
-# code-forge
+# preflight
 
 A self-improving code review and development framework for Claude Code. Works from any directory.
 
@@ -14,23 +14,23 @@ A self-improving code review and development framework for Claude Code. Works fr
 
 ```bash
 # From local directory (development)
-claude --plugin-dir /path/to/code-forge
+claude --plugin-dir /path/to/preflight
 
 # Or install from git (when published)
-claude plugin marketplace add https://github.com/United-Airlines-Org/code-forge
-claude plugin install code-forge
+claude plugin marketplace add https://github.com/United-Airlines-Org/preflight
+claude plugin install preflight
 ```
 
 ## Quick Start
 
 ### Any project (no config needed)
 ```
-/code-forge:self-review          # Review current diff against default rubric
-/code-forge:fix-and-close        # Full pipeline: review → commit → push → Copilot loop
+/preflight:self-review          # Review current diff against default rubric
+/preflight:fix-and-close        # Full pipeline: review → commit → push → Copilot loop
 ```
 
 ### Migration project
-Create `.code-forge/config.json`:
+Create `.preflight/config.json`:
 ```json
 {
   "mode": "migration",
@@ -38,28 +38,28 @@ Create `.code-forge/config.json`:
   "migration": { "legacyRepoPath": "/path/to/legacy/repo" }
 }
 ```
-Then: `/code-forge:migrate-service PaxLookup`
+Then: `/preflight:migrate-service PaxLookup`
 
 ### Net-new API project
-Create `.code-forge/config.json`:
+Create `.preflight/config.json`:
 ```json
 {
   "mode": "api-new",
   "rubric": "docs/api-rubric.md"
 }
 ```
-Then: `/code-forge:scaffold-api FlightStatus`
+Then: `/preflight:scaffold-api FlightStatus`
 
 ## Skills (Slash Commands)
 
 | Command | Purpose |
 |---|---|
-| `/code-forge:self-review` | Stage 1 review, fix loop, no push |
-| `/code-forge:fix-and-close` | Full pipeline through Copilot review |
-| `/code-forge:migrate-service` | End-to-end legacy migration |
-| `/code-forge:scaffold-api` | Net-new API with review loop |
-| `/code-forge:systematic-debugging` | Root cause analysis before fixes |
-| `/code-forge:test-driven-development` | RED-GREEN-REFACTOR enforcement |
+| `/preflight:self-review` | Stage 1 review, fix loop, no push |
+| `/preflight:fix-and-close` | Full pipeline through Copilot review |
+| `/preflight:migrate-service` | End-to-end legacy migration |
+| `/preflight:scaffold-api` | Net-new API with review loop |
+| `/preflight:systematic-debugging` | Root cause analysis before fixes |
+| `/preflight:test-driven-development` | RED-GREEN-REFACTOR enforcement |
 
 ## Sub-Agents
 

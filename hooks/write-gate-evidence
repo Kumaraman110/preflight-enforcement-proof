@@ -5,7 +5,7 @@
 # Usage: write-gate-evidence <gate-name>
 #   gate-name: tests-pass | stage1-clean | map-validated
 #
-# Writes a file to .code-forge/gate/<gate-name> with:
+# Writes a file to .preflight/gate/<gate-name> with:
 #   - Current timestamp
 #   - Current HEAD commit
 #   - The gate that passed
@@ -15,7 +15,7 @@
 set -euo pipefail
 
 GATE_NAME="${1:-}"
-GATE_DIR=".code-forge/gate"
+GATE_DIR=".preflight/gate"
 
 if [ -z "$GATE_NAME" ]; then
   echo "Usage: write-gate-evidence <gate-name>" >&2

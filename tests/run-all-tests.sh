@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Test runner for code-forge review system validation.
+# Test runner for preflight review system validation.
 #
 # Tests the reviewer ITSELF, not the service code. This ensures:
 # - Rubric changes don't break detection of known-bad patterns
@@ -275,7 +275,7 @@ run_crosscheck_tests() {
 # ═══════════════════════════════════════════════════════════════
 
 echo "╔══════════════════════════════════════════╗"
-echo "║  code-forge Review System Test Suite     ║"
+echo "║  preflight Review System Test Suite     ║"
 echo "╚══════════════════════════════════════════╝"
 
 case "$SUITE" in

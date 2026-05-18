@@ -6,7 +6,7 @@ This document is reference material for agents and skills. It describes how to d
 
 Look for these files in the current working directory (first match wins):
 
-1. `.code-forge/config.json`
+1. `.preflight/config.json`
 2. `.cpsl/config.json`
 3. `.forge.json`
 

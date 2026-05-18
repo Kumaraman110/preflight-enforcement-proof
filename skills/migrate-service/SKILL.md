@@ -5,7 +5,7 @@ argument-hint: <service name, e.g. "PaxLookup" or "migrate the seat assignment l
 allowed-tools: Read, Glob, Grep, Bash, Edit, Write, Agent
 ---
 
-# /code-forge:migrate-service — End-to-End Migration
+# /preflight:migrate-service — End-to-End Migration
 
 You are running an end-to-end migration of a legacy service to modern .NET, driving both review loops, and feeding the self-improvement system.
 
@@ -16,11 +16,11 @@ The user passed `$ARGUMENTS` as input. Parse generously:
 
 ## Step 0 — Environment Detection
 
-If session context already contains `code-forge active | mode=migration` with config path and rubric path, trust it — the session-start hook already parsed the config. Skip to step 5 (rubric existence check only).
+If session context already contains `preflight active | mode=migration` with config path and rubric path, trust it — the session-start hook already parsed the config. Skip to step 5 (rubric existence check only).
 
 If session context is empty or this skill was invoked cold (no hook ran):
 
-1. Search for config: `.code-forge/config.json` > `.cpsl/config.json` > `.forge.json` (in working directory, then up to 5 parent levels).
+1. Search for config: `.preflight/config.json` > `.cpsl/config.json` > `.forge.json` (in working directory, then up to 5 parent levels).
 2. If found: extract `mode`, `rubric`, `branch.base`, `branch.remote`, `test.*`, `loop.*`, `capture.*`, `migration.*`.
 3. If not found: use defaults — mode `generic`, base branch `main`, test command auto-detected.
 4. Check for `CLAUDE.md` at project root for supplementary conventions.
@@ -29,7 +29,7 @@ If session context is empty or this skill was invoked cold (no hook ran):
 ## Pre-requisites
 
 <HARD-GATE>
-This skill requires project config with `"mode": "migration"`. If the config is missing or mode is not "migration", inform the user: "This project is not configured for migration. Create a `.code-forge/config.json` with `mode: migration` and a `migration.legacyRepoPath`, or use `/code-forge:forge-new` for net-new development."
+This skill requires project config with `"mode": "migration"`. If the config is missing or mode is not "migration", inform the user: "This project is not configured for migration. Create a `.preflight/config.json` with `mode: migration` and a `migration.legacyRepoPath`, or use `/preflight:forge-new` for net-new development."
 </HARD-GATE>
 
 Verify from config:
@@ -103,7 +103,7 @@ After Phase 2 completes and before the first Stage 1 run, rebuild the dependency
 
 ## Stage 1 Gate + Push + Stage 2 Loop
 
-After the dependency map refresh, invoke the full `/code-forge:fix-and-close` pipeline. The same rules apply:
+After the dependency map refresh, invoke the full `/preflight:fix-and-close` pipeline. The same rules apply:
 
 **Hard caps:** Stage 1 max 5 iterations. Stage 2 max 3 iterations (override: `--max-stage2=N` up to 8). Non-negotiable.
 

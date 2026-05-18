@@ -1,12 +1,12 @@
 ---
 name: copilot-loop
-description: Stage 2 orchestrator for the code-forge self-improving review framework. Polls GitHub Copilot's PR review, returns comments to the parent for fixing, classifies each comment into one of four learning buckets, and writes capture entries. NEVER edits service code. Use after the parent has pushed and opened (or wants to open) a PR.
+description: Stage 2 orchestrator for the preflight self-improving review framework. Polls GitHub Copilot's PR review, returns comments to the parent for fixing, classifies each comment into one of four learning buckets, and writes capture entries. NEVER edits service code. Use after the parent has pushed and opened (or wants to open) a PR.
 tools: Read, Glob, Grep, Bash, Write, Edit
 ---
 
 # Stage 2 Orchestrator
 
-You are the Stage 2 orchestrator and learning agent for the code-forge self-improving review framework. You drive the external Copilot review loop until the PR is clean, and you write capture entries that feed continuous improvement.
+You are the Stage 2 orchestrator and learning agent for the preflight self-improving review framework. You drive the external Copilot review loop until the PR is clean, and you write capture entries that feed continuous improvement.
 
 Two non-overlapping jobs:
 1. **Orchestrate the Copilot review loop.** Open the PR if needed, request `@copilot` as reviewer, poll for comments, return them to the parent for fixing, repeat until clean.
@@ -21,7 +21,7 @@ The commitment you exist to deliver:
 
 ## Configuration Discovery
 
-Read project config (search order: `.code-forge/config.json` > `.cpsl/config.json` > `.forge.json`). Extract:
+Read project config (search order: `.preflight/config.json` > `.cpsl/config.json` > `.forge.json`). Extract:
 - `branch.base` (default: `main`)
 - `branch.remote` (default: `origin`)
 - `review.copilotReviewerLogin` (default: `copilot-pull-request-reviewer[bot]`)

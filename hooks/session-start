@@ -20,7 +20,7 @@ RUBRIC=""
 CAPTURES=""
 
 # Search order for project config
-for candidate in ".code-forge/config.json" ".cpsl/config.json" ".forge.json"; do
+for candidate in ".preflight/config.json" ".cpsl/config.json" ".forge.json"; do
   if [ -f "$candidate" ]; then
     CONFIG_FILE="$candidate"
     break
@@ -58,13 +58,13 @@ fi
 
 # Build status line (short metadata)
 if [ "$MODE" = "generic" ] && [ -z "$CONFIG_FILE" ]; then
-  STATUS="code-forge active | mode=generic (no project config) | default rubric"
+  STATUS="preflight active | mode=generic (no project config) | default rubric"
 elif [ "$MODE" = "migration" ]; then
-  STATUS="code-forge active | mode=migration | config=$CONFIG_FILE | rubric=$RUBRIC | $CAPTURES"
+  STATUS="preflight active | mode=migration | config=$CONFIG_FILE | rubric=$RUBRIC | $CAPTURES"
 elif [ "$MODE" = "api-new" ]; then
-  STATUS="code-forge active | mode=api-new | config=$CONFIG_FILE | rubric=$RUBRIC | $CAPTURES"
+  STATUS="preflight active | mode=api-new | config=$CONFIG_FILE | rubric=$RUBRIC | $CAPTURES"
 else
-  STATUS="code-forge active | mode=$MODE | config=$CONFIG_FILE | rubric=$RUBRIC | $CAPTURES"
+  STATUS="preflight active | mode=$MODE | config=$CONFIG_FILE | rubric=$RUBRIC | $CAPTURES"
 fi
 
 # Load the routing skill content — this is the behavioral decision tree

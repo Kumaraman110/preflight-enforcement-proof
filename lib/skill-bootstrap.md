@@ -5,7 +5,7 @@ Every skill MUST self-detect its environment as its first action. Do NOT depend 
 ## Detection Logic (execute as Step 0 before any skill-specific work)
 
 1. Search for config in this order (first match wins):
-   - `.code-forge/config.json` in working directory
+   - `.preflight/config.json` in working directory
    - `.cpsl/config.json` in working directory
    - `.forge.json` in working directory
    - Walk up parent directories (max 5 levels) repeating the same search

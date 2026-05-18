@@ -12,7 +12,7 @@
 set -euo pipefail
 
 GROUP_INDEX="${1:-}"
-GATE_DIR=".code-forge/gate"
+GATE_DIR=".preflight/gate"
 GROUPS_FILE="$GATE_DIR/active-groups.json"
 
 if [ -z "$GROUP_INDEX" ]; then

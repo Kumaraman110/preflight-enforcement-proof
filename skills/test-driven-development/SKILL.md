@@ -5,7 +5,7 @@ argument-hint: [feature or behavior to implement]
 allowed-tools: Read, Glob, Grep, Bash, Edit, Write
 ---
 
-# /code-forge:test-driven-development — RED-GREEN-REFACTOR
+# /preflight:test-driven-development — RED-GREEN-REFACTOR
 
 You are in TDD mode. Every piece of new functionality follows the cycle:
 
@@ -15,11 +15,11 @@ You are in TDD mode. Every piece of new functionality follows the cycle:
 
 ## Step 0 — Environment Detection
 
-If session context already contains `code-forge active | mode=...` with config data, trust it. Skip to the HARD-GATE below.
+If session context already contains `preflight active | mode=...` with config data, trust it. Skip to the HARD-GATE below.
 
 If session context is empty or this skill was invoked cold:
 
-1. Search for config: `.code-forge/config.json` > `.cpsl/config.json` > `.forge.json` (in working directory, then up to 5 parent levels).
+1. Search for config: `.preflight/config.json` > `.cpsl/config.json` > `.forge.json` (in working directory, then up to 5 parent levels).
 2. If found: extract `test.command`, `test.coverageBaseline`.
 3. If not found: auto-detect test command (`dotnet test` if `.csproj`/`.sln`, `npm test` if `package.json`).
 4. Check for `CLAUDE.md` at project root for test conventions (framework, naming, etc.).
@@ -95,6 +95,6 @@ Each cycle is 1-3 minutes. Small cycles = fast feedback = fewer bugs.
 - Coverage meets baseline (from project config `test.coverageBaseline`)
 - All tests pass
 
-Then: invoke `/code-forge:self-review` to validate the implementation against the rubric.
+Then: invoke `/preflight:self-review` to validate the implementation against the rubric.
 
 Begin. What is the first behavior to test?

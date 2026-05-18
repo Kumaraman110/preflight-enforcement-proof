@@ -2,7 +2,7 @@
 
 ## Why Prompts Are Not Enough
 
-Every `<HARD-GATE>` in code-forge is a markdown instruction that the LLM reads and (usually) follows. But:
+Every `<HARD-GATE>` in preflight is a markdown instruction that the LLM reads and (usually) follows. But:
 
 - At 65%+ context, attention drifts from instructions read 40K tokens ago
 - Under user pressure ("just push it"), the model weighs user instruction against HARD-GATE
@@ -32,9 +32,9 @@ User/Agent requests: git push
 ┌─────────────────────────────────────┐
 │ pre-push-gate checks evidence files │
 │                                     │
-│ .code-forge/gate/tests-pass    ✓?   │
-│ .code-forge/gate/stage1-clean  ✓?   │
-│ .code-forge/gate/map-validated ✓?   │
+│ .preflight/gate/tests-pass    ✓?   │
+│ .preflight/gate/stage1-clean  ✓?   │
+│ .preflight/gate/map-validated ✓?   │
 │                                     │
 │ Each file must:                     │
 │ 1. Exist (gate has run)             │
@@ -75,7 +75,7 @@ This prevents:
 ## Bypassing (Intentional)
 
 The gate can be intentionally bypassed by:
-1. Deleting `.code-forge/gate/` directory (destructive, obvious in history)
+1. Deleting `.preflight/gate/` directory (destructive, obvious in history)
 2. Manually writing evidence files with current HEAD (requires knowing the mechanism)
 3. Running git push outside of Claude Code (the hook is Claude Code–specific)
 
@@ -83,10 +83,10 @@ These are all intentional acts that require understanding what you're bypassing.
 
 ## .gitignore
 
-The `.code-forge/gate/` directory should be in `.gitignore` — evidence is local operational state, not source. Each machine tracks its own gates.
+The `.preflight/gate/` directory should be in `.gitignore` — evidence is local operational state, not source. Each machine tracks its own gates.
 
 ```
 # Add to .gitignore
-.code-forge/gate/
-.code-forge/metrics.json
+.preflight/gate/
+.preflight/metrics.json
 ```

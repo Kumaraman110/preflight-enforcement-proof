@@ -12,7 +12,7 @@
 set -euo pipefail
 
 GROUPS_JSON="${1:-[]}"
-GATE_DIR=".code-forge/gate"
+GATE_DIR=".preflight/gate"
 GROUPS_FILE="$GATE_DIR/active-groups.json"
 
 mkdir -p "$GATE_DIR"

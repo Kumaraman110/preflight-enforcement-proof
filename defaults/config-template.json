@@ -1,5 +1,5 @@
 {
-  "$schema_note": "Copy this file to your project as .code-forge/config.json and edit for your project.",
+  "$schema_note": "Copy this file to your project as .preflight/config.json and edit for your project.",
 
   "mode": "generic",
 

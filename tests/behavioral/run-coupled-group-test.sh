@@ -33,7 +33,7 @@ setup() {
   cd "$TEMP_DIR"
   git init -q
   touch dummy && git add dummy && git commit -qm "init"
-  mkdir -p .code-forge/gate
+  mkdir -p .preflight/gate
 }
 
 teardown() {

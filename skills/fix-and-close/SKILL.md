@@ -1,11 +1,11 @@
 ---
 name: fix-and-close
-description: Stage 1 gate → commit → push → Stage 2 Copilot review loop → clean PR. Use when you have changes ready to push and want the full review pipeline. Works with any project that has (or doesn't have) a code-forge config. Handles coupled-finding grouping, hard iteration caps, oscillation, divergence, and learning capture.
+description: Stage 1 gate → commit → push → Stage 2 Copilot review loop → clean PR. Use when you have changes ready to push and want the full review pipeline. Works with any project that has (or doesn't have) a preflight config. Handles coupled-finding grouping, hard iteration caps, oscillation, divergence, and learning capture.
 argument-hint: [optional commit-message hint]
 allowed-tools: Read, Glob, Grep, Bash, Edit, Write, Agent
 ---
 
-# /code-forge:fix-and-close — Full Review Pipeline
+# /preflight:fix-and-close — Full Review Pipeline
 
 You are running the full push-to-clean pipeline: Stage 1 gate → commit → push → Stage 2 Copilot loop → clean PR.
 
@@ -58,11 +58,11 @@ Instead: report the cap hit, list remaining findings, and ask the user for direc
 
 ## Step 0 — Environment Detection
 
-If session context already contains `code-forge active | mode=...` with config path and rubric path, trust it — the session-start hook already parsed the config. Skip to step 5 (rubric existence check only).
+If session context already contains `preflight active | mode=...` with config path and rubric path, trust it — the session-start hook already parsed the config. Skip to step 5 (rubric existence check only).
 
 If session context is empty or this skill was invoked cold (no hook ran):
 
-1. Search for config: `.code-forge/config.json` > `.cpsl/config.json` > `.forge.json` (in working directory, then up to 5 parent levels).
+1. Search for config: `.preflight/config.json` > `.cpsl/config.json` > `.forge.json` (in working directory, then up to 5 parent levels).
 2. If found: extract all fields below.
 3. If not found: use defaults below.
 4. Check for `CLAUDE.md` at project root for supplementary conventions.
@@ -184,13 +184,13 @@ If ANY verification fails, DO NOT declare success. Surface the gap with the actu
 
 ### Metrics Collection (MANDATORY)
 
-14. After outcome is determined (SUCCESS, CAPPED, STUCK, DIVERGING, ERROR), write a run entry to `<project-root>/.code-forge/metrics.json` following the schema in `${CLAUDE_PLUGIN_ROOT}/lib/metrics.md`. Record:
+14. After outcome is determined (SUCCESS, CAPPED, STUCK, DIVERGING, ERROR), write a run entry to `<project-root>/.preflight/metrics.json` following the schema in `${CLAUDE_PLUGIN_ROOT}/lib/metrics.md`. Record:
     - Stage 1: iterations, findingsPerIteration, capHit, couplingGroupsIdentified, validatorWarnings, durationSeconds
     - Stage 2: iterations, findingsPerIteration, capHit, stableFindings, trivialStableFindings, unstableFindings, durationSeconds
     - Capture: counts per bucket
     - Outcome and total duration
 
-    Create the `.code-forge/` directory if it doesn't exist. Do NOT skip metrics because the run failed — failed runs are the most valuable data points (they reveal where the system breaks).
+    Create the `.preflight/` directory if it doesn't exist. Do NOT skip metrics because the run failed — failed runs are the most valuable data points (they reveal where the system breaks).
 
 ### Final Summary
 

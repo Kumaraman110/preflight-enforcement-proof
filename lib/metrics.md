@@ -1,6 +1,6 @@
 # Metrics Collection
 
-Every skill invocation that runs a review loop MUST write metrics to `<project-root>/.code-forge/metrics.json`. This is the evidence mechanism that proves the self-improving loop actually improves.
+Every skill invocation that runs a review loop MUST write metrics to `<project-root>/.preflight/metrics.json`. This is the evidence mechanism that proves the self-improving loop actually improves.
 
 ## Why This Exists
 
@@ -67,14 +67,14 @@ The orchestrator (fix-and-close or migrate-service) collects metrics at these po
 
 ## Writing Metrics
 
-After the skill completes (SUCCESS, CAPPED, STUCK, DIVERGING, or ERROR), append the run entry to `.code-forge/metrics.json`:
+After the skill completes (SUCCESS, CAPPED, STUCK, DIVERGING, or ERROR), append the run entry to `.preflight/metrics.json`:
 
 ```bash
 # Read existing metrics (or create empty structure)
-if [ -f .code-forge/metrics.json ]; then
-  existing=$(cat .code-forge/metrics.json)
+if [ -f .preflight/metrics.json ]; then
+  existing=$(cat .preflight/metrics.json)
 else
-  mkdir -p .code-forge
+  mkdir -p .preflight
   existing='{"runs":[]}'
 fi
 
@@ -85,7 +85,7 @@ data = json.loads('''$existing''')
 new_run = json.loads('''$NEW_RUN_JSON''')
 data['runs'].append(new_run)
 print(json.dumps(data, indent=2))
-" > .code-forge/metrics.json
+" > .preflight/metrics.json
 ```
 
 ## Reading Metrics (for trend analysis)
@@ -111,4 +111,4 @@ After 5 services:
 
 ## .gitignore
 
-Add `.code-forge/metrics.json` to `.gitignore` — metrics are local operational data, not source. Each machine tracks its own runs. Team-wide analysis would aggregate from CI artifacts (future work).
+Add `.preflight/metrics.json` to `.gitignore` — metrics are local operational data, not source. Each machine tracks its own runs. Team-wide analysis would aggregate from CI artifacts (future work).

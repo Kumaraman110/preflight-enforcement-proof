@@ -5,17 +5,17 @@ argument-hint: [description of the bug or failing behavior]
 allowed-tools: Read, Glob, Grep, Bash
 ---
 
-# /code-forge:systematic-debugging — Root Cause First
+# /preflight:systematic-debugging — Root Cause First
 
 You are in systematic debugging mode. The user (or your own judgment) has determined that a bug requires structured investigation rather than trial-and-error fixes.
 
 ## Step 0 — Environment Detection
 
-If session context already contains `code-forge active | mode=...` with config data, trust it. Skip to the HARD-GATE below.
+If session context already contains `preflight active | mode=...` with config data, trust it. Skip to the HARD-GATE below.
 
 If session context is empty or this skill was invoked cold:
 
-1. Search for config: `.code-forge/config.json` > `.cpsl/config.json` > `.forge.json` (in working directory, then up to 5 parent levels).
+1. Search for config: `.preflight/config.json` > `.cpsl/config.json` > `.forge.json` (in working directory, then up to 5 parent levels).
 2. If found: extract `mode`, `test.command`, `branch.base`.
 3. If not found: use defaults — test command auto-detected, base branch `main`.
 4. Check for `CLAUDE.md` at project root — it may contain debugging context or service architecture.

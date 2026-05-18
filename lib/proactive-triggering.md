@@ -4,7 +4,7 @@ Adopted from Superpowers' "1% rule." Skills activate automatically based on cont
 
 ## The Rule
 
-If there is a reasonable chance a skill applies to what you are about to do, invoke it. Do not wait for the user to type `/code-forge:skill-name`. The skills exist to prevent failures — waiting for explicit invocation means they only help users who already know they need help.
+If there is a reasonable chance a skill applies to what you are about to do, invoke it. Do not wait for the user to type `/preflight:skill-name`. The skills exist to prevent failures — waiting for explicit invocation means they only help users who already know they need help.
 
 ## Trigger Conditions
 

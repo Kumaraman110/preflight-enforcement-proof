@@ -5,19 +5,19 @@ argument-hint: [optional scope hint, e.g. "just the new file" or "skip tests"]
 allowed-tools: Read, Glob, Grep, Bash, Edit, Agent
 ---
 
-# /code-forge:self-review — Stage 1 Standalone
+# /preflight:self-review — Stage 1 Standalone
 
-You are running a standalone Stage 1 self-review. This is the same gate that `/code-forge:fix-and-close` runs before every push, invoked here on demand.
+You are running a standalone Stage 1 self-review. This is the same gate that `/preflight:fix-and-close` runs before every push, invoked here on demand.
 
 The user may have passed `$ARGUMENTS` as scope hint. Treat it as advisory — actual scope is always the current diff.
 
 ## Step 0 — Environment Detection
 
-If session context already contains `code-forge active | mode=...` with config path and rubric path, trust it — the session-start hook already parsed the config. Skip to step 5 (rubric existence check only).
+If session context already contains `preflight active | mode=...` with config path and rubric path, trust it — the session-start hook already parsed the config. Skip to step 5 (rubric existence check only).
 
 If session context is empty or this skill was invoked cold (no hook ran):
 
-1. Search for config: `.code-forge/config.json` > `.cpsl/config.json` > `.forge.json` (in working directory, then up to 5 parent levels).
+1. Search for config: `.preflight/config.json` > `.cpsl/config.json` > `.forge.json` (in working directory, then up to 5 parent levels).
 2. If found: extract `mode`, `rubric`, `branch.base`, `test.command`, `loop.*`, `capture.*`.
 3. If not found: use defaults — mode `generic`, rubric from `${CLAUDE_PLUGIN_ROOT}/defaults/rubric-generic.md`, base branch `main`, test command auto-detected.
 4. Check for `CLAUDE.md` at project root for supplementary conventions.
@@ -42,7 +42,7 @@ Always invoke the rubric-reviewer sub-agent. Do not skip invocation because the 
 
 ## Execution
 
-1. **Confirm project state.** Look for a project root indicator (`.git/`, `CLAUDE.md`, `.code-forge/config.json`). If nothing found, inform user but proceed — the sub-agent will use default rubric.
+1. **Confirm project state.** Look for a project root indicator (`.git/`, `CLAUDE.md`, `.preflight/config.json`). If nothing found, inform user but proceed — the sub-agent will use default rubric.
 
 2. **Determine diff scope:**
    - Feature branch (starts with `feature/`, `chore/`, `fix/`): scope = `<base>...HEAD` + uncommitted
@@ -79,7 +79,7 @@ Always invoke the rubric-reviewer sub-agent. Do not skip invocation because the 
 - Push to any remote
 - Commit (user decides when)
 - Open a PR
-- Invoke the Copilot loop (that's `/code-forge:fix-and-close`)
+- Invoke the Copilot loop (that's `/preflight:fix-and-close`)
 - Write to capture files (that's Stage 2's job)
 
 ## Communication

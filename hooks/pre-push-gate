@@ -6,16 +6,16 @@
 # Exit 1 = block push (outputs reason to stderr)
 #
 # Evidence files written by the review loop:
-#   .code-forge/gate/stage1-clean   — written when Stage 1 returns CLEAN
-#   .code-forge/gate/tests-pass     — written when dotnet test returns 0
-#   .code-forge/gate/map-validated  — written when dependency-map validation passes
+#   .preflight/gate/stage1-clean   — written when Stage 1 returns CLEAN
+#   .preflight/gate/tests-pass     — written when dotnet test returns 0
+#   .preflight/gate/map-validated  — written when dependency-map validation passes
 #
 # Each evidence file contains a timestamp and the git HEAD at time of check.
 # If HEAD has moved since the evidence was written, the evidence is STALE.
 
 set -euo pipefail
 
-GATE_DIR=".code-forge/gate"
+GATE_DIR=".preflight/gate"
 CURRENT_HEAD=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
 
 check_evidence() {
@@ -23,7 +23,7 @@ check_evidence() {
   local label="$2"
 
   if [ ! -f "$GATE_DIR/$file" ]; then
-    echo "BLOCKED: $label has not run. Run /code-forge:fix-and-close or /code-forge:self-review first." >&2
+    echo "BLOCKED: $label has not run. Run /preflight:fix-and-close or /preflight:self-review first." >&2
     exit 1
   fi
 

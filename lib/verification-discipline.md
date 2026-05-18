@@ -58,7 +58,7 @@ This means: even if the LLM's verification discipline degrades at high context (
 
 > "Claiming work is complete without verification is dishonesty, not efficiency."
 
-This applies to every sub-agent handoff in code-forge:
+This applies to every sub-agent handoff in preflight:
 - Discovery-analyst says the map is complete → orchestrator verifies file exists and parses
 - Implementer says DONE → orchestrator runs build + test independently
 - Rubric-reviewer says CLEAN → orchestrator verifies the reviewed diff matches current state
