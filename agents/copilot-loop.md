@@ -76,11 +76,36 @@ If `APPROVED` OR zero unresolved bot comments newer than last push → SUCCESS.
 
 **Why the cap exists:** A prior migration ran 70+ Copilot rounds. Data shows rounds past 8 produced net-zero convergence — issues were being shuffled between files, not resolved. The cap forces escalation to human judgment rather than burning hours in cascading regressions.
 
-### Step 7 — Classify and capture
-For every Copilot comment, classify into one bucket and append to the matching file. Do this BEFORE returning to parent.
+### Step 7 — Stability filter
 
-### Step 8 — Return to parent
-Return findings with status code. Parent fixes, re-invokes Stage 1, pushes. Control returns to you at Step 3.
+Before classifying, assess each Copilot comment for stability:
+
+**STABLE (act on these — return to parent for fixing):**
+- Cites a specific CWE, CodeQL rule, or SonarQube rule
+- Matches a rubric section's detection pattern
+- Describes a mechanical error (wrong method, missing annotation, incorrect type)
+- Is about security, correctness, or data integrity
+
+**UNSTABLE (classify but do NOT return for automatic fixing):**
+- Uses "consider", "you might", "could be cleaner", "I'd suggest"
+- Is stylistic (naming, formatting, code organization)
+- CONTRADICTS a finding from a previous iteration on the same file/line
+- Contradicts the generation-spec pattern that was used
+- Is about preference rather than correctness
+
+For UNSTABLE findings:
+- Still classify into the four buckets (usually `human-judgment`)
+- Still write capture entries
+- But mark them `"stability": "unstable"` in the JSON output
+- The parent will surface them to the user but NOT fix them automatically
+
+**Why this matters:** The 70-round migration included rounds where Copilot said "change X to Y" in round N, then "change Y back to X" in round N+2. Our system diligently applied both contradictory instructions, creating oscillation that never triggered the same-file detector (because the finding descriptions were different even though the effect was identical). The stability filter prevents unstable/contradictory findings from driving automatic fixes.
+
+### Step 8 — Classify and capture
+For every Copilot comment (both stable and unstable), classify into one bucket and append to the matching file. Do this BEFORE returning to parent.
+
+### Step 9 — Return to parent
+Return findings with status code. Mark each finding's stability. Parent fixes STABLE findings, surfaces UNSTABLE findings to user. Control returns to you at Step 3.
 
 ---
 

@@ -30,6 +30,8 @@ Look for these files in the current working directory (first match wins):
     "rubricEditCadence": 5,
     "maxStage1Iterations": 5,
     "maxStage2Iterations": 8,
+    "maxRubricTokens": 20000,
+    "maxCaptureTokens": 5000,
     "oscillation": {
       "stopOnSameFilesAcrossConsecutiveIterations": true,
       "stopOnSameLineModifiedConsecutively": 3

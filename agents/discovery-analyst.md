@@ -84,6 +84,36 @@ You are READ-ONLY. You never modify any file, in any repo.
 **Recommendation:** <one paragraph>
 ```
 
+### Dependency Map (REQUIRED — used by fix loop for coupling analysis)
+
+In addition to the markdown report, produce a `dependency-map.json` that the fix-and-close orchestrator will use to determine coupling between findings. This is NOT optional — without it, coupling analysis falls back to LLM judgment (unreliable).
+
+```json
+{
+  "files": {
+    "Services/TokenService.cs": {
+      "imports": ["Models/TokenResponse.cs", "Configuration/TokenOptions.cs"],
+      "injectedBy": ["Program.cs"],
+      "callsInto": ["HttpClient"],
+      "calledBy": ["Services/AccountLookupService.cs", "Services/V4Strategy.cs"]
+    }
+  },
+  "couplingGroups": [
+    {
+      "reason": "shared async call chain — TokenService → AccountLookupService → V4Strategy",
+      "files": ["Services/TokenService.cs", "Services/AccountLookupService.cs", "Services/V4Strategy.cs"]
+    },
+    {
+      "reason": "DI registration graph — options bound in Program.cs, consumed in these services",
+      "files": ["Program.cs", "Configuration/AccountLookupOptions.cs", "Services/AccountLookupService.cs"]
+    }
+  ],
+  "independent": ["Dockerfile", "infra/AccountLookupStack.cs", "Properties/launchSettings.json"]
+}
+```
+
+The `couplingGroups` array is what the orchestrator uses at fix time. When findings arrive on files in the same group, they MUST be fixed together. Files in `independent` can always be fixed alone.
+
 ## Rules
 
 - Be precise about locations. File paths + line numbers.

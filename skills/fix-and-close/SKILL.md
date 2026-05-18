@@ -93,18 +93,30 @@ Read project config (`.code-forge/config.json` > `.cpsl/config.json` > `.forge.j
 
    a. **Read ALL findings at once.** Do not start fixing after reading the first one.
    
-   b. **Group by coupling.** Findings are coupled if they share ANY of:
+   b. **Group by coupling.** Use the dependency map (if Phase 1 produced one) as the primary source. Otherwise, findings are coupled if they share ANY of:
       - Same file
       - Same class/method
       - Same call chain (method A calls method B — findings on both are coupled)
       - Same DI registration (finding on the service + finding on the consumer are coupled)
       - Causal relationship (fixing A would change the lines where B exists)
    
-   c. **Fix independent groups first.** Findings that touch isolated files with no interaction (Dockerfile, CI yaml, standalone config) — fix these one by one. They can't cascade.
+   c. **Fix independent findings directly.** Findings that touch isolated files with no interaction (Dockerfile, CI yaml, standalone config) — fix these yourself, one by one. They can't cascade.
    
-   d. **Fix each coupled group as ONE design decision.** Read every finding in the group. Understand their interaction. Design a single coherent change that satisfies ALL constraints simultaneously. Apply it as one edit. Do NOT fix finding 1, test, fix finding 2, test — that's how cascades start.
+   d. **Dispatch each coupled group to the `implementer` sub-agent.** Compose a fix brief containing:
+      - The files in the group (and ONLY those files)
+      - All findings in the group (they MUST be fixed simultaneously)
+      - The coupling reason
+      - The applicable generation-spec pattern (if one exists)
+      - What was tried previously on those files (from your fix history this session)
+      - The constraint (typically: `dotnet build` + `dotnet test` must pass)
+      
+      The implementer returns DONE or BLOCKED.
+      - DONE: accept the fix, continue.
+      - BLOCKED: either re-scope the group (split differently, provide more context) or escalate to user.
    
    e. **After all groups fixed:** re-run tests. Re-invoke Stage 1.
+   
+   **Why dispatch to implementer instead of fixing yourself:** Your context accumulates Phase 1 output, fix histories, previous diffs, and orchestration state. After 3 rounds, you're at 70%+ context utilization. The implementer starts fresh at ~5% with exactly the files and findings it needs. It can't be confused by stale context from previous rounds. This is how we avoid the 70-round pattern where late-round fixes degraded because the session was saturated.
 
 7. **Track convergence:**
    - Record finding count per iteration: `[iter1: 5, iter2: 3, iter3: 4, iter4: 2, ...]`
