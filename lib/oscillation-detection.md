@@ -1,8 +1,10 @@
-# Oscillation and Divergence Detection
+# Oscillation, Divergence, and Cap Detection
 
 Reference material for the `copilot-loop` agent and the `fix-and-close` skill. Defines termination conditions for review loops.
 
-## Three Termination Conditions
+A prior migration ran **70+ Copilot review rounds** before human intervention. Post-mortem analysis showed rounds 9-70 produced net-zero convergence — issues were being shuffled between files via cascading regressions, not resolved. Hard caps exist to prevent this from recurring.
+
+## Four Termination Conditions
 
 ### 1. Oscillation (STUCK)
 
@@ -28,7 +30,27 @@ Reference material for the `copilot-loop` agent and the `fix-and-close` skill. D
 **Action on first detection:** Emit DIVERGING warning. Continue one more round (benefit of the doubt).
 **Action on persistence:** Report `STUCK` with the count history. Stop. Surface.
 
-### 3. Success (loop terminates normally)
+### 3. Hard Cap (CAPPED)
+
+**Definition:** The loop has hit its maximum allowed iterations regardless of convergence behavior.
+
+**Limits:**
+- Stage 1 (pre-push review): **5 iterations maximum**
+- Stage 2 (Copilot review): **8 iterations maximum**
+
+**Rationale from data:** On a 70+ round migration, analysis showed:
+- Rounds 1-4: genuine convergence (fixing real initial issues)
+- Rounds 5-8: diminishing returns (fixing interaction effects)
+- Rounds 9+: net-zero or negative progress (cascading regressions — fixing A breaks B, fixing B breaks C)
+
+The caps are set at the boundary where the loop transitions from "productive" to "cascading." Rounds past the cap produce negative value — they introduce more issues than they resolve.
+
+**Action:** Report `CAPPED` with:
+- The iteration count history (showing finding counts per round)
+- All remaining unresolved findings
+- A recommendation to the user: "Remaining findings are likely architecturally coupled. Consider: (1) addressing them as a group in a fresh context, (2) accepting tech debt with an explicit plan, or (3) rethinking the approach."
+
+### 4. Success (loop terminates normally)
 
 **Definition:** External reviewer returns no actionable findings.
 - Review state is `APPROVED`, or

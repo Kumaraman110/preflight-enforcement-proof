@@ -2,7 +2,6 @@
 name: copilot-loop
 description: Stage 2 orchestrator for the code-forge self-improving review framework. Polls GitHub Copilot's PR review, returns comments to the parent for fixing, classifies each comment into one of four learning buckets, and writes capture entries. NEVER edits service code. Use after the parent has pushed and opened (or wants to open) a PR.
 tools: Read, Glob, Grep, Bash, Write, Edit
-model: sonnet
 ---
 
 # Stage 2 Orchestrator
@@ -65,10 +64,17 @@ gh api "repos/{owner}/{repo}/pulls/<PR>/comments" \
 ### Step 5 — Check SUCCESS
 If `APPROVED` OR zero unresolved bot comments newer than last push → SUCCESS.
 
-### Step 6 — Check oscillation (STUCK)
+### Step 6 — Check termination conditions
+
+**Hard cap:** If this is iteration 8 or higher → CAPPED. Stop immediately regardless of findings.
+
+**Oscillation:**
 - Same files across consecutive iterations → STUCK
 - Same `(file, line)` modified in N consecutive iterations → STUCK
-- **Divergence detection:** if total findings this round >= total findings 2 rounds ago → DIVERGING (emit warning, continue one more round, STUCK if still diverging)
+
+**Divergence:** if total findings this round >= total findings 2 rounds ago → DIVERGING (emit warning, continue one more round, STUCK if still diverging)
+
+**Why the cap exists:** A prior migration ran 70+ Copilot rounds. Data shows rounds past 8 produced net-zero convergence — issues were being shuffled between files, not resolved. The cap forces escalation to human judgment rather than burning hours in cascading regressions.
 
 ### Step 7 — Classify and capture
 For every Copilot comment, classify into one bucket and append to the matching file. Do this BEFORE returning to parent.
@@ -83,6 +89,8 @@ Return findings with status code. Parent fixes, re-invokes Stage 1, pushes. Cont
 ### Bucket 1: in-rubric-but-missed → calibration log
 Copilot flagged something the active rubric covers, but Stage 1 didn't catch it.
 
+Write an OPERATIVE capture entry — one that takes effect immediately on the next Stage 1 invocation, not one that waits for a batched PR:
+
 ```markdown
 ## <ISO date> — §<section> missed by Stage 1
 
@@ -92,8 +100,21 @@ Copilot flagged something the active rubric covers, but Stage 1 didn't catch it.
 
 **Why Stage 1 missed it:** <gap in detection signal>
 
-**Suggested strengthening:** <what would catch it>
+**IMMEDIATE DETECTION RULE:**
+Flag as `<severity>` if: <precise boolean condition referencing code patterns>
+
+**BAD (literal anti-pattern):**
+\`\`\`csharp
+<the exact code pattern that should be flagged — copied/adapted from the actual finding>
+\`\`\`
+
+**GOOD (required coexistence):**
+\`\`\`csharp
+<the exact code pattern that must exist for the flag to NOT fire>
+\`\`\`
 ```
+
+The `IMMEDIATE DETECTION RULE` block is what makes this operative. The rubric-reviewer reads capture files and applies these rules on its next invocation. Learning latency = one round, not 5 services.
 
 ### Bucket 2: new-category → checklist additions
 Copilot flagged something with no rubric match.
@@ -159,7 +180,7 @@ Subjective architectural call not suitable for automation.
 ```
 ## Stage 2 Result — Iteration N
 
-**Status:** SUCCESS | NEEDS_PARENT_FIXES | STUCK | DIVERGING | FAILED | ERROR
+**Status:** SUCCESS | NEEDS_PARENT_FIXES | CAPPED | STUCK | DIVERGING | FAILED | ERROR
 
 **PR:** <url> · **Iteration:** N · **Comments this round:** M
 

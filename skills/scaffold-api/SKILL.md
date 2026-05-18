@@ -49,10 +49,15 @@ If no config exists, that's fine — use default API rubric from `${CLAUDE_PLUGI
 
 ## Phase 2 — Generation
 
-Generate the service skeleton reading positive patterns from:
-- Reference services in the same repo (if they exist)
-- The project's CLAUDE.md (if it exists)
-- The plugin's default API design rubric (detection rules → invert into generation patterns)
+<HARD-GATE>
+Before writing ANY code, read `${CLAUDE_PLUGIN_ROOT}/defaults/generation-specs/dotnet-service.md`. For every pattern that applies, USE IT EXACTLY. Do not improvise. The generation spec is pre-validated against the detection spec — patterns from it will never be flagged by Stage 1. Improvised patterns WILL be flagged, adding review rounds.
+</HARD-GATE>
+
+Generate the service skeleton reading patterns from (in priority order):
+1. `${CLAUDE_PLUGIN_ROOT}/defaults/generation-specs/dotnet-service.md` (mandatory — pre-validated patterns)
+2. Reference services in the same repo (if they exist)
+3. The project's CLAUDE.md (if it exists)
+4. The plugin's default API design rubric (for rules not covered by generation spec)
 
 The skeleton should include:
 1. SDK-style `.csproj` targeting modern .NET

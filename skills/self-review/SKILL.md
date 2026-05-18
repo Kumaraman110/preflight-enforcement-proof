@@ -46,13 +46,21 @@ Always invoke the rubric-reviewer sub-agent. Do not skip invocation because the 
 
 5. **Present findings.** Blocker first, then major, then minor. For each: file, line, section, issue, suggestion.
 
-6. **Apply mechanical fixes directly.** Blocker/major with concrete suggestions → Edit. Ambiguous or judgment-requiring → ask user.
+6. **Apply Coupled-Group Fix Protocol:**
+
+   a. Read ALL findings before fixing ANY.
+   b. Group by coupling: same file, same call chain, same DI graph, causal relationship.
+   c. Fix independent findings first (isolated files, no interaction).
+   d. Fix each coupled group as ONE coherent change — design a single edit that satisfies all constraints in the group simultaneously.
+   e. Ambiguous or judgment-requiring findings → ask user.
 
 7. **Re-invoke `rubric-reviewer`.** Same scope, post-fix. Back to step 4.
 
-8. **Divergence detection.** Track finding counts per iteration. If `count[N] >= count[N-2]` → STOP. Inform user: "Findings not converging. Structural issue likely. Consider addressing remaining findings as a group."
+8. **Hard cap: maximum 5 iterations.** On cap hit: STOP. Report remaining findings. Inform user: "Hit iteration cap. Remaining findings are likely structurally coupled. Recommend addressing them as a group with fresh context or asking for human direction."
 
-9. **Oscillation detection.** If same findings appear in two consecutive iterations → STOP. Report.
+9. **Divergence detection.** Track finding counts per iteration. If `count[N] >= count[N-2]` → STOP. Inform user: "Findings not converging. Remaining issues interact — each fix creates a new finding elsewhere."
+
+10. **Oscillation detection.** If same findings appear in two consecutive iterations → STOP. Report.
 
 ## What This Does NOT Do
 

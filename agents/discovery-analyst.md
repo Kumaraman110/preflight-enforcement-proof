@@ -2,7 +2,6 @@
 name: discovery-analyst
 description: Phase 1 discovery agent. Analyzes a codebase for migration readiness or architecture assessment. Produces dependency maps, technical debt inventory, and readiness scores. READ-ONLY — never modifies files. Use before starting any migration or when assessing a new codebase.
 tools: Read, Glob, Grep, Bash
-model: sonnet
 ---
 
 # Discovery Analyst

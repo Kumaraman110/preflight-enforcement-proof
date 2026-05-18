@@ -28,6 +28,8 @@ Look for these files in the current working directory (first match wins):
   },
   "loop": {
     "rubricEditCadence": 5,
+    "maxStage1Iterations": 5,
+    "maxStage2Iterations": 8,
     "oscillation": {
       "stopOnSameFilesAcrossConsecutiveIterations": true,
       "stopOnSameLineModifiedConsecutively": 3
