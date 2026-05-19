@@ -17,6 +17,7 @@ If you think there is even a 1% chance a skill applies to what you're about to d
 | Fix a test failure (2nd+ attempt on same test) | `/preflight:systematic-debugging` | Shotgun debugging averages 4.2 attempts. Systematic averages 1.8. After 2 failures, switch. |
 | Start migrating a service | `/preflight:migrate-service` | Skipping Phase 1 discovery has cost 4+ hours when dependencies cascaded. |
 | Push + PR + review loop (full pipeline) | `/preflight:fix-and-close` | Handles Stage 1 gate, commit, push, Stage 2 Copilot loop, capture, metrics — all with coupled-group protocol and iteration caps. |
+| Lock in a readiness score, pick an architectural approach, or propose a rubric/rule change | `/preflight:gps-decide` (skip for trivial reversible choices) | Confident-but-untested judgment ships unchallenged; a wrong one-way-door call costs weeks, not the seconds a stress-test pass takes |
 
 ## Red Flags — You Are Rationalizing
 
@@ -29,6 +30,7 @@ If you think there is even a 1% chance a skill applies to what you're about to d
 | "The previous iteration was clean, this fix is safe" | Fixes interact with other code. The cascading regression pattern (48% of the 70-round cost) starts with "this fix is safe." | Re-run Stage 1. Always. |
 | "I'll do the full pipeline later, let me just push this quick" | "Quick push" without gates = Copilot catches 5 things = 5 rounds × 300s = 25 minutes of waiting you could have avoided with 2 minutes of Stage 1. | Invoke fix-and-close. It handles everything. |
 | "Tests are passing, that's enough" | Tests verify behavior. Stage 1 verifies security, style, architecture. Orthogonal. Both must pass. | Run self-review after tests pass. |
+| "I've already decided, a stress-test will just slow me down" | Confident decisions are exactly the untested ones. A one-way-door call wrong costs weeks; the pass costs seconds. | Invoke gps-decide. If the decision is sound it survives the pass unchanged. |
 
 ## Verification Discipline (Always Active)
 
@@ -43,13 +45,14 @@ Before claiming ANY of these, the evidence must be FRESH (produced AFTER your la
 
 ## Skill Priority (When Multiple Apply)
 
-1. **Process skills first** — debugging, TDD, brainstorming. These determine HOW to approach.
+1. **Process skills first** — debugging, TDD, gps-decide. These determine HOW to approach.
 2. **Gate skills second** — self-review, fix-and-close. These ensure QUALITY before shipping.
 3. **Implementation skills third** — migrate-service, scaffold-api. These guide EXECUTION.
 
 "Migrate this service" → migrate-service (includes Phase 1 discovery before code).
 "Fix this test" → if 2nd attempt: systematic-debugging → then fix → then self-review before push.
 "Push this" → self-review (if evidence stale) → fix-and-close (if want full pipeline).
+"Should we do X?" → if stakes non-trivial: gps-decide → then execute the decision.
 
 ## What This Document Is NOT
 
