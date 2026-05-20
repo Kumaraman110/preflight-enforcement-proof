@@ -65,7 +65,7 @@ Then: `/preflight:scaffold-api FlightStatus`
 
 | Agent | Role | Edits Code? |
 |---|---|---|
-| `rubric-reviewer` | Walks rubric against diff, reports findings | Never |
+| `code-reviewer` | Walks rubric against diff, reports findings | Never |
 | `copilot-loop` | Polls Copilot, classifies findings, writes captures | Capture files only |
 | `discovery-analyst` | Phase 1 codebase analysis | Never |
 
@@ -73,7 +73,7 @@ Then: `/preflight:scaffold-api FlightStatus`
 
 ```
 You (main session)                    ← edits code, orchestrates
-  ├── rubric-reviewer (sub-agent)     ← reads rubric + diff, reports findings
+  ├── code-reviewer (sub-agent)     ← reads rubric + diff, reports findings
   ├── copilot-loop (sub-agent)        ← polls Copilot, classifies, captures
   └── discovery-analyst (sub-agent)   ← reads codebase, produces assessment
 ```

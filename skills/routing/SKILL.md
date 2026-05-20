@@ -40,7 +40,7 @@ Before claiming ANY of these, the evidence must be FRESH (produced AFTER your la
 |---|---|---|
 | "Tests pass" | `dotnet test` output you just ran showing 0 failures | "Should pass", previous run, implementer said so |
 | "Build is clean" | `dotnet build` output showing 0 errors 0 warnings | "Tests pass" (tests ≠ build) |
-| "Stage 1 clean" | rubric-reviewer output saying CLEAN on current diff | Previous iteration's CLEAN |
+| "Stage 1 clean" | code-reviewer output saying CLEAN on current diff | Previous iteration's CLEAN |
 | "Done" | All of the above + structural verification | "It works" without running it |
 
 ## Skill Priority (When Multiple Apply)
@@ -62,4 +62,4 @@ Before claiming ANY of these, the evidence must be FRESH (produced AFTER your la
 
 ## Subagent Exception
 
-If you were dispatched as a subagent (implementer, rubric-reviewer, copilot-loop, discovery-analyst), skip this routing. You have a specific task. Do it. Don't invoke other skills from within a subagent.
+If you were dispatched as a subagent (implementer, code-reviewer, copilot-loop, discovery-analyst), skip this routing. You have a specific task. Do it. Don't invoke other skills from within a subagent.

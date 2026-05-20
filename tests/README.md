@@ -11,7 +11,7 @@ Every change to the rubric, operative rules, copilot-loop classification, or cou
 | Suite | What it validates | When to run |
 |---|---|---|
 | `stage1` | Rubric has detection patterns for known-bad code | After any rubric edit |
-| `operative` | Confidence threshold wiring (Survived counts, severity promotion) | After changing rubric-reviewer or copilot-loop operative rule handling |
+| `operative` | Confidence threshold wiring (Survived counts, severity promotion) | After changing code-reviewer or copilot-loop operative rule handling |
 | `coupling` | Structural coupling signals detected correctly | After changing dependency-map-validator |
 | `crosscheck` | CONTRADICTS_RUBRIC classification exists and is ordered correctly | After changing copilot-loop stability filter |
 

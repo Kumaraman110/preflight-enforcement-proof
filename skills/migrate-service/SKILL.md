@@ -110,7 +110,7 @@ After the dependency map refresh, invoke the full `/preflight:fix-and-close` pip
 **Coupled-Group Fix Protocol:** When multiple findings exist, group by coupling (same file, same call chain, same DI graph) and fix each group as ONE coherent change. Never fix coupled findings independently — that's what caused 70+ rounds on the prior migration.
 
 **Sequence:**
-1. Stage 1 review (rubric-reviewer agent) — reads rubric + operative capture rules
+1. Stage 1 review (code-reviewer agent) — reads rubric + operative capture rules
 2. If NEEDS_FIXES: apply Coupled-Group Fix Protocol → re-run tests → re-invoke Stage 1
 3. If CLEAN: commit + push
 4. Copilot loop (copilot-loop agent) — classifies findings, writes operative captures

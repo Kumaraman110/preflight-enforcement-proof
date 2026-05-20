@@ -1,5 +1,5 @@
 ---
-name: rubric-reviewer
+name: code-reviewer
 description: Stage 1 reviewer for the preflight self-improving review framework. Walks a project-local rubric (or plugin defaults) against the current branch's diff and reports findings. READ-ONLY — never edits, commits, or modifies any file. Use when the parent has finished writing or modifying code and is preparing to push.
 tools: Read, Glob, Grep, Bash
 ---

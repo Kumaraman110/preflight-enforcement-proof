@@ -53,7 +53,7 @@ Evidence is written by the review loop at the moment each gate passes:
 | Gate | Written when | By command |
 |---|---|---|
 | `tests-pass` | `dotnet test` returns 0 exit code | `write-gate-evidence tests-pass` |
-| `stage1-clean` | rubric-reviewer returns CLEAN | `write-gate-evidence stage1-clean` |
+| `stage1-clean` | code-reviewer returns CLEAN | `write-gate-evidence stage1-clean` |
 | `map-validated` | dependency-map-validator passes | `write-gate-evidence map-validated` |
 
 Each evidence file contains:

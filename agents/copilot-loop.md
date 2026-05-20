@@ -115,7 +115,7 @@ For UNSTABLE findings:
 
 For every finding classified as STABLE or TRIVIAL-STABLE, run this check:
 
-1. Read the active rubric (same path the rubric-reviewer uses — from config or defaults).
+1. Read the active rubric (same path the code-reviewer uses — from config or defaults).
 2. For each STABLE/TRIVIAL-STABLE finding, compare the suggestion's **target state** (what the code would look like AFTER implementing Copilot's suggestion) against the rubric's `BAD` patterns and explicit anti-patterns.
 3. Also check operative rules in capture files (the `**BAD (literal anti-pattern):**` blocks).
 
@@ -181,9 +181,9 @@ Flag as `<severity>` if: <precise boolean condition referencing code patterns>
 \`\`\`
 ```
 
-The `IMMEDIATE DETECTION RULE` block is what makes this operative. The rubric-reviewer reads capture files and applies these rules on its next invocation.
+The `IMMEDIATE DETECTION RULE` block is what makes this operative. The code-reviewer reads capture files and applies these rules on its next invocation.
 
-**Confidence threshold:** New rules start with `Survived: 0`, meaning they fire as `info` only (visible but non-blocking). After surviving 2 services without a false-positive entry contradicting them, the rubric-reviewer promotes their firing severity to the rule's declared severity. This prevents misclassified rules from creating phantom blockers on subsequent services while still making them immediately visible for human awareness.
+**Confidence threshold:** New rules start with `Survived: 0`, meaning they fire as `info` only (visible but non-blocking). After surviving 2 services without a false-positive entry contradicting them, the code-reviewer promotes their firing severity to the rule's declared severity. This prevents misclassified rules from creating phantom blockers on subsequent services while still making them immediately visible for human awareness.
 
 **Incrementing `Survived`:** At the END of a successful Stage 2 loop (status = SUCCESS), scan all operative rules in capture files. For each rule where:
 - The rule's `**PR:**` URL is different from the current PR (it was written in a prior service)

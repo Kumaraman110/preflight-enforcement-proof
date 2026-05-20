@@ -1,6 +1,6 @@
 # Severity Matrix
 
-Default severity assignments for the rubric-reviewer agent. Project-specific rubrics can override these by specifying severity inline with each section.
+Default severity assignments for the code-reviewer agent. Project-specific rubrics can override these by specifying severity inline with each section.
 
 ## Severity Levels
 

@@ -90,7 +90,7 @@ print(json.dumps(data, indent=2))
 
 ## Reading Metrics (for trend analysis)
 
-The discovery-analyst and rubric-reviewer should read metrics when available to inform their analysis:
+The discovery-analyst and code-reviewer should read metrics when available to inform their analysis:
 
 - **Discovery-analyst**: If prior runs exist for similar services, report the historical round counts as context for the readiness score.
 - **Rubric-reviewer**: If prior runs show a specific rubric section triggering cap hits, weight that section's findings higher.

@@ -103,7 +103,7 @@ run_stage1_tests() {
 
 # ═══════════════════════════════════════════════════════════════
 # SUITE: Operative rule confidence threshold
-# Validates that the rubric-reviewer documentation correctly
+# Validates that the code-reviewer documentation correctly
 # specifies the confidence threshold behavior.
 # ═══════════════════════════════════════════════════════════════
 
@@ -114,10 +114,10 @@ run_operative_rule_tests() {
   echo "══════════════════════════════════════════"
   echo ""
 
-  local reviewer="$PLUGIN_ROOT/agents/rubric-reviewer.md"
+  local reviewer="$PLUGIN_ROOT/agents/code-reviewer.md"
 
   if [ ! -f "$reviewer" ]; then
-    red "SKIP: rubric-reviewer.md not found"
+    red "SKIP: code-reviewer.md not found"
     return
   fi
 

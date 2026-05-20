@@ -91,7 +91,7 @@ From config (or defaults):
 
 4. **Run tests.** Must pass. If they fail, fix compilation/test errors FIRST (these are not rubric findings — they're broken code). **On pass:** write gate evidence: `bash "${CLAUDE_PLUGIN_ROOT}/hooks/write-gate-evidence" tests-pass`
 
-5. **Invoke `rubric-reviewer` sub-agent.** Always. Even for one-line changes.
+5. **Invoke `code-reviewer` sub-agent.** Always. Even for one-line changes.
 
 6. **If NEEDS_FIXES — apply the Coupled-Group Fix Protocol:**
 
@@ -199,7 +199,7 @@ If ANY verification fails, DO NOT declare success. Surface the gap with the actu
 
 ## Operative Capture Rules
 
-When capture files contain entries with `**IMMEDIATE DETECTION RULE:**` blocks, these are LIVE rules that supplement the rubric in real time. The rubric-reviewer reads them. They take effect immediately — not after a batched PR.
+When capture files contain entries with `**IMMEDIATE DETECTION RULE:**` blocks, these are LIVE rules that supplement the rubric in real time. The code-reviewer reads them. They take effect immediately — not after a batched PR.
 
 The capture entry format for operative rules:
 ```markdown

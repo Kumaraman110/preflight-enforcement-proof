@@ -25,10 +25,10 @@ If session context is empty or this skill was invoked cold (no hook ran):
 
 ## The Behavior Contract
 
-You orchestrate the **`rubric-reviewer`** sub-agent. You do NOT review code yourself — that is the sub-agent's job. Your job is loop control and fixing.
+You orchestrate the **`code-reviewer`** sub-agent. You do NOT review code yourself — that is the sub-agent's job. Your job is loop control and fixing.
 
 <HARD-GATE>
-Always invoke the rubric-reviewer sub-agent. Do not skip invocation because the diff "looks trivial" or "is just a one-liner." That judgment belongs to the sub-agent. Every time you think "this doesn't need review," that is the exact moment it does.
+Always invoke the code-reviewer sub-agent. Do not skip invocation because the diff "looks trivial" or "is just a one-liner." That judgment belongs to the sub-agent. Every time you think "this doesn't need review," that is the exact moment it does.
 </HARD-GATE>
 
 ### Rationalization Prevention
@@ -49,7 +49,7 @@ Always invoke the rubric-reviewer sub-agent. Do not skip invocation because the 
    - Other branch: scope = uncommitted changes only
    - Clean + not feature branch: nothing to review, exit
 
-3. **Invoke `rubric-reviewer` sub-agent.** Pass diff scope context.
+3. **Invoke `code-reviewer` sub-agent.** Pass diff scope context.
 
 4. **Read the sub-agent's output** (verification discipline: the sub-agent's report is a CLAIM — verify the diff it reviewed matches your current state):
    - `CLEAN` → verify the sub-agent's "Files reviewed" list matches current diff (`git diff --name-only`). If it does, declare success, summarize, exit. Do not push, commit.
@@ -66,7 +66,7 @@ Always invoke the rubric-reviewer sub-agent. Do not skip invocation because the 
    d. Fix each coupled group as ONE coherent change — design a single edit that satisfies all constraints in the group simultaneously.
    e. Ambiguous or judgment-requiring findings → ask user.
 
-7. **Re-invoke `rubric-reviewer`.** Same scope, post-fix. Back to step 4.
+7. **Re-invoke `code-reviewer`.** Same scope, post-fix. Back to step 4.
 
 8. **Hard cap: maximum 5 iterations.** On cap hit: STOP. Report remaining findings. Inform user: "Hit iteration cap. Remaining findings are likely structurally coupled. Recommend addressing them as a group with fresh context or asking for human direction."
 
@@ -95,4 +95,4 @@ This skill self-activates (see `${CLAUDE_PLUGIN_ROOT}/lib/proactive-triggering.m
 - The session is about to run `git push` and gate evidence is stale or missing
 - The parent agent has just finished writing code and is about to claim "done"
 
-Begin now. Invoke the `rubric-reviewer` sub-agent.
+Begin now. Invoke the `code-reviewer` sub-agent.

@@ -88,7 +88,7 @@ The skeleton should include:
 
 Identical to `/preflight:fix-and-close`:
 - Run tests (must pass)
-- Invoke rubric-reviewer (must be CLEAN)
+- Invoke code-reviewer (must be CLEAN)
 - Commit + push
 - Copilot loop until clean
 
