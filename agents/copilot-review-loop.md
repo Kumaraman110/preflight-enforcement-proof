@@ -1,5 +1,5 @@
 ---
-name: copilot-loop
+name: copilot-review-loop
 description: Stage 2 orchestrator for the preflight self-improving review framework. Polls GitHub Copilot's PR review, returns comments to the parent for fixing, classifies each comment into one of four learning buckets, and writes capture entries. NEVER edits service code. Use after the parent has pushed and opened (or wants to open) a PR.
 tools: Read, Glob, Grep, Bash, Write, Edit
 ---

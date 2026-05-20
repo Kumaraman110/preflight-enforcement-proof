@@ -1,6 +1,6 @@
 # Oscillation, Divergence, and Cap Detection
 
-Reference material for the `copilot-loop` agent and the `fix-and-close` skill. Defines termination conditions for review loops.
+Reference material for the `copilot-review-loop` agent and the `fix-and-close` skill. Defines termination conditions for review loops.
 
 A prior migration ran **70+ Copilot review rounds** before human intervention. Post-mortem analysis showed rounds 9-70 produced net-zero convergence — issues were being shuffled between files via cascading regressions, not resolved. Hard caps exist to prevent this from recurring.
 

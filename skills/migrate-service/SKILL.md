@@ -113,7 +113,7 @@ After the dependency map refresh, invoke the full `/preflight:fix-and-close` pip
 1. Stage 1 review (code-reviewer agent) — reads rubric + operative capture rules
 2. If NEEDS_FIXES: apply Coupled-Group Fix Protocol → re-run tests → re-invoke Stage 1
 3. If CLEAN: commit + push
-4. Copilot loop (copilot-loop agent) — classifies findings, writes operative captures
+4. Copilot loop (copilot-review-loop agent) — classifies findings, writes operative captures
 5. If NEEDS_PARENT_FIXES: apply Coupled-Group Fix Protocol → tests → Stage 1 → push → back to step 4
 6. If SUCCESS: structural verification → done
 7. If CAPPED/STUCK/DIVERGING: surface to user with evidence

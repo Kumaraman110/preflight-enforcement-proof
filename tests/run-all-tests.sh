@@ -136,7 +136,7 @@ run_operative_rule_tests() {
   assert_contains "$reviewer_content" "rubric wins" "Unearned rules don't override rubric"
 
   # Copilot-loop writes Survived: 0
-  local copilot_loop="$PLUGIN_ROOT/agents/copilot-loop.md"
+  local copilot_loop="$PLUGIN_ROOT/agents/copilot-review-loop.md"
   if [ -f "$copilot_loop" ]; then
     local loop_content
     loop_content=$(cat "$copilot_loop")
@@ -214,7 +214,7 @@ run_coupling_tests() {
 # ═══════════════════════════════════════════════════════════════
 # SUITE: Rubric cross-check
 # Validates that the CONTRADICTS_RUBRIC classification exists
-# and the cross-check step is documented in copilot-loop.
+# and the cross-check step is documented in copilot-review-loop.
 # ═══════════════════════════════════════════════════════════════
 
 run_crosscheck_tests() {
@@ -224,10 +224,10 @@ run_crosscheck_tests() {
   echo "══════════════════════════════════════════"
   echo ""
 
-  local copilot_loop="$PLUGIN_ROOT/agents/copilot-loop.md"
+  local copilot_loop="$PLUGIN_ROOT/agents/copilot-review-loop.md"
 
   if [ ! -f "$copilot_loop" ]; then
-    red "SKIP: copilot-loop.md not found"
+    red "SKIP: copilot-review-loop.md not found"
     return
   fi
 
@@ -235,7 +235,7 @@ run_crosscheck_tests() {
   loop_content=$(cat "$copilot_loop")
 
   # Step 7.5 exists
-  assert_contains "$loop_content" "Step 7.5\|Rubric cross-check" "Cross-check step exists in copilot-loop"
+  assert_contains "$loop_content" "Step 7.5\|Rubric cross-check" "Cross-check step exists in copilot-review-loop"
 
   # CONTRADICTS_RUBRIC classification exists
   assert_contains "$loop_content" "CONTRADICTS_RUBRIC" "CONTRADICTS_RUBRIC classification documented"

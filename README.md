@@ -66,7 +66,7 @@ Then: `/preflight:scaffold-api FlightStatus`
 | Agent | Role | Edits Code? |
 |---|---|---|
 | `code-reviewer` | Walks rubric against diff, reports findings | Never |
-| `copilot-loop` | Polls Copilot, classifies findings, writes captures | Capture files only |
+| `copilot-review-loop` | Polls Copilot, classifies findings, writes captures | Capture files only |
 | `discovery-analyst` | Phase 1 codebase analysis | Never |
 
 ## Architecture
@@ -74,16 +74,16 @@ Then: `/preflight:scaffold-api FlightStatus`
 ```
 You (main session)                    ← edits code, orchestrates
   ├── code-reviewer (sub-agent)     ← reads rubric + diff, reports findings
-  ├── copilot-loop (sub-agent)        ← polls Copilot, classifies, captures
+  ├── copilot-review-loop (sub-agent)        ← polls Copilot, classifies, captures
   └── discovery-analyst (sub-agent)   ← reads codebase, produces assessment
 ```
 
-The main session is the ONLY actor that edits service code. Sub-agents are read-only (except copilot-loop writes to capture files).
+The main session is the ONLY actor that edits service code. Sub-agents are read-only (except copilot-review-loop writes to capture files).
 
 ## Self-Improvement Loop
 
 ```
-Push → Copilot reviews → copilot-loop classifies each finding:
+Push → Copilot reviews → copilot-review-loop classifies each finding:
   ├── in-rubric-but-missed     → calibration-log.md (strengthen detection)
   ├── new-category             → checklist-additions.md (add rubric section)
   ├── false-positive           → false-positives.md (loosen detection)

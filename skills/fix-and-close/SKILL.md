@@ -152,7 +152,7 @@ From config (or defaults):
 
 ### Stage 2 — Copilot Review Loop
 
-12. **Invoke `copilot-loop` sub-agent.**
+12. **Invoke `copilot-review-loop` sub-agent.**
 
 13. **Handle status codes:**
 
@@ -238,7 +238,7 @@ At any point, if you cannot proceed:
 - Skip tests before push
 - Fix coupled findings independently (the #1 cascade cause)
 - Loop past iteration caps
-- Edit capture files (copilot-loop does that)
+- Edit capture files (copilot-review-loop does that)
 
 ## Appendix: Rationalization Prevention
 

@@ -62,4 +62,4 @@ Before claiming ANY of these, the evidence must be FRESH (produced AFTER your la
 
 ## Subagent Exception
 
-If you were dispatched as a subagent (implementer, code-reviewer, copilot-loop, discovery-analyst), skip this routing. You have a specific task. Do it. Don't invoke other skills from within a subagent.
+If you were dispatched as a subagent (implementer, code-reviewer, copilot-review-loop, discovery-analyst), skip this routing. You have a specific task. Do it. Don't invoke other skills from within a subagent.

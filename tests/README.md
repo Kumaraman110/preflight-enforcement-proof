@@ -4,16 +4,16 @@ Tests the review system itself — not service code.
 
 ## Why these exist
 
-Every change to the rubric, operative rules, copilot-loop classification, or coupling logic is a hypothesis. Without tests, the first feedback comes from running on a real service (expensive, slow, no rollback). These tests give 30-second validation before any change takes effect.
+Every change to the rubric, operative rules, copilot-review-loop classification, or coupling logic is a hypothesis. Without tests, the first feedback comes from running on a real service (expensive, slow, no rollback). These tests give 30-second validation before any change takes effect.
 
 ## Suites
 
 | Suite | What it validates | When to run |
 |---|---|---|
 | `stage1` | Rubric has detection patterns for known-bad code | After any rubric edit |
-| `operative` | Confidence threshold wiring (Survived counts, severity promotion) | After changing code-reviewer or copilot-loop operative rule handling |
+| `operative` | Confidence threshold wiring (Survived counts, severity promotion) | After changing code-reviewer or copilot-review-loop operative rule handling |
 | `coupling` | Structural coupling signals detected correctly | After changing dependency-map-validator |
-| `crosscheck` | CONTRADICTS_RUBRIC classification exists and is ordered correctly | After changing copilot-loop stability filter |
+| `crosscheck` | CONTRADICTS_RUBRIC classification exists and is ordered correctly | After changing copilot-review-loop stability filter |
 
 ## Running
 
@@ -37,4 +37,4 @@ bash tests/run-all-tests.sh operative
 
 ## Design principle
 
-These tests verify the STRUCTURE of the review system (does the rubric cover X? does the copilot-loop have step Y?). They do NOT invoke the LLM — that would make them non-deterministic. LLM behavior is tested via the fixtures: if the rubric has the detection pattern, the reviewer WILL find it (because the reviewer walks the rubric exhaustively by design).
+These tests verify the STRUCTURE of the review system (does the rubric cover X? does the copilot-review-loop have step Y?). They do NOT invoke the LLM — that would make them non-deterministic. LLM behavior is tested via the fixtures: if the rubric has the detection pattern, the reviewer WILL find it (because the reviewer walks the rubric exhaustively by design).
