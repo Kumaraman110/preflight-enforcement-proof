@@ -7,5 +7,15 @@
   },
   "repository": "https://github.com/United-Airlines-Org/preflight",
   "license": "UNLICENSED",
-  "keywords": ["review", "migration", "dotnet", "self-improving", "copilot"]
+  "keywords": ["review", "migration", "dotnet", "self-improving", "copilot"],
+  "skills": [
+    "./skills/self-review",
+    "./skills/fix-and-close",
+    "./skills/migrate-service",
+    "./skills/scaffold-api",
+    "./skills/systematic-debugging",
+    "./skills/test-driven-development",
+    "./skills/gps-decide",
+    "./skills/routing"
+  ]
 }
