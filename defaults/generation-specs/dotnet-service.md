@@ -6,7 +6,7 @@ Each pattern maps to a detection rule in the rubric. If you use the pattern corr
 
 ---
 
-## Token Caching (prevents §G4.2, §M4.3 findings)
+## Token Caching (prevents §M4.3 findings)
 
 ```csharp
 public class {ServiceName}TokenProvider : I{ServiceName}TokenProvider
