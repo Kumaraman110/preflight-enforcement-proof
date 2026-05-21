@@ -56,7 +56,7 @@ fi
 if command -v jq &>/dev/null; then
   # Find groups containing this file where acknowledged is false
   UNACKED=$(jq -r --arg fp "$FILE_PATH" '
-    [.[] | select(.acknowledged == false) | select(.files[] | contains($fp))] | length
+    [.[] | select(.acknowledged == false) | select(.files[] | . == $fp)] | length
   ' "$GROUPS_FILE" 2>/dev/null || echo "0")
 elif python3 -c "pass" &>/dev/null || python -c "pass" &>/dev/null; then
   PY=$(python3 -c "pass" 2>/dev/null && echo "python3" || echo "python")
@@ -64,7 +64,7 @@ elif python3 -c "pass" &>/dev/null || python -c "pass" &>/dev/null; then
 import json,sys
 fp='$FILE_PATH'
 groups=json.load(open('$GROUPS_FILE'))
-count=sum(1 for g in groups if not g.get('acknowledged',False) and any(fp in f or f in fp for f in g.get('files',[])))
+count=sum(1 for g in groups if not g.get('acknowledged',False) and any(f == fp for f in g.get('files',[])))
 print(count)
 " 2>/dev/null || echo "0")
 else
