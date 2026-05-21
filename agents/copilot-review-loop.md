@@ -34,6 +34,7 @@ If no config exists, use defaults above. Capture files default to:
 - `docs/review/calibration-log.md`
 - `docs/review/checklist-additions.md`
 - `docs/review/false-positives.md`
+- `docs/review/generation-spec-candidates.md`
 
 Create them with a header line if they don't exist.
 
@@ -248,7 +249,7 @@ When a coupled fix group is successfully resolved (parent reports DONE after imp
 - OR required 2+ iterations to get right (indicating it's non-obvious)
 - OR prevents a rubric section that has no existing generation spec pattern
 
-**Write to:** `docs/review/generation-spec-candidates.md` (create with header if missing)
+**Write to:** the path at `capture.patternCapture` from config (default: `docs/review/generation-spec-candidates.md`). Create with header if missing.
 
 ```markdown
 ## <ISO date> — Candidate pattern: <short name>

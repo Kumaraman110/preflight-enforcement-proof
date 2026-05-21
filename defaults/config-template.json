@@ -10,7 +10,8 @@
   "capture": {
     "calibrationLog": "docs/review/calibration-log.md",
     "checklistAdditions": "docs/review/checklist-additions.md",
-    "falsePositives": "docs/review/false-positives.md"
+    "falsePositives": "docs/review/false-positives.md",
+    "patternCapture": "docs/review/generation-spec-candidates.md"
   },
 
   "review": {
@@ -21,6 +22,8 @@
 
   "loop": {
     "rubricEditCadence": 5,
+    "maxStage1Iterations": 5,
+    "maxStage2Iterations": 3,
     "oscillation": {
       "stopOnSameFilesAcrossConsecutiveIterations": true,
       "stopOnSameLineModifiedConsecutively": 3
