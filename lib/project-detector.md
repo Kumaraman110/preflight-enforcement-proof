@@ -39,7 +39,8 @@ Look for these files in the current working directory (first match wins):
   },
   "branch": {
     "base": "main",
-    "remote": "origin"
+    "remote": "origin",
+    "migrationPrefix": "feature/migrate-"
   },
   "test": {
     "command": "dotnet test",

@@ -32,7 +32,8 @@
 
   "branch": {
     "base": "main",
-    "remote": "origin"
+    "remote": "origin",
+    "migrationPrefix": "feature/migrate-"
   },
 
   "test": {
