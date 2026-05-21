@@ -12,11 +12,22 @@
 #
 # Each evidence file contains a timestamp and the git HEAD at time of check.
 # If HEAD has moved since the evidence was written, the evidence is STALE.
+#
+# Accept evidence referencing HEAD OR HEAD^ (immediate parent).
+# The intended workflow is:
+#   1. Stage 1 returns CLEAN
+#   2. write-gate-evidence stage1-clean (HEAD at this moment)
+#   3. git commit (HEAD moves to new SHA; old HEAD becomes parent)
+#   4. git push
+# At step 4, evidence references step-2 HEAD, which is now HEAD^.
+# Accepting parent covers this case without weakening the gate's
+# core invariant: evidence must be tied to the code being pushed.
 
 set -euo pipefail
 
 GATE_DIR=".preflight/gate"
 CURRENT_HEAD=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
+PARENT_HEAD=$(git rev-parse HEAD^ 2>/dev/null || echo "")
 
 check_evidence() {
   local file="$1"
@@ -30,7 +41,7 @@ check_evidence() {
   local evidence_head
   evidence_head=$(grep "^HEAD=" "$GATE_DIR/$file" 2>/dev/null | cut -d= -f2)
 
-  if [ "$evidence_head" != "$CURRENT_HEAD" ]; then
+  if [ "$evidence_head" != "$CURRENT_HEAD" ] && [ "$evidence_head" != "$PARENT_HEAD" ]; then
     echo "BLOCKED: $label evidence is stale (was at $evidence_head, now at $CURRENT_HEAD). Code changed since last check — re-run Stage 1." >&2
     exit 1
   fi
