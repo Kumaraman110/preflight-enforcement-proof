@@ -3,7 +3,7 @@
 
   "mode": "generic",
 
-  "_comment_rubric": "Path to your project's review rubric. If omitted, plugin defaults are used based on mode.",
+  "_comment_rubric": "Path (string) or paths (array) to review rubrics. Array form enables multi-rubric modes: [\"rubric-api-design.md\", \"rubric-generic.md\"]. If omitted, plugin defaults are used based on mode.",
   "rubric": null,
 
   "_comment_capture": "Paths for the self-improvement capture files. Created on first use.",

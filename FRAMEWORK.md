@@ -253,7 +253,7 @@ Preflight activates when it finds a project config file (search order: `.preflig
 ```json
 {
   "mode": "generic | migration | api-new",
-  "rubric": "path/to/rubric.md",
+  "rubric": "path/to/rubric.md or [array of paths]",
   "capture": {
     "calibrationLog": "path",
     "checklistAdditions": "path",
@@ -277,13 +277,27 @@ Preflight activates when it finds a project config file (search order: `.preflig
 }
 ```
 
+### Rubric field
+
+The `rubric` field accepts either a single path (string) or an array of paths. Code-reviewer walks all rubrics in the array during review, citing fully-prefixed section IDs so findings are unambiguous across rubrics.
+
+Recommended configurations by mode:
+
+| Mode | Recommended `rubric` value |
+|---|---|
+| `generic` | `"defaults/rubric-generic.md"` (string) |
+| `migration` | `["defaults/rubric-migration.md", "defaults/rubric-generic.md"]` |
+| `api-new` | `["defaults/rubric-api-design.md", "defaults/rubric-generic.md"]` |
+
+If `rubric` is omitted or null, the plugin uses defaults based on mode.
+
 ### Mode implications
 
 | Mode | Rubric source | Extra skills | Extra config |
 |---|---|---|---|
 | `generic` | Plugin default (rubric-generic.md) | self-review, fix-and-close, TDD, debugging, gps-decide | None |
-| `migration` | Project rubric + plugin default (rubric-migration.md) | + migrate-service | `migration.legacyRepoPath` required |
-| `api-new` | Project rubric + plugin default (rubric-api-design.md) | + scaffold-api | None |
+| `migration` | rubric-migration.md + rubric-generic.md | + migrate-service | `migration.legacyRepoPath` required |
+| `api-new` | rubric-api-design.md + rubric-generic.md | + scaffold-api | None |
 
 ### Fallback behavior
 

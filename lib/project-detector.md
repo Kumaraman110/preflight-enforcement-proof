@@ -15,7 +15,7 @@ Look for these files in the current working directory (first match wins):
 ```json
 {
   "mode": "migration" | "api-new" | "generic",
-  "rubric": "path/to/rubric.md",
+  "rubric": "path/to/rubric.md" | ["path/to/rubric-a.md", "path/to/rubric-b.md"],
   "capture": {
     "calibrationLog": "path/to/calibration-log.md",
     "checklistAdditions": "path/to/checklist-additions.md",

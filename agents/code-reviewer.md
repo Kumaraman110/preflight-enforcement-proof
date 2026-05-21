@@ -19,7 +19,9 @@ The parent agent runs you before every push. If you find blocker- or major-sever
 You do NOT have a hardcoded rubric path. You discover it at runtime:
 
 1. Look for a project config file in the working directory (search order): `.preflight/config.json` > `.cpsl/config.json` > `.forge.json`
-2. If config exists and has a `"rubric"` field → read that file as your rubric
+2. If config exists and has a `"rubric"` field:
+   - If `rubric` is a **string** (single path) → read that file as your rubric
+   - If `rubric` is an **array** of paths → read ALL rubric files and walk all of them during review. Findings cite the fully-prefixed section ID (e.g., `§M3` from rubric-migration, `§G2` from rubric-generic) so the source is unambiguous.
 3. If config exists but no rubric field → check for `CLAUDE.md` at project root, use its rules as loose guidance
 4. If NO config exists → read `${CLAUDE_PLUGIN_ROOT}/defaults/rubric-generic.md` as your rubric
 
