@@ -36,14 +36,11 @@ A prior migration ran **70+ Copilot review rounds** before human intervention. P
 
 **Limits:**
 - Stage 1 (pre-push review): **5 iterations maximum**
-- Stage 2 (Copilot review): **8 iterations maximum**
+- Stage 2 (Copilot review): **3 iterations maximum** (override: config `loop.maxStage2Iterations` up to 8 for services with known-incomplete coupling maps)
 
-**Rationale from data:** On a 70+ round migration, analysis showed:
-- Rounds 1-4: genuine convergence (fixing real initial issues)
-- Rounds 5-8: diminishing returns (fixing interaction effects)
-- Rounds 9+: net-zero or negative progress (cascading regressions — fixing A breaks B, fixing B breaks C)
+**Rationale:** The stability filter ensures only STABLE findings (deterministic, mechanical) drive auto-fixes in Stage 2. Deterministic fixes on correctly-coupled groups converge in 1-2 rounds. If round 3 still has findings, the coupling map missed an edge — further rounds cascade on the same structural error rather than converging. The cap surfaces this diagnosis to the user.
 
-The caps are set at the boundary where the loop transitions from "productive" to "cascading." Rounds past the cap produce negative value — they introduce more issues than they resolve.
+The original analysis (70+ round migration, pre-stability-filter) placed the cap at 8 because unstable/contradictory findings created slow-convergence cycles requiring rounds 5-8. The stability filter eliminates those cycles by routing non-deterministic findings to the user instead of auto-fixing them. With only STABLE findings in play, 3 rounds is the correct boundary.
 
 **Action:** Report `CAPPED` with:
 - The iteration count history (showing finding counts per round)
