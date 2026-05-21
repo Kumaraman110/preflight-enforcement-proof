@@ -35,19 +35,31 @@ Each rule has:
 - A `**Confidence:**` field (high/medium/low) — if absent, treat as `medium`
 - A `**Survived:**` field (count of services where rule fired correctly without contradiction) — if absent, treat as 0
 
-**Severity assignment for operative rules (the confidence threshold):**
+**Severity assignment for operative rules (two-dimensional: Survived × Confidence):**
 
-| Survived count | Maximum severity operative rule can fire at |
-|---|---|
-| 0 (new rule, current session or immediately after) | `info` — visible in report, does NOT trigger NEEDS_FIXES |
-| 1 (survived one subsequent service without false-positive entry) | `minor` — visible, does NOT trigger NEEDS_FIXES |
-| 2+ (survived two services without contradiction) | Original severity from the rule — CAN trigger NEEDS_FIXES |
+| Survived | Confidence | Maximum firing severity |
+|---|---|---|
+| 0 | any | `info` — visible in report, does NOT trigger NEEDS_FIXES |
+| 1 | any | `minor` — visible, does NOT trigger NEEDS_FIXES |
+| 2+ | high | Declared severity from the rule — CAN trigger NEEDS_FIXES (including blocker) |
+| 2+ | medium | `major` — CAN trigger NEEDS_FIXES, but capped below blocker |
+| 2+ | low | `minor` — visible, does NOT trigger NEEDS_FIXES regardless of declared severity |
 
-**Why this exists:** Operative rules bypass the human-gated batched rubric PR. A misclassification on Service N writes a bad rule that fires as `major` on Service N+1, creating phantom findings the parent "fixes" by introducing regressions. The threshold ensures new rules earn enforcement authority through survival — they're visible immediately (info) but only block the pipeline after calibration proves they're correct.
+Two orthogonal gates:
+- **Survived** answers "has the rule proven correct?" (calibration through survival)
+- **Confidence** answers "is the detection precise enough to block?" (precision of BAD/GOOD patterns)
 
-**How to determine `Survived` count:** Look at the rule's `**Date:**` or ISO date header. Then check `false-positives.md` for entries that reference the same rubric section or same detection pattern after that date. If none exist → count the number of DIFFERENT service PRs (different `**PR:**` URLs) where calibration-log entries reference Stage 1 catching this rule's pattern without generating a false-positive entry. Each such PR = +1 survived.
+Both must be satisfied for a rule to earn pipeline-blocking authority. A rule with high Survived but low Confidence has proven the issue is real, but the automated detector may fire on false matches — it stays visible (minor) until a human refines the BAD/GOOD patterns.
 
-**Conflict resolution:** If an operative rule (survived 2+) conflicts with the published rubric, the operative rule wins — it represents more recent calibration. If an operative rule (survived 0-1) conflicts with the published rubric, the rubric wins — the rule hasn't earned override authority.
+**Why this exists:** Operative rules bypass the human-gated batched rubric PR. A misclassification on Service N writes a bad rule that fires as `major` on Service N+1, creating phantom findings the parent "fixes" by introducing regressions. The two-dimensional threshold ensures new rules earn enforcement authority through BOTH survival (proving the issue is real) AND precision (proving the detector won't false-match).
+
+**How to read `Survived` count:** Use the `**Survived:**` value written in the capture entry. The copilot-review-loop agent maintains this count — it increments the value after each successful Stage 2 run where the rule fired without contradiction (see copilot-review-loop Bucket 1 increment logic). Trust the written value; do not recalculate independently.
+
+Sanity check: If the `Survived` value appears inconsistent — e.g., suspiciously high (>20) for a recently-written entry based on the entry's date header, or the value has decreased between consecutive reads of the same file — surface the inconsistency to the user in the review output rather than acting on the value. The producer is authoritative for normal operation; sniff-test failures indicate a producer bug that needs investigation before the rule's severity should be trusted.
+
+**Escalation:** If a rule has `Survived: 5` or higher AND `Confidence: low`, surface it for human review in the next batched rubric-edit PR. The detection rule has proven the underlying issue is real (5+ services without contradiction) but the detector's precision needs tightening before earning higher severity. Note this in the findings output so the rubric-edit process picks it up.
+
+**Conflict resolution:** If an operative rule (survived 2+, confidence high) conflicts with the published rubric, the operative rule wins — it represents more recent calibration with proven precision. If an operative rule (survived 0-1 OR confidence low) conflicts with the published rubric, the rubric wins — the rule hasn't earned override authority.
 
 If you cannot find ANY rubric (no config, no CLAUDE.md, plugin defaults unreachable), report `Overall: ERROR` with reason "No rubric discoverable."
 

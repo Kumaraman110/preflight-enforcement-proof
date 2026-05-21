@@ -163,6 +163,7 @@ Write an OPERATIVE capture entry — one that takes effect on the next Stage 1 i
 
 **PR:** <url> · **File:** <path>:<line>
 **Survived:** 0
+**Confidence:** medium
 
 **Copilot said:** <one sentence>
 
@@ -184,7 +185,18 @@ Flag as `<severity>` if: <precise boolean condition referencing code patterns>
 
 The `IMMEDIATE DETECTION RULE` block is what makes this operative. The code-reviewer reads capture files and applies these rules on its next invocation.
 
-**Confidence threshold:** New rules start with `Survived: 0`, meaning they fire as `info` only (visible but non-blocking). After surviving 2 services without a false-positive entry contradicting them, the code-reviewer promotes their firing severity to the rule's declared severity. This prevents misclassified rules from creating phantom blockers on subsequent services while still making them immediately visible for human awareness.
+**Confidence field (detection precision):** How precisely the BAD/GOOD patterns will fire without false matches.
+- **high** — detection signal is mechanical and exact (literal code pattern, specific method call, deterministic structural check). Fires if and only if the actual issue exists.
+- **medium** (default) — detection signal relies on broader pattern matching that might have edge cases. May produce occasional false positives in unusual code structures.
+- **low** — detection signal is context-dependent or requires judgment to distinguish from legitimate usage. Needs refinement before earning blocking authority.
+
+Default to `medium` when precision is mixed or unclear. If marking `high` or `low`, include a justification line immediately after Confidence:
+- `**Why high:** <citation of deterministic structural check or literal pattern>`
+- `**Why low:** <citation of what makes detection fuzzy or context-dependent>`
+
+Marking high or low without justification is a rationalization — default to medium when the precision is mixed or unclear.
+
+**Severity threshold:** The code-reviewer uses BOTH `Survived` and `Confidence` to determine firing severity. New rules start with `Survived: 0`, firing as `info` only (non-blocking). After surviving 2+ services, Confidence determines the ceiling: high = full declared severity, medium = capped at major, low = stays at minor. This prevents both phantom blockers (Survived gate) and imprecise detectors from blocking the pipeline (Confidence gate).
 
 **Incrementing `Survived`:** At the END of a successful Stage 2 loop (status = SUCCESS), scan all operative rules in capture files. For each rule where:
 - The rule's `**PR:**` URL is different from the current PR (it was written in a prior service)
@@ -200,6 +212,7 @@ Copilot flagged something with no rubric match.
 ## <ISO date> — Candidate category: <short name>
 
 **PR:** <url> · **File:** <path>:<line>
+**Survived:** 0
 
 **Copilot said:** <one sentence>
 
@@ -211,6 +224,8 @@ Copilot flagged something with no rubric match.
 
 **Confidence:** high | medium | low
 ```
+
+`Survived` on Bucket 2 entries is a **recurrence count** — the number of services where this candidate pattern has been observed since first capture. Initialized to 0 on first write. When classifying a new Copilot comment, check existing checklist-additions entries: if the same pattern already exists (matching by rubric section reference, detection signal similarity, or anti-pattern shape), increment that entry's `Survived` count rather than writing a duplicate. Recurrence ≥ 3 across different PRs strengthens the case for promotion to a rubric section in the next batched edit.
 
 ### Bucket 3: false-positive → false positives
 Stage 1 flagged something Copilot did not (or contradicted).
@@ -274,6 +289,26 @@ When a coupled fix group is successfully resolved (parent reports DONE after imp
 ```
 
 **Why this bucket exists:** The generation spec was seeded from AccountLookup's patterns. Without a capture mechanism, it stays frozen. This bucket grows it from real, validated solutions — every hard-won fix becomes a pattern that prevents the same struggle on the next service. It closes the loop: detection spec catches problems → fixes produce solutions → pattern-capture promotes solutions to generation spec → generation spec prevents the problems from existing.
+
+---
+
+## Rubric-Edit PR: Detection Refinement Scan
+
+When preparing a batched rubric-edit PR (per `loop.rubricEditCadence`), scan all operative rules in calibration-log for the escalation condition:
+
+> **Survived ≥ 5 AND Confidence: low**
+
+These rules have proven the underlying issue is real (5+ services without contradiction) but the detector's precision needs tightening before earning higher severity. Surface them in the rubric-edit PR draft under:
+
+```markdown
+## Rules needing detection refinement
+
+| Rule | Section | Survived | Issue |
+|---|---|---|---|
+| <ISO date header> | §<section> | <count> | Detection is fuzzy — refine BAD/GOOD patterns or upgrade Confidence |
+```
+
+A human can then refine the BAD/GOOD patterns (making detection mechanical → upgrade to `high`) or downgrade the rule if the underlying issue turns out to be less clear-cut than the survival count suggests.
 
 ---
 
