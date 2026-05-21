@@ -92,6 +92,8 @@ Push → Copilot reviews → copilot-review-loop classifies each finding:
 Every N PRs → batched rubric-edit PR consolidates captures → rubric gets better
 ```
 
+See [`docs/rubric-edit-process.md`](docs/rubric-edit-process.md) for the full promotion process.
+
 ## Project Config
 
 See `defaults/config-template.json` for the full schema. Key fields:

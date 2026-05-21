@@ -164,6 +164,8 @@ Write a capture entry — a **promotion candidate** for the next batched rubric-
 **PR:** <url> · **File:** <path>:<line>
 **Survived:** 0
 **Confidence:** medium
+**FirstSeen:** <ISO date>
+**Cycles:** 0
 
 **Copilot said:** <one sentence>
 
@@ -211,6 +213,9 @@ Copilot flagged something with no rubric match.
 
 **PR:** <url> · **File:** <path>:<line>
 **Survived:** 0
+**Confidence:** high | medium | low
+**FirstSeen:** <ISO date>
+**Cycles:** 0
 
 **Copilot said:** <one sentence>
 
@@ -219,11 +224,13 @@ Copilot flagged something with no rubric match.
 **Detection signal:** <how Stage 1 would catch it>
 
 **Suggested severity:** blocker | major | minor — <justification>
-
-**Confidence:** high | medium | low
 ```
 
 `Survived` on Bucket 2 entries is a **recurrence count** — the number of services where this candidate pattern has been observed since first capture. Initialized to 0 on first write. When classifying a new Copilot comment, check existing checklist-additions entries: if the same pattern already exists (matching by rubric section reference, detection signal similarity, or anti-pattern shape), increment that entry's `Survived` count rather than writing a duplicate. Recurrence ≥ 3 across different PRs strengthens the case for promotion to a rubric section in the next batched edit.
+
+**Lifecycle tracking fields (both Bucket 1 and Bucket 2):**
+- `**FirstSeen:**` — ISO date when the entry was first written. Never changes.
+- `**Cycles:**` — number of rubric-edit cycles where this entry was reviewed but NOT promoted. Initialized to 0 on creation. The rubric-edit PR author increments this for any entry that remains in active capture files after that round. Entries reaching `Cycles ≥ 2` are archived to deferred state. See `docs/rubric-edit-process.md` for the full lifecycle.
 
 ### Bucket 3: false-positive → false positives
 Stage 1 flagged something Copilot did not (or contradicted).
@@ -291,6 +298,8 @@ When a coupled fix group is successfully resolved (parent reports DONE after imp
 ---
 
 ## Rubric-Edit PR: Promotion Criteria and Scanning
+
+> Full process documentation: `docs/rubric-edit-process.md`
 
 When preparing a batched rubric-edit PR (per `loop.rubricEditCadence`), scan all capture entries in calibration-log and checklist-additions. Evaluate each for promotion using this decision matrix:
 
