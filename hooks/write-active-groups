@@ -15,5 +15,23 @@ GROUPS_JSON="${1:-[]}"
 GATE_DIR=".preflight/gate"
 GROUPS_FILE="$GATE_DIR/active-groups.json"
 
+# Validate JSON before writing — malformed input would corrupt gate state
+if command -v jq &>/dev/null; then
+  if ! echo "$GROUPS_JSON" | jq empty 2>/dev/null; then
+    echo "ERROR: Input is not valid JSON. Gate file not written." >&2
+    echo "Input was: ${GROUPS_JSON:0:200}" >&2
+    exit 1
+  fi
+elif python3 -c "pass" &>/dev/null || python -c "pass" &>/dev/null; then
+  PY=$(python3 -c "pass" 2>/dev/null && echo "python3" || echo "python")
+  if ! $PY -c "import json; json.loads('''$GROUPS_JSON''')" 2>/dev/null; then
+    echo "ERROR: Input is not valid JSON. Gate file not written." >&2
+    echo "Input was: ${GROUPS_JSON:0:200}" >&2
+    exit 1
+  fi
+else
+  echo "WARNING: Cannot validate JSON (no jq or python). Writing unvalidated." >&2
+fi
+
 mkdir -p "$GATE_DIR"
 echo "$GROUPS_JSON" > "$GROUPS_FILE"
