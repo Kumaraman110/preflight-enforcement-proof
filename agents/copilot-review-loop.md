@@ -118,7 +118,7 @@ For every finding classified as STABLE or TRIVIAL-STABLE, run this check:
 
 1. Read the active rubric (same path the code-reviewer uses — from config or defaults).
 2. For each STABLE/TRIVIAL-STABLE finding, compare the suggestion's **target state** (what the code would look like AFTER implementing Copilot's suggestion) against the rubric's `BAD` patterns and explicit anti-patterns.
-3. Also check operative rules in capture files (the `**BAD (literal anti-pattern):**` blocks).
+3. Check the rubric's `BAD` code blocks for pattern matches (capture files are not read here — only the rubric is authoritative for detection).
 
 **If the suggestion's target state matches a rubric anti-pattern:**
 - Reclassify as `CONTRADICTS_RUBRIC` (a 4th stability category)
@@ -156,7 +156,7 @@ Control returns to you at Step 3.
 ### Bucket 1: in-rubric-but-missed → calibration log
 Copilot flagged something the active rubric covers, but Stage 1 didn't catch it.
 
-Write an OPERATIVE capture entry — one that takes effect on the next Stage 1 invocation, not one that waits for a batched PR:
+Write a capture entry — a **promotion candidate** for the next batched rubric-edit PR. The entry documents what was missed and proposes a detection rule, but it does NOT take immediate operative effect. Code-reviewer reads only the rubric for detection rules; capture entries become operative only after human-reviewed promotion:
 
 ```markdown
 ## <ISO date> — §<section> missed by Stage 1
@@ -183,9 +183,9 @@ Flag as `<severity>` if: <precise boolean condition referencing code patterns>
 \`\`\`
 ```
 
-The `IMMEDIATE DETECTION RULE` block is what makes this operative. The code-reviewer reads capture files and applies these rules on its next invocation.
+The `IMMEDIATE DETECTION RULE` block documents what the rubric should eventually detect. It does NOT take operative effect until promoted via a batched rubric-edit PR. The code-reviewer reads only the rubric — never capture files — for detection rules.
 
-**Confidence field (detection precision):** How precisely the BAD/GOOD patterns will fire without false matches.
+**Confidence field (detection precision):** How precisely the BAD/GOOD patterns will fire without false matches. Used at promotion time to determine what severity the new rubric section should declare.
 - **high** — detection signal is mechanical and exact (literal code pattern, specific method call, deterministic structural check). Fires if and only if the actual issue exists.
 - **medium** (default) — detection signal relies on broader pattern matching that might have edge cases. May produce occasional false positives in unusual code structures.
 - **low** — detection signal is context-dependent or requires judgment to distinguish from legitimate usage. Needs refinement before earning blocking authority.
@@ -196,14 +196,12 @@ Default to `medium` when precision is mixed or unclear. If marking `high` or `lo
 
 Marking high or low without justification is a rationalization — default to medium when the precision is mixed or unclear.
 
-**Severity threshold:** The code-reviewer uses BOTH `Survived` and `Confidence` to determine firing severity. New rules start with `Survived: 0`, firing as `info` only (non-blocking). After surviving 2+ services, Confidence determines the ceiling: high = full declared severity, medium = capped at major, low = stays at minor. This prevents both phantom blockers (Survived gate) and imprecise detectors from blocking the pipeline (Confidence gate).
-
-**Incrementing `Survived`:** At the END of a successful Stage 2 loop (status = SUCCESS), scan all operative rules in capture files. For each rule where:
-- The rule's `**PR:**` URL is different from the current PR (it was written in a prior service)
+**Incrementing `Survived`:** At the END of a successful Stage 2 loop (status = SUCCESS), scan all capture entries in calibration-log. For each entry where:
+- The entry's `**PR:**` URL is different from the current PR (it was written in a prior service)
 - The current run did NOT write a `false-positives.md` entry contradicting this rule
-- Stage 1 fired this rule's pattern at least once during the current run (proving it's active)
+- The same pattern recurred (Copilot flagged the same class of issue on this service)
 
-Increment that rule's `**Survived:**` count by 1. This is the calibration-by-survival mechanism.
+Increment that entry's `**Survived:**` count by 1. This tracks validation-by-survival for the batched rubric-edit PR process — entries with higher Survived counts have stronger evidence for promotion.
 
 ### Bucket 2: new-category → checklist additions
 Copilot flagged something with no rubric match.
@@ -292,13 +290,23 @@ When a coupled fix group is successfully resolved (parent reports DONE after imp
 
 ---
 
-## Rubric-Edit PR: Detection Refinement Scan
+## Rubric-Edit PR: Promotion Criteria and Scanning
 
-When preparing a batched rubric-edit PR (per `loop.rubricEditCadence`), scan all operative rules in calibration-log for the escalation condition:
+When preparing a batched rubric-edit PR (per `loop.rubricEditCadence`), scan all capture entries in calibration-log and checklist-additions. Evaluate each for promotion using this decision matrix:
 
-> **Survived ≥ 5 AND Confidence: low**
+**Promotion criteria (Survived × Confidence):**
 
-These rules have proven the underlying issue is real (5+ services without contradiction) but the detector's precision needs tightening before earning higher severity. Surface them in the rubric-edit PR draft under:
+| Survived | Confidence | Promotion recommendation |
+|---|---|---|
+| 0-1 | any | **Hold** — insufficient validation. Keep in capture for more data. |
+| 2+ | high | **Promote at declared severity** — issue is validated, detection is precise. |
+| 2+ | medium | **Promote capped at major** — issue is validated but detection may have edge cases. |
+| 2+ | low | **Promote capped at minor** — issue is validated but detection needs refinement before blocking. Flag for detection refinement. |
+| 5+ | low | **Priority escalation** — promote at minor AND flag for immediate detection refinement. The issue has been validated across many services; only the detector precision is lacking. |
+
+This matrix is decision support for the human reviewer, not auto-promotion. The human makes the final call.
+
+**Detection refinement section:** Surface entries matching the (Survived ≥ 5, Confidence low) condition in the rubric-edit PR draft under:
 
 ```markdown
 ## Rules needing detection refinement
@@ -309,6 +317,8 @@ These rules have proven the underlying issue is real (5+ services without contra
 ```
 
 A human can then refine the BAD/GOOD patterns (making detection mechanical → upgrade to `high`) or downgrade the rule if the underlying issue turns out to be less clear-cut than the survival count suggests.
+
+**Capture file lifecycle:** Capture files are transient. After a batched rubric-edit PR merges, promoted entries become rubric content. The source capture entries can be archived (moved to a `docs/review/archive/` folder with a date prefix) or cleared entirely — the rubric is now the authoritative source for those detection rules. Non-promoted entries (Survived 0-1, hold status) remain in the active capture files for continued validation.
 
 ---
 

@@ -4,14 +4,14 @@ Tests the review system itself — not service code.
 
 ## Why these exist
 
-Every change to the rubric, operative rules, copilot-review-loop classification, or coupling logic is a hypothesis. Without tests, the first feedback comes from running on a real service (expensive, slow, no rollback). These tests give 30-second validation before any change takes effect.
+Every change to the rubric, promotion criteria, copilot-review-loop classification, or coupling logic is a hypothesis. Without tests, the first feedback comes from running on a real service (expensive, slow, no rollback). These tests give 30-second validation before any change takes effect.
 
 ## Suites
 
 | Suite | What it validates | When to run |
 |---|---|---|
 | `stage1` | Rubric has detection patterns for known-bad code | After any rubric edit |
-| `operative` | Confidence threshold wiring (Survived counts, severity promotion) | After changing code-reviewer or copilot-review-loop operative rule handling |
+| `operative` | Promotion criteria wiring (Survived counts, Confidence thresholds for rubric-edit PR) | After changing copilot-review-loop promotion criteria or rubric-edit cadence |
 | `coupling` | Structural coupling signals detected correctly | After changing dependency-map-validator |
 | `crosscheck` | CONTRADICTS_RUBRIC classification exists and is ordered correctly | After changing copilot-review-loop stability filter |
 

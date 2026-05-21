@@ -35,8 +35,8 @@ Default severity assignments for the code-reviewer agent. Project-specific rubri
 | Missing Polly resilience handler | `minor` |
 | Observation / suggestion | `info` |
 
-## Calibration Override
+## Calibration via Rubric Edits
 
-When capture files exist and contain entries that adjust severity for specific patterns, the capture file's calibration takes precedence over this default matrix.
+Severity calibration happens through the batched rubric-edit PR process. When calibration-log entries identify severity mismatches (e.g., a section marked blocker that Copilot consistently does not flag), those entries are promoted into rubric revisions with corrected severity at the next rubric-edit cadence. The rubric's inline severity declarations always take precedence over this default matrix.
 
-Example: if `calibration-log.md` contains an entry saying "§2.1 was marked blocker but Copilot consistently does not flag basic structured logging as a security issue — downgrade to major for non-PII fields," the reviewer should honor that calibration.
+Code-reviewer does NOT read capture files for runtime severity overrides — only the rubric is authoritative for detection and severity.

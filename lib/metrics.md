@@ -100,7 +100,7 @@ The discovery-analyst and code-reviewer should read metrics when available to in
 After 3 services:
 - `stage1.iterations` trending down → generation spec is working (fewer mechanical mistakes)
 - `stage2.iterations` stable at 1-2 → coupling analysis is correct
-- `capture.inRubricButMissed` trending down → operative capture is working
+- `capture.inRubricButMissed` trending down → rubric coverage is improving (capture→promote→rubric loop is working)
 - `capture.patternCapture` growing → generation spec is growing
 - `totalDurationSeconds` trending down → system is getting faster
 

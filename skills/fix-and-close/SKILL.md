@@ -220,29 +220,13 @@ If ANY verification fails, DO NOT declare success. Surface the gap with the actu
 15. PR URL, total Stage 1 iterations, total Stage 2 iterations, capture entries by bucket, coverage achieved.
 16. Tell user PR is ready for human review. Do NOT merge.
 
-## Operative Capture Rules
+## Capture Files and the Rubric
 
-When capture files contain entries with `**IMMEDIATE DETECTION RULE:**` blocks, these are LIVE rules that supplement the rubric in real time. The code-reviewer reads them. They take effect immediately — not after a batched PR.
+Capture files are **transient evidence** — they record what Copilot flagged, how it was classified, and how many services have validated the pattern. They do NOT take immediate operative effect. Code-reviewer reads only the rubric for detection rules.
 
-The capture entry format for operative rules:
-```markdown
-## <date> — §<section> missed
+Capture entries become operative detection rules through the **batched rubric-edit PR process**: after `loop.rubricEditCadence` migrations, the copilot-review-loop drafts a PR that promotes validated entries (Survived 2+, Confidence high/medium) into new rubric sections. A human reviews and merges that PR. Only then do those rules fire on subsequent services.
 
-**IMMEDIATE DETECTION RULE:**
-Flag as `<severity>` if: <condition>
-
-**BAD (literal match):**
-\`\`\`csharp
-<anti-pattern code>
-\`\`\`
-
-**GOOD (must coexist):**
-\`\`\`csharp
-<required pattern>
-\`\`\`
-```
-
-This means learnings take effect on the NEXT Stage 1 invocation — not 5 services later.
+This trades "learnings take effect next invocation" for conflict-free parallel execution — multiple engineers can run preflight simultaneously without race conditions on shared capture files.
 
 ## Structured Status
 
