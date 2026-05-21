@@ -114,6 +114,38 @@ In addition to the markdown report, produce a `dependency-map.json` that the fix
 
 The `couplingGroups` array is what the orchestrator uses at fix time. When findings arrive on files in the same group, they MUST be fixed together. Files in `independent` can always be fixed alone.
 
+## Status Codes
+
+Always end your response with one of these status blocks so the orchestrator can act on the result:
+
+**DONE:**
+```
+## Discovery Result: DONE
+
+**Files produced:** [list — e.g., dependency-map.json, inline markdown report]
+**Service analyzed:** <name>
+**Readiness score:** <X/10> — <strategy>
+**Coupling groups:** <count>
+**Notes:** <any caveats, e.g., "legacy repo path unreachable for 2 shared libraries">
+```
+
+**BLOCKED:**
+```
+## Discovery Result: BLOCKED
+
+**Reason:** <why analysis cannot complete>
+**Attempted:** <what was tried before blocking>
+**Suggestion:** <what the orchestrator might do — e.g., "provide legacy repo path", "grant access to shared library repo">
+```
+
+**ERROR:**
+```
+## Discovery Result: ERROR
+
+**Error:** <verbatim error message or description>
+**Context:** <what was happening when the error occurred>
+```
+
 ## Rules
 
 - Be precise about locations. File paths + line numbers.
