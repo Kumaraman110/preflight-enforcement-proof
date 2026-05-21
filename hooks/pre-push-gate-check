@@ -2,7 +2,15 @@
 # PreToolUse hook for Bash commands. Only activates the gate when
 # the command is a git push. All other bash commands pass through.
 #
-# Receives the tool input as $1 (JSON with "command" field).
+# TOOL_INPUT CONTRACT:
+#   Claude Code passes $TOOL_INPUT as the serialized tool parameters.
+#   For the Bash tool, this is JSON: {"command": "git push ..."}
+#   The regex below (line ~18) matches 'git push' inside the JSON string
+#   value, which works because the command text appears literally within
+#   the JSON. If Claude Code's hook contract changes to pass only the
+#   extracted "command" field as a raw string, the regex still works
+#   (direct match). This is intentionally tolerant of both formats.
+#
 # Exit 0 = allow the tool call
 # Exit 1 = block the tool call (hook framework shows the stderr message)
 
