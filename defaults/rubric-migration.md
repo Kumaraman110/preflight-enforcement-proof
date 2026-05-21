@@ -1,5 +1,9 @@
 # Migration Review Rubric (Default)
 
+<!-- Section ID prefix: §M
+     All section IDs in this rubric use the §M prefix to
+     enable unambiguous cross-rubric reference. -->
+
 This rubric is used for framework migration projects when no project-specific rubric exists. It covers the common classes of issues found when migrating .NET Framework services to modern .NET.
 
 Projects with their own rubric (e.g., the CPSL migration rubric at `docs/cpsl-migration/migration-review-rubric.md`) should use that instead — it will be richer and calibrated to the specific codebase.

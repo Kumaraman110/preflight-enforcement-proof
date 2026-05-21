@@ -791,8 +791,8 @@ preflight active | mode=<mode> | config=<path> | rubric=<path> | N capture files
 - Human reviews and merges
 
 **GAPS:**
-- Section IDs are NOT globally unique across rubrics: generic uses `§1`, `§2`...; migration uses `§M1`, `§M2`...; API design uses `§A1`, `§A2`... If a project uses both generic + migration rubric, findings reference which? The code-reviewer walks "every applicable section" but doesn't namespace its output categories by which rubric the section came from.
-- The `BAD`/`GOOD` code blocks are optional (generic rubric §3.1 doesn't have them). The copilot-review-loop's rubric cross-check (Step 7.5) only pattern-matches against BAD blocks — sections without BAD blocks are invisible to the cross-check.
+- ~~Section IDs are NOT globally unique across rubrics: generic uses `§1`, `§2`...; migration uses `§M1`, `§M2`...; API design uses `§A1`, `§A2`... If a project uses both generic + migration rubric, findings reference which? The code-reviewer walks "every applicable section" but doesn't namespace its output categories by which rubric the section came from.~~ **RESOLVED (2026-05-21):** Generic rubric renamed to §G prefix. All three rubrics now declare their prefix in a top-of-file comment. Cross-rubric references use fully-prefixed IDs. Convention documented in FRAMEWORK.md and enforced in rubric-edit-process.md validation checklist. Commit: f70b14b.
+- The `BAD`/`GOOD` code blocks are optional (generic rubric §G3.1 doesn't have them). The copilot-review-loop's rubric cross-check (Step 7.5) only pattern-matches against BAD blocks — sections without BAD blocks are invisible to the cross-check.
 - No machine-readable rubric index. Everything is inferred from markdown heading patterns.
 
 **PRIORITY: HIGH** — the rubric is the core detection specification; ID collision or misparse breaks the loop.

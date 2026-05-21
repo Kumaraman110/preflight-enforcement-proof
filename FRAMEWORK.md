@@ -108,6 +108,18 @@ Validated capture entries become rubric sections through the batched rubric-edit
 - **Human-reviewed:** the rubric-edit PR goes through normal review before merging
 - **Lifecycle:** entries track `FirstSeen` and `Cycles` fields; entries not promoted within 2 cycles are archived as deferred
 
+### Rubric section ID prefixes
+
+Multi-rubric configurations (e.g., generic + migration rules applied simultaneously) require unambiguous section IDs across rubric files. Each rubric declares its section ID prefix in a top-of-file HTML comment. The default rubrics use:
+
+| Rubric | Prefix | Example IDs |
+|---|---|---|
+| `rubric-generic.md` | §G | §G1, §G2.1, §G7.2 |
+| `rubric-migration.md` | §M | §M1, §M4.3, §M9.1 |
+| `rubric-api-design.md` | §A | §A1, §A3.2, §A6.1 |
+
+Custom rubrics MUST declare a unique prefix in a comment at the top of the file. Section IDs within a rubric MUST conform to the declared prefix. Cross-rubric references in capture files and generation specs use the fully-prefixed ID (e.g., `§M3` refers unambiguously to migration rubric section 3).
+
 ---
 
 ## 5. Skills

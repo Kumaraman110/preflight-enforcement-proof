@@ -123,7 +123,7 @@ chore(rubric): batch N — <1-sentence summary of changes>
 
 Examples:
 - `chore(rubric): batch 3 — strengthen §M4.2 token caching detection, add §M8 container user check`
-- `chore(rubric): batch 5 — loosen §2.1 structured logging (non-PII fields), add §A3 pagination category`
+- `chore(rubric): batch 5 — loosen §G2.1 structured logging (non-PII fields), add §A3 pagination category`
 
 ### 6.2 PR Body Structure
 
@@ -186,7 +186,7 @@ Before merging, verify:
 ### 7.1 Section ID Uniqueness
 
 Section IDs must be globally unique across all rubrics a project might use simultaneously:
-- Generic rubric: `§1`, `§2`, `§3`...
+- Generic rubric: `§G1`, `§G2`, `§G3`...
 - Migration rubric: `§M1`, `§M2`, `§M3`...
 - API design rubric: `§A1`, `§A2`, `§A3`...
 
@@ -195,6 +195,8 @@ New sections MUST follow the prefix convention for their rubric. Run:
 grep -h '^### §' defaults/rubric-*.md | sort | uniq -d
 ```
 Any output = collision. Fix before merging.
+
+Every rubric file declares its section ID prefix in a top-of-file HTML comment (e.g., `<!-- Section ID prefix: §G -->`). Verify that every section ID in the file conforms to the declared prefix. Any section ID that doesn't match the declared prefix is a defect to fix before merging.
 
 ### 7.2 BAD/GOOD Blocks Required
 

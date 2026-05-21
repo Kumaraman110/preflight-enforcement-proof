@@ -6,7 +6,7 @@ Each pattern maps to a detection rule in the rubric. If you use the pattern corr
 
 ---
 
-## Token Caching (prevents §4.2–4.4 findings)
+## Token Caching (prevents §G4.2, §M4.3 findings)
 
 ```csharp
 public class {ServiceName}TokenProvider : I{ServiceName}TokenProvider
@@ -79,7 +79,7 @@ public class {ServiceName}TokenProvider : I{ServiceName}TokenProvider
 
 ---
 
-## Options Pattern with Validation (prevents §6.1 findings)
+## Options Pattern with Validation (prevents §G6.1 findings)
 
 ```csharp
 public class {ServiceName}Options
@@ -122,7 +122,7 @@ builder.Services
 
 ---
 
-## Typed HttpClient with Resilience (prevents §4.1, §4.2 findings)
+## Typed HttpClient with Resilience (prevents §G4.1, §G4.2 findings)
 
 ```csharp
 // Registration in Program.cs
@@ -138,7 +138,7 @@ builder.Services
 
 ---
 
-## Log Sanitization (prevents §5.1 / CWE-117 findings)
+## Log Sanitization (prevents §G2.1 / CWE-117 findings)
 
 ```csharp
 public static class LogSanitizer
@@ -189,7 +189,7 @@ app.MapHealthChecks("/ready", new HealthCheckOptions
 
 ---
 
-## Dockerfile (prevents §2.2, §M8.1, §A5.1 findings)
+## Dockerfile (prevents §G2.2, §M8.1, §A5.1 findings)
 
 ```dockerfile
 FROM mcr.microsoft.com/dotnet/aspnet:{version} AS base
@@ -217,7 +217,7 @@ ENTRYPOINT ["dotnet", "{ServiceName}.dll"]
 
 ---
 
-## Input Validation on Models (prevents §2.4 / CWE-1174 findings)
+## Input Validation on Models (prevents §G2.4 / CWE-1174 findings)
 
 ```csharp
 public class {RequestName}

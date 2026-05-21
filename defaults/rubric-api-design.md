@@ -1,5 +1,9 @@
 # API Design Review Rubric (Net-New Development)
 
+<!-- Section ID prefix: §A
+     All section IDs in this rubric use the §A prefix to
+     enable unambiguous cross-rubric reference. -->
+
 This rubric is used for net-new API projects. It covers API design, contract consistency, and operational readiness in addition to the generic code quality rules.
 
 When reviewing net-new API code, apply BOTH this rubric AND the generic rubric. This rubric adds API-specific categories; it does not replace the generic rules.
