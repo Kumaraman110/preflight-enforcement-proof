@@ -102,15 +102,16 @@ run_stage1_tests() {
 }
 
 # ═══════════════════════════════════════════════════════════════
-# SUITE: Operative rule confidence threshold
-# Validates that the code-reviewer documentation correctly
-# specifies the confidence threshold behavior.
+# SUITE: Promotion criteria wiring (post-federation contract)
+# Validates that the federated capture/rubric contract is
+# correctly wired: code-reviewer reads only the rubric,
+# copilot-review-loop owns promotion criteria and lifecycle.
 # ═══════════════════════════════════════════════════════════════
 
 run_operative_rule_tests() {
   echo ""
   echo "══════════════════════════════════════════"
-  echo " Operative Rules: Confidence threshold"
+  echo " Promotion Criteria: Post-federation contract"
   echo "══════════════════════════════════════════"
   echo ""
 
@@ -124,24 +125,33 @@ run_operative_rule_tests() {
   local reviewer_content
   reviewer_content=$(cat "$reviewer")
 
-  # Confidence threshold must exist
-  assert_contains "$reviewer_content" "Survived" "Reviewer mentions Survived count"
-  assert_contains "$reviewer_content" "confidence threshold" "Reviewer documents confidence threshold"
+  # Post-federation: code-reviewer reads ONLY the rubric
+  assert_contains "$reviewer_content" "do NOT read capture files" "Reviewer explicitly excludes capture files"
+  assert_not_contains "$reviewer_content" "operative rules from capture" "Reviewer has no capture-as-operative language"
+  assert_contains "$reviewer_content" "rubric and the diff. Nothing else" "Reviewer reads only rubric and diff"
 
-  # Severity mapping for survived counts
-  assert_contains "$reviewer_content" "info" "Survived 0 fires as info"
-  assert_contains "$reviewer_content" "minor" "Survived 1 fires as minor"
-
-  # Conflict resolution documented
-  assert_contains "$reviewer_content" "rubric wins" "Unearned rules don't override rubric"
-
-  # Copilot-loop writes Survived: 0
+  # Copilot-loop owns promotion criteria and lifecycle tracking
   local copilot_loop="$PLUGIN_ROOT/agents/copilot-review-loop.md"
   if [ -f "$copilot_loop" ]; then
     local loop_content
     loop_content=$(cat "$copilot_loop")
     assert_contains "$loop_content" "Survived.*0\|\\*\\*Survived:\\*\\* 0" "Copilot-loop initializes Survived at 0"
     assert_contains "$loop_content" "Incrementing" "Copilot-loop documents how to increment Survived"
+    assert_contains "$loop_content" "\\*\\*FirstSeen:\\*\\*" "Copilot-loop templates have FirstSeen field"
+    assert_contains "$loop_content" "\\*\\*Cycles:\\*\\*" "Copilot-loop templates have Cycles field"
+    assert_contains "$loop_content" "Promotion Criteria" "Copilot-loop documents promotion criteria"
+  fi
+
+  # Rubric-edit process documents four-state lifecycle
+  local rubric_edit="$PLUGIN_ROOT/docs/rubric-edit-process.md"
+  if [ -f "$rubric_edit" ]; then
+    local edit_content
+    edit_content=$(cat "$rubric_edit")
+    assert_contains "$edit_content" "Active" "Rubric-edit process documents Active state"
+    assert_contains "$edit_content" "Promoted" "Rubric-edit process documents Promoted state"
+    assert_contains "$edit_content" "Consumed" "Rubric-edit process documents Consumed state"
+    assert_contains "$edit_content" "Deferred" "Rubric-edit process documents Deferred state"
+    assert_contains "$edit_content" "Cycles.*2\|Cycles ≥ 2" "Rubric-edit process specifies TTL N=2"
   fi
 }
 
