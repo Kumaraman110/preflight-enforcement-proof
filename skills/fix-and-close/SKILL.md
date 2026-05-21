@@ -147,10 +147,33 @@ From config (or defaults):
 ### Commit and Push
 
 9. Stage files explicitly (never `git add .`). Exclude: `bin/`, `obj/`, `*.user`, `coverage.opencover.xml`.
-10. Compose conventional-commit message (biased by user's hint if given).
+10. Compose conventional-commit message (biased by user's hint if given). For Copilot-fix-round commits (after Stage 2 returns NEEDS_PARENT_FIXES), use this format:
+
+    ```
+    fix(<scope>): apply Copilot fixes round N
+
+    - <fix description per comment>
+    - <fix description per comment>
+
+    Capture: <X> entries to calibration-log.md, <Y> to checklist-additions.md
+    Stage 1: clean
+    ```
+
+    Include the `Capture:` line counting entries by bucket whenever the copilot-review-loop sub-agent has written capture entries alongside the fix. Include `Stage 1: clean` as a footer to signal the gate passed.
+
 11. Push to remote feature branch (never `--force`).
 
 ### Stage 2 — Copilot Review Loop
+
+#### Polling Defaults
+
+These values come from config (`review.*`). If config is absent, use these defaults:
+
+| Parameter | Default | Description |
+|---|---|---|
+| `review.pollIntervalSeconds` | 200 | Seconds between Copilot review status polls |
+| `review.initialWaitSeconds` | 90 | Seconds to wait before the first poll (Copilot needs time to analyze) |
+| Heartbeat interval | 30 minutes | If Copilot has been silent for 30+ minutes, emit a status update so the user reading the chat later knows polling continued and approximately how long it has been waiting |
 
 12. **Invoke `copilot-review-loop` sub-agent.**
 
@@ -165,7 +188,7 @@ From config (or defaults):
       - UNSTABLE → surface to user, do NOT auto-fix. Present the finding and ask for direction.
       - CONTRADICTS_RUBRIC → surface to user with BOTH the Copilot suggestion AND the rubric section it violates. Default: rubric wins. If user overrides, implement Copilot's suggestion and note the override in `calibration-log.md` for the next batched rubric PR to evaluate.
     
-    - `STUCK` / `DIVERGING` → surface to user with evidence. Do not push more.
+    - `STUCK` / `DIVERGING` → surface to user with oscillation evidence: name the specific file(s), line number(s), and rule(s) that keep churning. Do NOT push more. This is the one place the pipeline pauses and waits for human judgment.
     
     - `FAILED` → surface error verbatim. Do not retry blindly.
     
