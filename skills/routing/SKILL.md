@@ -12,7 +12,7 @@ If you think there is even a 1% chance a skill applies to what you're about to d
 | You are about to... | Required skill | Why skipping costs |
 |---|---|---|
 | Run `git push` | `/preflight:self-review` (if gate evidence stale) | Push will be blocked by mechanical gate. You'll waste the tool call, then have to review anyway. Faster to review first. |
-| Claim "done" on any multi-step task | Verification discipline (fresh `dotnet test` + `dotnet build`) | Claiming done without evidence → user trusts → merges → broken. |
+| Claim "done" on any multi-step task | Verification discipline (fresh test command + build command from project config) | Claiming done without evidence → user trusts → merges → broken. |
 | Write new functionality (not fixing existing) | `/preflight:test-driven-development` | Tests after implementation = weaker coverage, harder assertions, less design pressure. |
 | Fix a test failure (2nd+ attempt on same test) | `/preflight:systematic-debugging` | Shotgun debugging averages 4.2 attempts. Systematic averages 1.8. After 2 failures, switch. |
 | Start migrating a service | `/preflight:migrate` | Skipping Phase 1 discovery has cost 4+ hours when dependencies cascaded. |
@@ -38,8 +38,8 @@ Before claiming ANY of these, the evidence must be FRESH (produced AFTER your la
 
 | Claim | Required evidence | NOT evidence |
 |---|---|---|
-| "Tests pass" | `dotnet test` output you just ran showing 0 failures | "Should pass", previous run, implementer said so |
-| "Build is clean" | `dotnet build` output showing 0 errors 0 warnings | "Tests pass" (tests ≠ build) |
+| "Tests pass" | test command output (from project config) showing 0 failures | "Should pass", previous run, implementer said so |
+| "Build is clean" | build command output (from project config) showing 0 errors 0 warnings | "Tests pass" (tests ≠ build) |
 | "Stage 1 clean" | code-reviewer output saying CLEAN on current diff | Previous iteration's CLEAN |
 | "Done" | All of the above + structural verification | "It works" without running it |
 

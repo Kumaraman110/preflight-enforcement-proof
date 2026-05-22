@@ -14,10 +14,10 @@ If you haven't run the verification command in THIS interaction, you cannot clai
 
 | Claim | Requires | NOT Sufficient |
 |---|---|---|
-| "Tests pass" | `dotnet test` output showing 0 failures, run AFTER latest change | Previous run, "should pass", implementer said they pass |
-| "Build succeeds" | `dotnet build` output showing 0 errors 0 warnings | "Tests pass" (tests ≠ build), linter clean |
+| "Tests pass" | test command (from config) output showing 0 failures, run AFTER latest change | Previous run, "should pass", implementer said they pass |
+| "Build succeeds" | build command (from config) output showing 0 errors 0 warnings | "Tests pass" (tests ≠ build), linter clean |
 | "Stage 1 clean" | code-reviewer output saying CLEAN on current diff | Previous iteration's CLEAN, "I only changed whitespace" |
-| "Implementer fixed it" | `dotnet build` + `dotnet test` run BY THE ORCHESTRATOR after accepting the fix | Implementer's report of DONE |
+| "Implementer fixed it" | build command + test command (from config) run BY THE ORCHESTRATOR after accepting the fix | Implementer's report of DONE |
 | "Coverage meets baseline" | Coverage report showing ≥ threshold | "All tests pass" (pass ≠ coverage) |
 | "Dependency map is valid" | Validator script output showing 0 blocking warnings | "I generated it from the code" |
 

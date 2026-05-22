@@ -1,6 +1,6 @@
 ---
 name: test-driven-development
-description: Strict RED-GREEN-REFACTOR enforcement for .NET development. Use when writing new functionality (not bug fixes on existing code). Ensures tests are written BEFORE implementation, preventing the "tests that always pass" anti-pattern. Works with NUnit/Moq/Bogus.
+description: Strict RED-GREEN-REFACTOR enforcement. Use when writing new functionality or fixing bugs that need regression protection. Ensures tests are written BEFORE implementation, preventing the "tests that always pass" anti-pattern.
 argument-hint: [feature or behavior to implement]
 allowed-tools: Read, Glob, Grep, Bash, Edit, Write
 ---
@@ -64,14 +64,12 @@ Do NOT write implementation code before a failing test exists for the behavior y
 
 12. Identify the next behavior. Write the next failing test. Repeat.
 
-## .NET Specifics
+## Stack Conventions
 
-- **Framework:** NUnit (`[Test]`, `[TestCase]`, `[SetUp]`)
-- **Mocking:** Moq (`Mock<T>`, `.Setup()`, `.Verify()`)
-- **Data generation:** Bogus (`new Faker<T>().RuleFor(...)`)
-- **Assertions:** NUnit Assert or FluentAssertions
+Stack-specific conventions are read from CLAUDE.md (test framework, mocking library, assertion library). The team's standards govern test framework choice; this skill enforces the RED-GREEN-REFACTOR discipline regardless of stack.
+
 - **Coverage:** Track with each GREEN phase. Coverage should increase monotonically.
-- **Naming:** `MethodName_Scenario_ExpectedBehavior` (e.g., `GetAccount_ValidMileagePlus_ReturnsAccountData`)
+- **Naming:** Follow the team's test naming convention from CLAUDE.md (e.g., `MethodName_Scenario_ExpectedBehavior`).
 
 ## What "Minimum Code" Means
 

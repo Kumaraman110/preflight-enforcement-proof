@@ -3,11 +3,11 @@
   "version": "0.1.0",
   "description": "Self-improving code review and development framework. Provides rubric-driven Stage 1 review, Copilot-driven Stage 2 review loops, learning capture, and orchestration for both .NET migration and net-new API development.",
   "author": {
-    "name": "CPSL Platform Team"
+    "name": "Kumar Aman"
   },
   "repository": "https://github.com/United-Airlines-Org/preflight",
   "license": "UNLICENSED",
-  "keywords": ["review", "migration", "dotnet", "self-improving", "copilot"],
+  "keywords": ["review", "migration", "self-improving", "copilot"],
   "skills": [
     "./skills/self-review",
     "./skills/fix-and-close",

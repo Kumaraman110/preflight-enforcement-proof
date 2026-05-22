@@ -130,7 +130,7 @@ For every finding classified as STABLE or TRIVIAL-STABLE, run this check:
 - Write to `false-positives.md` (Bucket 3) with the template: "Copilot suggested X, which contradicts §Y.Z — rubric is authoritative"
 - Surface to user: "Copilot and rubric disagree on this. Rubric wins unless you override."
 
-**Why this step exists:** The stability filter classifies on FORM (is the suggestion specific and reproducible?) not CORRECTNESS (is the suggestion right for our architecture?). Copilot's most dangerous suggestions are perfectly stable and perfectly wrong — `IMemoryCache.GetOrCreateAsync` is the canonical example from AccountLookup. Without this step, the parent implements the suggestion, Stage 1 catches the violation, the parent reverts, Copilot fires again next round → oscillation. This step breaks the oscillation at classification time, costing 10 seconds of rubric scanning instead of 5 minutes of implement-catch-revert per occurrence.
+**Why this step exists:** The stability filter classifies on FORM (is the suggestion specific and reproducible?) not CORRECTNESS (is the suggestion right for our architecture?). Copilot's most dangerous suggestions are perfectly stable and perfectly wrong — `IMemoryCache.GetOrCreateAsync` is the canonical example from the reference implementation. Without this step, the parent implements the suggestion, Stage 1 catches the violation, the parent reverts, Copilot fires again next round → oscillation. This step breaks the oscillation at classification time, costing 10 seconds of rubric scanning instead of 5 minutes of implement-catch-revert per occurrence.
 
 **What this is NOT:**
 - Not a rubric walk (that's Stage 1's job). This is a targeted pattern match: does the SUGGESTED CODE appear in any BAD block?
@@ -293,7 +293,7 @@ When a coupled fix group is successfully resolved (parent reports DONE after imp
 **Promotion criteria:** If this pattern appears in 3+ candidates across different services, promote to the team's generation spec (path from project config) in the next batched rubric-edit PR.
 ```
 
-**Why this bucket exists:** The generation spec was seeded from AccountLookup's patterns. Without a capture mechanism, it stays frozen. This bucket grows it from real, validated solutions — every hard-won fix becomes a pattern that prevents the same struggle on the next service. It closes the loop: detection spec catches problems → fixes produce solutions → pattern-capture promotes solutions to generation spec → generation spec prevents the problems from existing.
+**Why this bucket exists:** The generation spec was seeded from the reference implementation's patterns. Without a capture mechanism, it stays frozen. This bucket grows it from real, validated solutions — every hard-won fix becomes a pattern that prevents the same struggle on the next service. It closes the loop: detection spec catches problems → fixes produce solutions → pattern-capture promotes solutions to generation spec → generation spec prevents the problems from existing.
 
 ---
 

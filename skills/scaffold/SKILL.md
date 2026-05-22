@@ -1,7 +1,7 @@
 ---
 name: scaffold
 description: Scaffold and develop a net-new API service from scratch. Runs architecture design, generates service skeleton matching target patterns, then drives the full Stage 1 + Stage 2 review loop. Use when building a new API rather than migrating an existing one.
-argument-hint: <service name and brief description, e.g. "FlightStatus — returns real-time flight status for IVR callers">
+argument-hint: <service name and brief description, e.g. "OrderStatus — returns real-time order status for API consumers">
 allowed-tools: Read, Glob, Grep, Bash, Edit, Write, Agent
 ---
 
@@ -72,14 +72,14 @@ Generate the service skeleton reading patterns from (in priority order):
 4. The plugin's default API design rubric (for rules not covered by generation spec)
 
 The skeleton should include:
-1. SDK-style `.csproj` targeting modern .NET
+1. Project file targeting the platform specified in project config or CLAUDE.md
 2. `Program.cs` with minimal hosting, DI, health checks
 3. Endpoint handlers with request/response models
 4. Typed HTTP clients for downstream services
 5. Options classes with validation
 6. Structured logging with sanitization on user-input paths
 7. Dockerfile (non-root, correct port)
-8. Test project (NUnit + Moq + Bogus) with initial coverage
+8. Test project matching team conventions (from CLAUDE.md) with initial coverage
 9. Infrastructure-as-code (CDK/Terraform matching project conventions)
 
 **The generation advantage:** Because you read the detection rubric BEFORE generating code, you produce code that passes Stage 1 on the first attempt. This is not cheating — it's the point. The rubric encodes accumulated wisdom. Generating from it means every new service starts at the quality floor, not below it.

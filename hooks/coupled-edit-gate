@@ -83,7 +83,7 @@ BLOCKED: This file belongs to a coupling group with unresolved findings.
 
 You MUST read ALL findings in this group before editing ANY file in it.
 Fixing coupled findings independently is the #1 cause of cascading regressions
-(48% of the 70-round cost on AccountLookup).
+(48% of review round cost in cascading regression scenarios).
 
 To proceed:
 1. Read all findings for this coupling group

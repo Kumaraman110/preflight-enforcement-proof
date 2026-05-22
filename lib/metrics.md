@@ -13,8 +13,8 @@ Without metrics, "we're superior" is a claim, not a fact. The system's core cont
   "runs": [
     {
       "timestamp": "2026-05-18T14:32:00Z",
-      "service": "CTI.MicroService.IVR.AccountLookup",
-      "branch": "fix/legacy-parity-review-findings",
+      "service": "my-service",
+      "branch": "feature/migrate-service-x",
       "skill": "fix-and-close",
       "stage1": {
         "iterations": 3,
@@ -105,7 +105,7 @@ After 3 services:
 - `totalDurationSeconds` trending down → system is getting faster
 
 After 5 services:
-- Compare pre-framework rounds (70 on AccountLookup) to post-framework rounds
+- Compare pre-framework rounds to post-framework rounds
 - If average is <5: the framework has paid for itself
 - If average is >10: the coupling analysis or generation spec has gaps
 
