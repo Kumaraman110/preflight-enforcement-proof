@@ -1,6 +1,6 @@
 # Generation Spec: .NET Service Patterns
 
-These are complete, copy-pasteable code patterns with placeholders. When generating a service (Phase 3 of migration, or scaffold-api), use these patterns EXACTLY. Do not improvise variations.
+These are complete, copy-pasteable code patterns with placeholders. When generating a service (Phase 3 of migration, or scaffold), use these patterns EXACTLY. Do not improvise variations.
 
 Each pattern maps to a detection rule in the rubric. If you use the pattern correctly, the corresponding rubric section will never flag it. This is by design — the generation spec and detection spec are two sides of the same coin.
 

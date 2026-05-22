@@ -22,7 +22,7 @@ The rubric-edit PR is human-reviewed by design. It is the reconciliation point w
 
 **Trigger:** After `loop.rubricEditCadence` PRs have completed Stage 2 (default: 5). The count is PRs that ran through `/fix-and-close` with Stage 2 Copilot review — regardless of work shape (migration, refactor, new feature, bug fix, infrastructure). Any preflight workflow that generates capture entries counts toward the cadence.
 
-**Who initiates:** Any team member. The copilot-review-loop agent tracks the count in `.preflight/metrics.json` (the `runs` array length since last rubric-edit). When the threshold is reached, the agent surfaces a reminder in its output.
+**Who initiates:** Any team member. The external-review-handler agent tracks the count in `.preflight/metrics.json` (the `runs` array length since last rubric-edit). When the threshold is reached, the agent surfaces a reminder in its output.
 
 **Urgency:** Low. The cadence is a guideline, not a hard gate. Captures remain valid evidence indefinitely. Delaying a rubric-edit PR by a few PRs costs nothing except slightly delayed detection improvement.
 
@@ -153,7 +153,7 @@ Examples:
 
 ## Rules Needing Detection Refinement
 
-[Table of Survived ≥ 5, Confidence low entries per copilot-review-loop spec]
+[Table of Survived ≥ 5, Confidence low entries per external-review-handler spec]
 
 ## Deferred Entries (Cycles ≥ 2)
 

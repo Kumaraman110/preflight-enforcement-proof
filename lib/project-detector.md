@@ -68,8 +68,8 @@ When no config file exists:
 | Mode | Rubric | Skills Available | Extra Context |
 |---|---|---|---|
 | `generic` | Default generic | self-review, fix-and-close, TDD, debugging | None |
-| `migration` | Project rubric + default migration | All generic + migrate-service | Legacy repo path required |
-| `api-new` | Project rubric + default API design | All generic + scaffold-api | Reference service optional |
+| `migration` | Project rubric + default migration | All generic + migrate | Legacy repo path required |
+| `api-new` | Project rubric + default API design | All generic + scaffold | Reference service optional |
 
 ## CLAUDE.md Integration
 

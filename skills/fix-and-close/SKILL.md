@@ -159,7 +159,7 @@ From config (or defaults):
     Stage 1: clean
     ```
 
-    Include the `Capture:` line counting entries by bucket whenever the copilot-review-loop sub-agent has written capture entries alongside the fix. Include `Stage 1: clean` as a footer to signal the gate passed.
+    Include the `Capture:` line counting entries by bucket whenever the external-review-handler sub-agent has written capture entries alongside the fix. Include `Stage 1: clean` as a footer to signal the gate passed.
 
 11. Push to remote feature branch (never `--force`).
 
@@ -175,7 +175,7 @@ These values come from config (`review.*`). If config is absent, use these defau
 | `review.initialWaitSeconds` | 90 | Seconds to wait before the first poll (Copilot needs time to analyze) |
 | Heartbeat interval | 30 minutes | If Copilot has been silent for 30+ minutes, emit a status update so the user reading the chat later knows polling continued and approximately how long it has been waiting |
 
-12. **Invoke `copilot-review-loop` sub-agent.**
+12. **Invoke `external-review-handler` sub-agent.**
 
 13. **Handle status codes:**
 
@@ -224,7 +224,7 @@ If ANY verification fails, DO NOT declare success. Surface the gap with the actu
 
 Capture files are **transient evidence** — they record what Copilot flagged, how it was classified, and how many services have validated the pattern. They do NOT take immediate operative effect. Code-reviewer reads only the rubric for detection rules.
 
-Capture entries become operative detection rules through the **batched rubric-edit PR process**: after `loop.rubricEditCadence` migrations, the copilot-review-loop drafts a PR that promotes validated entries (Survived 2+, Confidence high/medium) into new rubric sections. A human reviews and merges that PR. Only then do those rules fire on subsequent services.
+Capture entries become operative detection rules through the **batched rubric-edit PR process**: after `loop.rubricEditCadence` migrations, the external-review-handler drafts a PR that promotes validated entries (Survived 2+, Confidence high/medium) into new rubric sections. A human reviews and merges that PR. Only then do those rules fire on subsequent services.
 
 This trades "learnings take effect next invocation" for conflict-free parallel execution — multiple engineers can run preflight simultaneously without race conditions on shared capture files.
 
@@ -245,7 +245,7 @@ At any point, if you cannot proceed:
 - Skip tests before push
 - Fix coupled findings independently (the #1 cascade cause)
 - Loop past iteration caps
-- Edit capture files (copilot-review-loop does that)
+- Edit capture files (external-review-handler does that)
 
 ## Appendix: Rationalization Prevention
 

@@ -105,7 +105,7 @@ run_stage1_tests() {
 # SUITE: Promotion criteria wiring (post-federation contract)
 # Validates that the federated capture/rubric contract is
 # correctly wired: code-reviewer reads only the rubric,
-# copilot-review-loop owns promotion criteria and lifecycle.
+# external-review-handler owns promotion criteria and lifecycle.
 # ═══════════════════════════════════════════════════════════════
 
 run_operative_rule_tests() {
@@ -131,7 +131,7 @@ run_operative_rule_tests() {
   assert_contains "$reviewer_content" "rubric and the diff. Nothing else" "Reviewer reads only rubric and diff"
 
   # Copilot-loop owns promotion criteria and lifecycle tracking
-  local copilot_loop="$PLUGIN_ROOT/agents/copilot-review-loop.md"
+  local copilot_loop="$PLUGIN_ROOT/agents/external-review-handler.md"
   if [ -f "$copilot_loop" ]; then
     local loop_content
     loop_content=$(cat "$copilot_loop")
@@ -224,7 +224,7 @@ run_coupling_tests() {
 # ═══════════════════════════════════════════════════════════════
 # SUITE: Rubric cross-check
 # Validates that the CONTRADICTS_RUBRIC classification exists
-# and the cross-check step is documented in copilot-review-loop.
+# and the cross-check step is documented in external-review-handler.
 # ═══════════════════════════════════════════════════════════════
 
 run_crosscheck_tests() {
@@ -234,10 +234,10 @@ run_crosscheck_tests() {
   echo "══════════════════════════════════════════"
   echo ""
 
-  local copilot_loop="$PLUGIN_ROOT/agents/copilot-review-loop.md"
+  local copilot_loop="$PLUGIN_ROOT/agents/external-review-handler.md"
 
   if [ ! -f "$copilot_loop" ]; then
-    red "SKIP: copilot-review-loop.md not found"
+    red "SKIP: external-review-handler.md not found"
     return
   fi
 
@@ -245,7 +245,7 @@ run_crosscheck_tests() {
   loop_content=$(cat "$copilot_loop")
 
   # Step 7.5 exists
-  assert_contains "$loop_content" "Step 7.5\|Rubric cross-check" "Cross-check step exists in copilot-review-loop"
+  assert_contains "$loop_content" "Step 7.5\|Rubric cross-check" "Cross-check step exists in external-review-handler"
 
   # CONTRADICTS_RUBRIC classification exists
   assert_contains "$loop_content" "CONTRADICTS_RUBRIC" "CONTRADICTS_RUBRIC classification documented"

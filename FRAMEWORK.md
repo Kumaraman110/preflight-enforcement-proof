@@ -21,7 +21,7 @@ This is the contract the system is engineered to deliver. The two sub-agents, th
 
 The commitment is probabilistic, not absolute. It depends on:
 - The external reviewer flagging the issue (it must be caught at least once)
-- The copilot-review-loop classifying it correctly (it must land in the right bucket)
+- The external-review-handler classifying it correctly (it must land in the right bucket)
 - The rubric-edit PR promoting it (a human must approve the rule)
 - The code-reviewer detecting the promoted pattern (the rubric section must be mechanical)
 
@@ -44,7 +44,7 @@ Stage 1: code-reviewer walks rubric against diff
 PR opened, external reviewer requested
   |
   v
-Stage 2: copilot-review-loop polls external review
+Stage 2: external-review-handler polls external review
   |--- Comments arrive --> classify into 4 buckets, write captures
   |                    --> return findings to main session for fixing
   |--- No comments --> SUCCESS
@@ -69,7 +69,7 @@ The system uses three actors with non-overlapping responsibilities:
 |---|---|---|---|
 | **Main session** | everything | service code, commits, pushes | Orchestrates, edits code, applies fixes |
 | **code-reviewer** | rubric + diff | findings report only | Detects issues against the rubric |
-| **copilot-review-loop** | external comments + rubric | capture files only | Classifies findings, writes learning evidence |
+| **external-review-handler** | external comments + rubric | capture files only | Classifies findings, writes learning evidence |
 
 A fourth sub-agent, **discovery-analyst**, produces dependency maps and readiness assessments for domain-specific workflows. A fifth, **implementer**, applies fixes in fresh context when the main session's context is saturated.
 
@@ -130,8 +130,8 @@ Preflight provides 7 invocable skills and 1 system skill:
 
 | Skill | Mode | Purpose |
 |---|---|---|
-| `/preflight:migrate-service` | migration | End-to-end legacy migration: discovery, execution, review loop |
-| `/preflight:scaffold-api` | api-new | Net-new API: design, generation from rubric, review loop |
+| `/preflight:migrate` | migration | End-to-end legacy migration: discovery, execution, review loop |
+| `/preflight:scaffold` | api-new | Net-new API: design, generation from rubric, review loop |
 
 Both domain skills follow the same pattern: Phase 1 analysis, Phase 2 generation/execution, handoff to `/preflight:fix-and-close` for the review pipeline. They are peer domains — neither is primary.
 
@@ -171,7 +171,7 @@ The routing skill is the framework's proactive layer — it prevents the agent f
 - **Output:** `CLEAN` | `NEEDS_FIXES` | `ERROR` with structured findings JSON
 - **Invoked:** before every push, including after Copilot-driven fixes
 
-### copilot-review-loop (Stage 2)
+### external-review-handler (Stage 2)
 
 - **Role:** Polls external reviewer, classifies findings, writes capture entries, manages Survived counts
 - **Reads:** external review comments, rubric (for cross-check), existing capture entries (for deduplication)
@@ -296,8 +296,8 @@ If `rubric` is omitted or null, the plugin uses defaults based on mode.
 | Mode | Rubric source | Extra skills | Extra config |
 |---|---|---|---|
 | `generic` | Example rubric (rubric-generic-dotnet.md) | self-review, fix-and-close, TDD, debugging, gps-decide | None |
-| `migration` | rubric-migration-dotnet.md + rubric-generic-dotnet.md | + migrate-service | `migration.legacyRepoPath` required |
-| `api-new` | rubric-api-design.md + rubric-generic-dotnet.md | + scaffold-api | None |
+| `migration` | rubric-migration-dotnet.md + rubric-generic-dotnet.md | + migrate | `migration.legacyRepoPath` required |
+| `api-new` | rubric-api-design.md + rubric-generic-dotnet.md | + scaffold | None |
 
 ### Fallback behavior
 
@@ -325,7 +325,7 @@ When no config exists: mode is `generic`, rubric is the plugin's bundled `exampl
 - Contracts may revise based on early execution evidence
 
 **What changes to expect before v0.1:**
-- First execution (via `/preflight:scaffold-api` on upcoming API development) will validate or revise polling intervals, iteration caps, and capture template fields
+- First execution (via `/preflight:scaffold` on upcoming API development) will validate or revise polling intervals, iteration caps, and capture template fields
 - Hook behavior under real Claude Code plugin loading (vs development `--plugin-dir`) may surface integration issues
 - The rubric-edit promotion process has not been exercised end-to-end yet
 

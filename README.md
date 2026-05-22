@@ -65,8 +65,8 @@ Different teams get different behavior by providing different context. The frame
 |---|---|
 | `/preflight:self-review` | Run Stage 1 against current diff. Fix locally. Loop until clean. Never pushes. |
 | `/preflight:fix-and-close` | Full pipeline: Stage 1 gate → commit → push → Stage 2 Copilot loop → clean PR. |
-| `/preflight:migrate-service` | End-to-end legacy service migration: discovery, execution, review loop. |
-| `/preflight:scaffold-api` | Net-new API: design, generate skeleton, review loop. |
+| `/preflight:migrate` | End-to-end legacy service migration: discovery, execution, review loop. |
+| `/preflight:scaffold` | Net-new API: design, generate skeleton, review loop. |
 | `/preflight:systematic-debugging` | Root cause investigation before fixes. Prevents shotgun debugging. |
 | `/preflight:test-driven-development` | RED-GREEN-REFACTOR enforcement. Tests before implementation. |
 | `/preflight:gps-decide` | Decision framework that scales scrutiny to stakes. Prevents over-deliberation. |
@@ -76,7 +76,7 @@ Different teams get different behavior by providing different context. The frame
 | Agent | Role | Writes |
 |---|---|---|
 | `code-reviewer` | Walks rubric against diff, reports findings | Nothing (findings returned as output) |
-| `copilot-review-loop` | Polls external reviewer, classifies findings, captures learnings | Capture files only |
+| `external-review-handler` | Polls external reviewer, classifies findings, captures learnings | Capture files only |
 | `discovery-analyst` | Codebase analysis for readiness assessment | `dependency-map.json` |
 | `implementer` | Fresh-context executor for coupled-group fixes | Only files listed in fix brief |
 
@@ -218,7 +218,7 @@ What "pre" means: contracts may revise based on early execution evidence. The ar
 ## Roadmap
 
 Near-term (before v0.1):
-- [ ] Generalize `migrate-service` away from hardcoded service prefix patterns
+- [ ] Generalize `migrate` away from hardcoded service prefix patterns
 - [ ] Extract discovery-analyst's technical debt scan into configurable profiles
 - [ ] Validate on a non-.NET project (proving core stack-neutrality)
 - [ ] First real-world execution through the published framework
@@ -235,7 +235,7 @@ Medium-term:
 ```
 Main session (you)                    ← edits code, orchestrates everything
   ├── code-reviewer (sub-agent)       ← reads rubric + diff, reports findings
-  ├── copilot-review-loop (sub-agent) ← polls external review, classifies, captures
+  ├── external-review-handler (sub-agent) ← polls external review, classifies, captures
   ├── discovery-analyst (sub-agent)   ← reads codebase, produces dependency map
   └── implementer (sub-agent)         ← fresh-context fixer for coupled groups
 ```

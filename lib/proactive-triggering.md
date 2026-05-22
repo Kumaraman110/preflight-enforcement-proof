@@ -14,7 +14,7 @@ If there is a reasonable chance a skill applies to what you are about to do, inv
 | Test failure after a fix attempt | `systematic-debugging` (if 2+ fix attempts failed) | Prevents shotgun debugging; forces root cause investigation |
 | Writing new functionality (not fixing existing) | `test-driven-development` | Prevents tests-after-implementation anti-pattern |
 | About to claim "done" on any multi-step task | Verification discipline check | Prevents false completion claims |
-| Starting a new service migration | `migrate-service` | Ensures Phase 1 discovery runs; prevents "looks simple" skip |
+| Starting a new service migration | `migrate` | Ensures Phase 1 discovery runs; prevents "looks simple" skip |
 | Multiple findings on the same file after fixing | Coupled-group protocol re-check | Prevents independent-fix cascade |
 
 ## How This Works in Practice

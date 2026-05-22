@@ -15,7 +15,7 @@ If you think there is even a 1% chance a skill applies to what you're about to d
 | Claim "done" on any multi-step task | Verification discipline (fresh `dotnet test` + `dotnet build`) | Claiming done without evidence → user trusts → merges → broken. |
 | Write new functionality (not fixing existing) | `/preflight:test-driven-development` | Tests after implementation = weaker coverage, harder assertions, less design pressure. |
 | Fix a test failure (2nd+ attempt on same test) | `/preflight:systematic-debugging` | Shotgun debugging averages 4.2 attempts. Systematic averages 1.8. After 2 failures, switch. |
-| Start migrating a service | `/preflight:migrate-service` | Skipping Phase 1 discovery has cost 4+ hours when dependencies cascaded. |
+| Start migrating a service | `/preflight:migrate` | Skipping Phase 1 discovery has cost 4+ hours when dependencies cascaded. |
 | Push + PR + review loop (full pipeline) | `/preflight:fix-and-close` | Handles Stage 1 gate, commit, push, Stage 2 Copilot loop, capture, metrics — all with coupled-group protocol and iteration caps. |
 | Lock in a readiness score, pick an architectural approach, or propose a rubric/rule change | `/preflight:gps-decide` (skip for trivial reversible choices) | Confident-but-untested judgment ships unchallenged; a wrong one-way-door call costs weeks, not the seconds a stress-test pass takes |
 
@@ -47,9 +47,9 @@ Before claiming ANY of these, the evidence must be FRESH (produced AFTER your la
 
 1. **Process skills first** — debugging, TDD, gps-decide. These determine HOW to approach.
 2. **Gate skills second** — self-review, fix-and-close. These ensure QUALITY before shipping.
-3. **Implementation skills third** — migrate-service, scaffold-api. These guide EXECUTION.
+3. **Implementation skills third** — migrate, scaffold. These guide EXECUTION.
 
-"Migrate this service" → migrate-service (includes Phase 1 discovery before code).
+"Migrate this service" → migrate (includes Phase 1 discovery before code).
 "Fix this test" → if 2nd attempt: systematic-debugging → then fix → then self-review before push.
 "Push this" → self-review (if evidence stale) → fix-and-close (if want full pipeline).
 "Should we do X?" → if stakes non-trivial: gps-decide → then execute the decision.
@@ -62,4 +62,4 @@ Before claiming ANY of these, the evidence must be FRESH (produced AFTER your la
 
 ## Subagent Exception
 
-If you were dispatched as a subagent (implementer, code-reviewer, copilot-review-loop, discovery-analyst), skip this routing. You have a specific task. Do it. Don't invoke other skills from within a subagent.
+If you were dispatched as a subagent (implementer, code-reviewer, external-review-handler, discovery-analyst), skip this routing. You have a specific task. Do it. Don't invoke other skills from within a subagent.

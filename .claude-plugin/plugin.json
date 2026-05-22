@@ -11,8 +11,8 @@
   "skills": [
     "./skills/self-review",
     "./skills/fix-and-close",
-    "./skills/migrate-service",
-    "./skills/scaffold-api",
+    "./skills/migrate",
+    "./skills/scaffold",
     "./skills/systematic-debugging",
     "./skills/test-driven-development",
     "./skills/gps-decide",

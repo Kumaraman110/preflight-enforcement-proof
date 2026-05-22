@@ -34,27 +34,27 @@ Complete inventory of all skills, agents, and hooks in the preflight framework. 
 | **Purpose** | Full pipeline: Stage 1 gate → commit → push → Stage 2 Copilot loop → metrics. Orchestrates coupled-group protocol. |
 | **Invocation** | `/preflight:fix-and-close` |
 | **Mode gate** | None (all modes) |
-| **Tools used** | Read, Glob, Grep, Bash, Edit, Write, Agent (code-reviewer, copilot-review-loop, implementer) |
+| **Tools used** | Read, Glob, Grep, Bash, Edit, Write, Agent (code-reviewer, external-review-handler, implementer) |
 | **Inputs** | Uncommitted or committed changes on a feature branch |
 | **Outputs** | Clean PR (all review rounds resolved), capture files updated, metrics recorded |
-| **Depends on** | code-reviewer agent, copilot-review-loop agent, implementer agent, pre-push-gate hook, write-gate-evidence hook, write-active-groups hook, write-group-ack hook, coupled-edit-gate hook |
-| **Depended on by** | migrate-service (hands off to this after Phase 2), scaffold-api (hands off after generation) |
+| **Depends on** | code-reviewer agent, external-review-handler agent, implementer agent, pre-push-gate hook, write-gate-evidence hook, write-active-groups hook, write-group-ack hook, coupled-edit-gate hook |
+| **Depended on by** | migrate (hands off to this after Phase 2), scaffold (hands off after generation) |
 | **Stack coupling** | Generic — test command configurable via `test.command` |
 | **Iteration caps** | Stage 1: 5, Stage 2: 3 (configurable to 8) |
 | **Key protocol** | Coupled-Group Fix Protocol — groups related findings, blocks independent edits, requires acknowledgment before fix |
 
 ---
 
-### migrate-service
+### migrate
 
 | Field | Value |
 |---|---|
-| **File** | `skills/migrate-service/SKILL.md` |
+| **File** | `skills/migrate/SKILL.md` |
 | **Lines** | 222 |
 | **Purpose** | End-to-end legacy service migration: Phase 1 discovery (structure, debt, readiness score), Phase 2 execution (7 steps), handoff to fix-and-close. |
-| **Invocation** | `/preflight:migrate-service <service-name>` |
+| **Invocation** | `/preflight:migrate <service-name>` |
 | **Mode gate** | `migration` mode only |
-| **Tools used** | Read, Glob, Grep, Bash, Edit, Write, Agent (discovery-analyst, code-reviewer, copilot-review-loop) |
+| **Tools used** | Read, Glob, Grep, Bash, Edit, Write, Agent (discovery-analyst, code-reviewer, external-review-handler) |
 | **Inputs** | Service name (bare or free-form), legacy repo path from config |
 | **Outputs** | Complete migrated service (project, tests, infra, Dockerfile), handed to fix-and-close |
 | **Depends on** | discovery-analyst agent, fix-and-close skill, project config (`migration.legacyRepoPath`, `migration.servicesRoot`) |
@@ -63,14 +63,14 @@ Complete inventory of all skills, agents, and hooks in the preflight framework. 
 
 ---
 
-### scaffold-api
+### scaffold
 
 | Field | Value |
 |---|---|
-| **File** | `skills/scaffold-api/SKILL.md` |
+| **File** | `skills/scaffold/SKILL.md` |
 | **Lines** | 111 |
 | **Purpose** | Net-new API service: gather requirements, generate skeleton from rubric + generation spec, hand off to fix-and-close for review pipeline. |
-| **Invocation** | `/preflight:scaffold-api` |
+| **Invocation** | `/preflight:scaffold` |
 | **Mode gate** | `api-new` mode only |
 | **Tools used** | Read, Glob, Grep, Bash, Edit, Write, Agent |
 | **Inputs** | API requirements (endpoints, consumers, data shape) |
@@ -178,11 +178,11 @@ Complete inventory of all skills, agents, and hooks in the preflight framework. 
 
 ---
 
-### copilot-review-loop
+### external-review-handler
 
 | Field | Value |
 |---|---|
-| **File** | `agents/copilot-review-loop.md` |
+| **File** | `agents/external-review-handler.md` |
 | **Lines** | 384 |
 | **Role** | Stage 2 orchestrator. Polls GitHub Copilot review, classifies findings into four buckets, writes capture entries, manages Survived counts, returns findings to parent for fixing. |
 | **Tools** | Read, Glob, Grep, Bash, Write, Edit |
@@ -209,7 +209,7 @@ Complete inventory of all skills, agents, and hooks in the preflight framework. 
 | **Reads** | Source code, project files, dependencies (in legacy repo) |
 | **Writes** | `dependency-map.json` (file on disk) |
 | **Output contract** | `DONE` \| `BLOCKED` \| `ERROR` + markdown report |
-| **Invoked by** | migrate-service skill (Phase 1) |
+| **Invoked by** | migrate skill (Phase 1) |
 | **Never does** | Modify code in either repo |
 | **Scans for** | Unity DI registrations, System.Web dependencies, ConfigurationManager, synchronous DB calls, WCF/SOAP references, legacy auth (OWIN), Newtonsoft.Json usage |
 | **Stack coupling** | **Heavily .NET-shaped** — hardcoded scan targets are all .NET Framework patterns |
@@ -378,8 +378,8 @@ Complete inventory of all skills, agents, and hooks in the preflight framework. 
 ### Invocation chains
 
 ```
-User types /preflight:migrate-service
-  → migrate-service skill
+User types /preflight:migrate
+  → migrate skill
     → discovery-analyst agent (Phase 1)
     → [code generation Phase 2]
     → fix-and-close skill (handoff)
@@ -388,7 +388,7 @@ User types /preflight:migrate-service
       → write-gate-evidence stage1-clean
       → pre-push-gate-check → pre-push-gate (validates evidence)
       → [push]
-      → copilot-review-loop agent (Stage 2, up to 3x)
+      → external-review-handler agent (Stage 2, up to 3x)
         → writes capture files
         → returns NEEDS_PARENT_FIXES
       → write-active-groups (if coupled findings)
@@ -402,8 +402,8 @@ User types /preflight:self-review
     → code-reviewer agent (loop until CLEAN, max 5x)
     → write-gate-evidence stage1-clean
 
-User types /preflight:scaffold-api
-  → scaffold-api skill
+User types /preflight:scaffold
+  → scaffold skill
     → [design + generation]
     → fix-and-close skill (handoff — same chain as above)
 
@@ -449,7 +449,7 @@ Stage 1 NEEDS_FIXES (grouped) → write-active-groups → .preflight/gate/active
 |---|---|---|---|---|
 | Main session | YES | NO | YES (via hooks) | YES |
 | code-reviewer | NO | NO | NO | YES |
-| copilot-review-loop | NO | YES | NO | YES (cross-check) |
+| external-review-handler | NO | YES | NO | YES (cross-check) |
 | discovery-analyst | NO | NO | NO | NO |
 | implementer | YES (brief-scoped) | NO | NO | NO |
 
@@ -473,9 +473,9 @@ Stage 1 NEEDS_FIXES (grouped) → write-active-groups → .preflight/gate/active
 
 | Coupling level | Components |
 |---|---|
-| **Generic** (zero stack assumptions) | self-review, fix-and-close, systematic-debugging, gps-decide, code-reviewer, copilot-review-loop, implementer, all hooks |
-| **Lightly .NET-flavored** (references in examples/defaults) | test-driven-development, scaffold-api, routing, rubric-generic |
-| **Heavily .NET-shaped** (hardcoded scan/generation) | migrate-service, discovery-analyst, generation-specs/dotnet-service, rubric-migration |
+| **Generic** (zero stack assumptions) | self-review, fix-and-close, systematic-debugging, gps-decide, code-reviewer, external-review-handler, implementer, all hooks |
+| **Lightly .NET-flavored** (references in examples/defaults) | test-driven-development, scaffold, routing, rubric-generic |
+| **Heavily .NET-shaped** (hardcoded scan/generation) | migrate, discovery-analyst, generation-specs/dotnet-service, rubric-migration |
 
 **~75% of components are fully generic.** The .NET-specific surface is concentrated in the migration domain skill, its supporting discovery agent, and the .NET-specific rubrics/generation specs. The core loop (review → capture → promote → strengthen) is stack-neutral.
 
@@ -491,6 +491,6 @@ Stage 1 NEEDS_FIXES (grouped) → write-active-groups → .preflight/gate/active
 
 1. **No execution evidence yet.** All contracts are statically verified; no PR has been driven through the full published loop.
 2. **discover-analyst is .NET-only.** Adding discovery profiles for other stacks requires new scan targets.
-3. **migrate-service prefix pattern is hardcoded.** `CTI.MicroService.IVR.<Name>` assumption needs parameterization.
+3. **migrate prefix pattern is hardcoded.** `CTI.MicroService.IVR.<Name>` assumption needs parameterization.
 4. **Rubric-edit promotion process is untested end-to-end.** The 5-PR cadence is designed but not exercised.
 5. **Windows support is fragile.** `run-hook.cmd` polyglot works but depends on Git for Windows providing bash.

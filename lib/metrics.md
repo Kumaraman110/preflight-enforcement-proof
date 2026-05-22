@@ -52,7 +52,7 @@ Without metrics, "we're superior" is a claim, not a fact. The system's core cont
 
 ## Collection Points
 
-The orchestrator (fix-and-close or migrate-service) collects metrics at these points:
+The orchestrator (fix-and-close or migrate) collects metrics at these points:
 
 | Event | What to record |
 |---|---|

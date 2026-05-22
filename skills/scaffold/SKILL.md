@@ -1,11 +1,11 @@
 ---
-name: scaffold-api
+name: scaffold
 description: Scaffold and develop a net-new API service from scratch. Runs architecture design, generates service skeleton matching target patterns, then drives the full Stage 1 + Stage 2 review loop. Use when building a new API rather than migrating an existing one.
 argument-hint: <service name and brief description, e.g. "FlightStatus — returns real-time flight status for IVR callers">
 allowed-tools: Read, Glob, Grep, Bash, Edit, Write, Agent
 ---
 
-# /preflight:scaffold-api — Net-New API Development
+# /preflight:scaffold — Net-New API Development
 
 You are building a new API service from scratch. Unlike migration, there is no legacy code to port. Instead, you design the API, generate a service skeleton that pre-passes the review rubric by construction, then drive it through the review loop for validation.
 
@@ -36,7 +36,7 @@ If session context is empty or this skill was invoked cold (no hook ran):
 
 ## Pre-requisites
 
-If `mode` is `migration`, warn: "This project is configured for migration. Use `/preflight:migrate-service` instead, or update config to `mode: api-new`."
+If `mode` is `migration`, warn: "This project is configured for migration. Use `/preflight:migrate` instead, or update config to `mode: api-new`."
 
 If no config exists, that's fine — use example API rubric from `${CLAUDE_PLUGIN_ROOT}/examples/rubrics/rubric-api-design.md`.
 
@@ -102,7 +102,7 @@ This is how the system gets better at net-new, not just migration.
 
 ## What This Does NOT Do
 
-- Port legacy code (use `/preflight:migrate-service`)
+- Port legacy code (use `/preflight:migrate`)
 - Skip the design phase
 - Push before Stage 1 is clean
 - Merge the PR

@@ -1,13 +1,13 @@
 ---
-name: migrate-service
+name: migrate
 description: End-to-end migration of a legacy service to modern .NET 10. Runs discovery (project structure, technical debt, DP Manager decoupling, microservice consolidation, readiness score), executes Phase 2 migration (7 concrete steps with AWS CDK/ECS), refreshes the dependency map, then hands off to /preflight:fix-and-close for the Stage 1 gate → push → Stage 2 Copilot loop. Only activates when project config mode is "migration".
 argument-hint: <service name, e.g. "PaxLookup" or "migrate the seat assignment lookup service">
 allowed-tools: Read, Glob, Grep, Bash, Edit, Write, Agent
 ---
 
-# /preflight:migrate-service — End-to-End Migration
+# /preflight:migrate — End-to-End Migration
 
-You are running an end-to-end migration of one legacy service from .NET Framework to .NET 10, driving discovery, execution, and review, and feeding the self-improvement system. When the user types `/preflight:migrate-service <something>`, they expect to walk away and come back to a clean, mergeable PR.
+You are running an end-to-end migration of one legacy service from .NET Framework to .NET 10, driving discovery, execution, and review, and feeding the self-improvement system. When the user types `/preflight:migrate <something>`, they expect to walk away and come back to a clean, mergeable PR.
 
 The user passed `$ARGUMENTS` as input. Parse generously:
 - Bare service name (e.g. `PaxLookup`) → assume standard prefix (e.g., `CTI.MicroService.IVR.<Name>`) and look for it in the legacy repo.
@@ -33,7 +33,7 @@ If session context is empty or this skill was invoked cold (no hook ran):
 ## Pre-requisites
 
 <HARD-GATE>
-This skill requires project config with `"mode": "migration"`. If the config is missing or mode is not "migration", inform the user: "This project is not configured for migration. Create a `.preflight/config.json` with `mode: migration` and a `migration.legacyRepoPath`, or use `/preflight:scaffold-api` for net-new development."
+This skill requires project config with `"mode": "migration"`. If the config is missing or mode is not "migration", inform the user: "This project is not configured for migration. Create a `.preflight/config.json` with `mode: migration` and a `migration.legacyRepoPath`, or use `/preflight:scaffold` for net-new development."
 </HARD-GATE>
 
 Verify from config:
@@ -167,7 +167,7 @@ Pass the commit-message hint derived from Phase 1 (e.g. `feat(<service>): migrat
 The fix-and-close skill handles:
 - Stage 1 gate (code-reviewer sub-agent, hard cap 5 iterations, Coupled-Group Fix Protocol)
 - Commit + push (conventional-commits, explicit file staging)
-- Stage 2 Copilot loop (copilot-review-loop sub-agent, hard cap 3 iterations, polling, STUCK detection)
+- Stage 2 Copilot loop (external-review-handler sub-agent, hard cap 3 iterations, polling, STUCK detection)
 - Structural verification (dotnet build, dotnet test, directory structure, health endpoint)
 - Metrics collection
 
@@ -209,13 +209,13 @@ The user invoked this command expecting to walk away. They will be reading the c
 - Mix feature work with migration
 - Fix coupled findings independently (enforced by /fix-and-close's Coupled-Group Protocol)
 - Loop past iteration caps (5 for Stage 1, 3 for Stage 2 — enforced by /fix-and-close)
-- Write to capture files directly — only the copilot-review-loop sub-agent writes captures
-- Confuse sub-agent roles — code-reviewer reads/reports, copilot-review-loop orchestrates/captures, discovery-analyst maps dependencies, implementer fixes coupled groups, this skill orchestrates the overall flow
+- Write to capture files directly — only the external-review-handler sub-agent writes captures
+- Confuse sub-agent roles — code-reviewer reads/reports, external-review-handler orchestrates/captures, discovery-analyst maps dependencies, implementer fixes coupled groups, this skill orchestrates the overall flow
 - Auto-bump the rubric cadence — `loop.rubricEditCadence` is read from config (default 5); the rubric-edit PR is a separate batched effort
 
 ## Reminders
 
-- The rubric is wisdom, not law. Findings that seem wrong should still be surfaced — disagreements get captured into `false-positives` via the copilot-review-loop, not silently dropped.
+- The rubric is wisdom, not law. Findings that seem wrong should still be surfaced — disagreements get captured into `false-positives` via the external-review-handler, not silently dropped.
 - The goal is not just to migrate this service. It is to make the next migration faster than this one. Every Copilot finding the orchestrator captures is a future-finding the Stage 1 reviewer will catch locally.
 - One service per PR. If the migration reveals that another service must also be touched, stop and ask. Do not chain.
 

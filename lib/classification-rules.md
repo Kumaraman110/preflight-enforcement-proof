@@ -1,6 +1,6 @@
 # Classification Rules
 
-Reference material for the `copilot-review-loop` agent. Defines how to classify external review findings into the four learning buckets.
+Reference material for the `external-review-handler` agent. Defines how to classify external review findings into the four learning buckets.
 
 ## The Four Buckets
 

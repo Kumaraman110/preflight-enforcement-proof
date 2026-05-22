@@ -108,6 +108,6 @@ If the bash checks fail (file not found, jq parse error, etc.): fall back to CON
 ## Integration Point
 
 The fix-and-close orchestrator runs this validation:
-- After discovery-analyst generates the map (migrate-service flow)
+- After discovery-analyst generates the map (migrate flow)
 - After post-Phase-2 dependency map refresh
 - NEVER skip validation because "the map looks reasonable" — that's the exact rationalization that leads to silent cascades
