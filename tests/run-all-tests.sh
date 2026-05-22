@@ -70,7 +70,7 @@ run_stage1_tests() {
   echo "══════════════════════════════════════════"
   echo ""
 
-  local rubric="$PLUGIN_ROOT/defaults/rubric-migration.md"
+  local rubric="$PLUGIN_ROOT/examples/rubrics/rubric-migration-dotnet.md"
 
   if [ ! -f "$rubric" ]; then
     red "SKIP: rubric-migration.md not found at $rubric"

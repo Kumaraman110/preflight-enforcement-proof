@@ -19,7 +19,7 @@ If session context is empty or this skill was invoked cold (no hook ran):
 
 1. Search for config: `.preflight/config.json` > `.cpsl/config.json` > `.forge.json` (in working directory, then up to 5 parent levels).
 2. If found: extract `mode`, `rubric`, `branch.base`, `test.command`, `loop.*`, `capture.*`.
-3. If not found: use defaults — mode `generic`, rubric from `${CLAUDE_PLUGIN_ROOT}/defaults/rubric-generic.md`, base branch `main`, test command auto-detected.
+3. If not found: use defaults — mode `generic`, rubric from `${CLAUDE_PLUGIN_ROOT}/examples/rubrics/rubric-generic-dotnet.md`, base branch `main`, test command auto-detected.
 4. Check for `CLAUDE.md` at project root for supplementary conventions.
 5. Confirm the rubric file exists at the resolved path. If missing, warn and fall back to the generic default.
 

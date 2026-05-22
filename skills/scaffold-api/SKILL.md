@@ -30,15 +30,15 @@ If session context is empty or this skill was invoked cold (no hook ran):
 
 1. Search for config: `.preflight/config.json` > `.cpsl/config.json` > `.forge.json` (in working directory, then up to 5 parent levels).
 2. If found: extract `mode`, `rubric`, `branch.base`, `branch.remote`, `test.*`, `loop.*`, `capture.*`.
-3. If not found: use defaults — mode `generic`, rubric from `${CLAUDE_PLUGIN_ROOT}/defaults/rubric-api-design.md`, base branch `main`.
+3. If not found: use defaults — mode `generic`, rubric from `${CLAUDE_PLUGIN_ROOT}/examples/rubrics/rubric-api-design.md`, base branch `main`.
 4. Check for `CLAUDE.md` at project root for supplementary conventions.
-5. Confirm the rubric file exists at the resolved path. If missing, fall back to `${CLAUDE_PLUGIN_ROOT}/defaults/rubric-api-design.md`.
+5. Confirm the rubric file exists at the resolved path. If missing, fall back to `${CLAUDE_PLUGIN_ROOT}/examples/rubrics/rubric-api-design.md`.
 
 ## Pre-requisites
 
 If `mode` is `migration`, warn: "This project is configured for migration. Use `/preflight:migrate-service` instead, or update config to `mode: api-new`."
 
-If no config exists, that's fine — use default API rubric from `${CLAUDE_PLUGIN_ROOT}/defaults/rubric-api-design.md`.
+If no config exists, that's fine — use example API rubric from `${CLAUDE_PLUGIN_ROOT}/examples/rubrics/rubric-api-design.md`.
 
 ## Phase 1 — Design
 
@@ -62,11 +62,11 @@ If no config exists, that's fine — use default API rubric from `${CLAUDE_PLUGI
 ## Phase 2 — Generation
 
 <HARD-GATE>
-Before writing ANY code, read `${CLAUDE_PLUGIN_ROOT}/defaults/generation-specs/dotnet-service.md`. For every pattern that applies, PASTE the code block verbatim into the target file — character for character. Then modify ONLY at marked `/* ADAPT */` points. Do not reconstruct from memory. Do not "use" or "apply" patterns. PASTE them. Reconstruction drifts at high context (a `SemaphoreSlim(1, 1)` becomes `SemaphoreSlim(1)`, an `EnsureSuccessStatusCode()` moves above the await). Verbatim paste eliminates this class of error entirely.
+Before writing ANY code, read the generation spec. Resolve the path from project config (`generation-spec` field) or fall back to `${CLAUDE_PLUGIN_ROOT}/examples/generation-specs/dotnet-service.md`. For every pattern that applies, PASTE the code block verbatim into the target file — character for character. Then modify ONLY at marked `/* ADAPT */` points. Do not reconstruct from memory. Do not "use" or "apply" patterns. PASTE them. Reconstruction drifts at high context (a `SemaphoreSlim(1, 1)` becomes `SemaphoreSlim(1)`, an `EnsureSuccessStatusCode()` moves above the await). Verbatim paste eliminates this class of error entirely.
 </HARD-GATE>
 
 Generate the service skeleton reading patterns from (in priority order):
-1. `${CLAUDE_PLUGIN_ROOT}/defaults/generation-specs/dotnet-service.md` (mandatory — pre-validated patterns)
+1. Generation spec from project config (`generation-spec` field), or `${CLAUDE_PLUGIN_ROOT}/examples/generation-specs/dotnet-service.md` (mandatory — pre-validated patterns)
 2. Reference services in the same repo (if they exist)
 3. The project's CLAUDE.md (if it exists)
 4. The plugin's default API design rubric (for rules not covered by generation spec)

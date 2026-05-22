@@ -38,7 +38,7 @@ Read these files before starting:
 | `capture.checklistAdditions` path (from config) | Bucket 2 entries — new categories to add |
 | `capture.falsePositives` path (from config) | Bucket 3 entries — overly strict rules to loosen |
 | Current rubric (at `rubric` path from config) | The document being edited |
-| `defaults/rubric-generic.md` | Cross-cutting defaults (for section ID conflict check) |
+| `examples/rubrics/rubric-generic-dotnet.md` | Cross-cutting example rubric (for section ID conflict check) |
 
 For each capture entry, note the tracking fields:
 - `**Survived:**` — validation count (how many PRs confirmed this pattern)
@@ -192,7 +192,7 @@ Section IDs must be globally unique across all rubrics a project might use simul
 
 New sections MUST follow the prefix convention for their rubric. Run:
 ```bash
-grep -h '^### §' defaults/rubric-*.md | sort | uniq -d
+grep -h '^### §' examples/rubrics/rubric-*.md | sort | uniq -d
 ```
 Any output = collision. Fix before merging.
 

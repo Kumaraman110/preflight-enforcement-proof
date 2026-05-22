@@ -56,7 +56,7 @@ Look for these files in the current working directory (first match wins):
 
 When no config file exists:
 - Mode: `generic`
-- Rubric: `${CLAUDE_PLUGIN_ROOT}/defaults/rubric-generic.md`
+- Rubric: `${CLAUDE_PLUGIN_ROOT}/examples/rubrics/rubric-generic-dotnet.md`
 - Branch base: `main`
 - Branch remote: `origin`
 - Test command: auto-detect (if `.csproj`/`.sln` exists → `dotnet test`; if `package.json` → `npm test`; otherwise skip)

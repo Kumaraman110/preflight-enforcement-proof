@@ -75,7 +75,7 @@ Complete inventory of all skills, agents, and hooks in the preflight framework. 
 | **Tools used** | Read, Glob, Grep, Bash, Edit, Write, Agent |
 | **Inputs** | API requirements (endpoints, consumers, data shape) |
 | **Outputs** | Generated service skeleton (project, tests, infra), handed to fix-and-close |
-| **Depends on** | fix-and-close skill, generation spec (`defaults/generation-specs/`), rubric-api-design |
+| **Depends on** | fix-and-close skill, generation spec (`examples/generation-specs/`), rubric-api-design |
 | **Depended on by** | Nothing (top-level entry point) |
 | **Stack coupling** | Lightly .NET-flavored — references NUnit/Moq/Bogus, "IVR callers" in argument hint |
 

@@ -285,9 +285,9 @@ Recommended configurations by mode:
 
 | Mode | Recommended `rubric` value |
 |---|---|
-| `generic` | `"defaults/rubric-generic.md"` (string) |
-| `migration` | `["defaults/rubric-migration.md", "defaults/rubric-generic.md"]` |
-| `api-new` | `["defaults/rubric-api-design.md", "defaults/rubric-generic.md"]` |
+| `generic` | `"examples/rubrics/rubric-generic-dotnet.md"` (string) |
+| `migration` | `["examples/rubrics/rubric-migration-dotnet.md", "examples/rubrics/rubric-generic-dotnet.md"]` |
+| `api-new` | `["examples/rubrics/rubric-api-design.md", "examples/rubrics/rubric-generic-dotnet.md"]` |
 
 If `rubric` is omitted or null, the plugin uses defaults based on mode.
 
@@ -295,13 +295,13 @@ If `rubric` is omitted or null, the plugin uses defaults based on mode.
 
 | Mode | Rubric source | Extra skills | Extra config |
 |---|---|---|---|
-| `generic` | Plugin default (rubric-generic.md) | self-review, fix-and-close, TDD, debugging, gps-decide | None |
-| `migration` | rubric-migration.md + rubric-generic.md | + migrate-service | `migration.legacyRepoPath` required |
-| `api-new` | rubric-api-design.md + rubric-generic.md | + scaffold-api | None |
+| `generic` | Example rubric (rubric-generic-dotnet.md) | self-review, fix-and-close, TDD, debugging, gps-decide | None |
+| `migration` | rubric-migration-dotnet.md + rubric-generic-dotnet.md | + migrate-service | `migration.legacyRepoPath` required |
+| `api-new` | rubric-api-design.md + rubric-generic-dotnet.md | + scaffold-api | None |
 
 ### Fallback behavior
 
-When no config exists: mode is `generic`, rubric is the plugin's bundled `defaults/rubric-generic.md`, branch base is `main`, test command is auto-detected. Every skill's Step 0 implements this fallback identically (documented in `lib/skill-bootstrap.md`).
+When no config exists: mode is `generic`, rubric is the plugin's bundled `examples/rubrics/rubric-generic-dotnet.md`, branch base is `main`, test command is auto-detected. Every skill's Step 0 implements this fallback identically (documented in `lib/skill-bootstrap.md`).
 
 ---
 

@@ -290,7 +290,7 @@ When a coupled fix group is successfully resolved (parent reports DONE after imp
 
 **Confidence:** high (passed review) | medium (passed but edge cases unknown)
 
-**Promotion criteria:** If this pattern appears in 3+ candidates across different services, promote to `defaults/generation-specs/dotnet-service.md` in the next batched rubric-edit PR.
+**Promotion criteria:** If this pattern appears in 3+ candidates across different services, promote to the team's generation spec (path from project config) in the next batched rubric-edit PR.
 ```
 
 **Why this bucket exists:** The generation spec was seeded from AccountLookup's patterns. Without a capture mechanism, it stays frozen. This bucket grows it from real, validated solutions — every hard-won fix becomes a pattern that prevents the same struggle on the next service. It closes the loop: detection spec catches problems → fixes produce solutions → pattern-capture promotes solutions to generation spec → generation spec prevents the problems from existing.

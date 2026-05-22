@@ -28,7 +28,7 @@ If session context is empty or this skill was invoked cold (no hook ran):
 2. If found: extract `mode`, `rubric`, `branch.base`, `branch.remote`, `test.*`, `loop.*`, `capture.*`, `migration.*`.
 3. If not found: use defaults — mode `generic`, base branch `main`, test command auto-detected.
 4. Check for `CLAUDE.md` at project root for supplementary conventions.
-5. Confirm the rubric file exists at the resolved path. If missing, warn and fall back to `${CLAUDE_PLUGIN_ROOT}/defaults/rubric-migration.md`.
+5. Confirm the rubric file exists at the resolved path. If missing, warn and fall back to `${CLAUDE_PLUGIN_ROOT}/examples/rubrics/rubric-migration-dotnet.md` (example rubric — teams should configure their own).
 
 ## Pre-requisites
 
@@ -38,7 +38,7 @@ This skill requires project config with `"mode": "migration"`. If the config is 
 
 Verify from config:
 - `migration.legacyRepoPath` exists and points to a directory that exists on disk
-- `rubric` path exists (or the default migration rubric is bundled at `${CLAUDE_PLUGIN_ROOT}/defaults/rubric-migration.md`)
+- `rubric` path exists (or the example migration rubric is available at `${CLAUDE_PLUGIN_ROOT}/examples/rubrics/rubric-migration-dotnet.md`)
 - `branch.base` is set (default from config; no hardcoded branch name)
 - `branch.remote` is set (default from config; no hardcoded remote name)
 
@@ -113,11 +113,11 @@ Phase 1 runs on every migration, even when the service "looks simple." The readi
 ## Phase 2 — Execution
 
 <HARD-GATE>
-Before writing ANY code, read the generation spec at `${CLAUDE_PLUGIN_ROOT}/defaults/generation-specs/dotnet-service.md`. For every pattern that applies to this service, PASTE the code block verbatim into the target file as a literal text copy — character for character, preserving whitespace, ordering, and structure. Then modify ONLY at marked `/* ADAPT */` points. Do not "use" patterns (interpretation + reconstruction degrades at high context). Do not "apply" patterns. PASTE them, then adapt at marked points only. The generation spec is pre-validated against the detection spec — verbatim paste means Stage 1 will never flag those patterns. Reconstruction from memory WILL produce drift that gets flagged.
+Before writing ANY code, read the generation spec. Resolve the path from project config (`generation-spec` field) or fall back to `${CLAUDE_PLUGIN_ROOT}/examples/generation-specs/dotnet-service.md` if no config specifies one. For every pattern that applies to this service, PASTE the code block verbatim into the target file as a literal text copy — character for character, preserving whitespace, ordering, and structure. Then modify ONLY at marked `/* ADAPT */` points. Do not "use" patterns (interpretation + reconstruction degrades at high context). Do not "apply" patterns. PASTE them, then adapt at marked points only. The generation spec is pre-validated against the detection spec — verbatim paste means Stage 1 will never flag those patterns. Reconstruction from memory WILL produce drift that gets flagged.
 </HARD-GATE>
 
 Read ALL of:
-- `${CLAUDE_PLUGIN_ROOT}/defaults/generation-specs/dotnet-service.md` (mandatory)
+- Generation spec from project config (`generation-spec` field), or `${CLAUDE_PLUGIN_ROOT}/examples/generation-specs/dotnet-service.md` (mandatory — one must resolve)
 - Project's `CLAUDE.md` (if exists — team conventions)
 - `MIGRATION_PATTERNS.md` from the configured reference service (if `migration.referenceService` exists in config)
 

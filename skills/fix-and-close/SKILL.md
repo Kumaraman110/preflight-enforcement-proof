@@ -66,7 +66,7 @@ If session context is empty or this skill was invoked cold (no hook ran):
 2. If found: extract all fields below.
 3. If not found: use defaults below.
 4. Check for `CLAUDE.md` at project root for supplementary conventions.
-5. Confirm the rubric file exists at the resolved path. If missing, warn and fall back to `${CLAUDE_PLUGIN_ROOT}/defaults/rubric-generic.md`.
+5. Confirm the rubric file exists at the resolved path. If missing, warn and fall back to `${CLAUDE_PLUGIN_ROOT}/examples/rubrics/rubric-generic-dotnet.md`.
 
 ## Configuration
 

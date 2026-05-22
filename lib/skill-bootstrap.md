@@ -20,7 +20,7 @@ Every skill MUST self-detect its environment as its first action. Do NOT depend 
 
 3. If no config found:
    - Mode: `generic`
-   - Rubric: `${CLAUDE_PLUGIN_ROOT}/defaults/rubric-generic.md`
+   - Rubric: `${CLAUDE_PLUGIN_ROOT}/examples/rubrics/rubric-generic-dotnet.md`
    - Branch base: `main`
    - Branch remote: `origin`
    - Test command: auto-detect (`dotnet test` if `.csproj`/`.sln`, `npm test` if `package.json`, skip otherwise)
