@@ -380,6 +380,74 @@ After refactor, the framework's surface is exactly Section 4's catalog. That is 
 
 ---
 
+## Section 4A — Refinements: CLAUDE.md Format Principles and Bootstrap Quality Bar
+
+Section 4A refines two areas of the design document based on research into how good CLAUDE.md files actually work in practice. It does not replace earlier sections — it sharpens them.
+
+### CLAUDE.md format principles
+
+CLAUDE.md is read at the start of every Claude Code session. It eats context budget every session. The patterns that separate good CLAUDE.md from harmful CLAUDE.md are concrete and learnable from practitioner experience.
+
+**Length target: under 200 lines.** Practitioner consensus converges on this range. HumanLayer's own root CLAUDE.md is under 60 lines. Longer than 300 lines is failure regardless of how good the content is, because instruction-following degrades uniformly as instruction count increases. The bootstrap generator targets under 200 lines for the main CLAUDE.md file. When team context cannot fit in 200 lines, bootstrap produces pointer files (see progressive disclosure below) rather than a longer CLAUDE.md.
+
+**Progressive disclosure pattern.** Task-specific context lives in pointer files, not in CLAUDE.md. The bootstrap generator produces a structured set of files: a short universal CLAUDE.md plus a docs/agent-context/ directory containing files like building.md, testing.md, architecture.md, migration-conventions.md, and similar. CLAUDE.md contains brief pointers describing each file and when the model should read it. The model reads CLAUDE.md every session but only reads pointer files when their description matches the current task.
+
+**Organizing structure: WHAT, WHY, HOW.** Every CLAUDE.md covers three onboarding axes. WHAT describes the tech stack, project structure, and code map. WHY describes the purpose of the project and the major components. HOW describes how the team works on the project — test commands, build commands, verification steps, tools used. Without WHAT the model cannot navigate. Without WHY the model cannot make good tradeoffs. Without HOW the model cannot verify its work.
+
+**Universal-only content.** Every instruction in CLAUDE.md should be applicable to every kind of work the team does. Task-specific guidance (only matters for migrations, only matters for new features) belongs in pointer files. Hotfix-style content (added because the model got something wrong once) belongs in skills or hooks, not in CLAUDE.md.
+
+**No style rules in CLAUDE.md.** Code formatting, naming conventions, import ordering — these belong in linters, formatters, and pre-commit hooks. Putting them in CLAUDE.md is expensive (eats instruction budget), slow (model thinks about them every session), and unreliable (deterministic tooling is more reliable than model attention). Bootstrap pushes back when a lead engineer wants to add style rules to CLAUDE.md.
+
+**Brief why-explanations.** Rules with one-line context explanations propagate better than bare rules. "Use Workspace not Project — we differentiate from traditional project management tools" propagates better than "Always use Workspace." The why is what makes the rule survive variation.
+
+**Safe defaults instead of bare prohibitions.** "Don't use X" is weaker than "Use Y; X causes problems with our deployment." Bootstrap captures the alternative when the lead names something to avoid.
+
+**Pointer-not-snippets discipline.** Pointer files use file:line references to authoritative code rather than copying code snippets. Snippets become stale; references stay current. Bootstrap produces pointer files that follow this discipline.
+
+### Bootstrap quality bar
+
+Bootstrap embodies expert practice. The quality bar is not "good starting point that improves through use." The quality bar is "matches expert practice on day one." The team gets a CLAUDE.md that an experienced practitioner would look at and recognize as well-constructed, without weeks of iteration.
+
+This is achievable because the patterns that make CLAUDE.md good are *learnable and teachable*. Every conversational move in bootstrap reflects a learned lesson from practitioner experience. The bootstrap generator does not need the team to discover the patterns through trial and error. It applies the patterns directly.
+
+**Bootstrap is opinionated about format.** CLAUDE.md will be under 200 lines. Style rules will not appear in CLAUDE.md. Task-specific content will go in pointer files. WHAT, WHY, and HOW will be covered. These are not options the team negotiates; they are the structure bootstrap produces because the patterns are known to work.
+
+**Bootstrap teaches while it generates.** Each conversational interaction has a chance to explain why something belongs where it goes. When the lead suggests "we always use camelCase," bootstrap responds with "is that enforced by your linter? If yes, it does not belong in CLAUDE.md; if no, consider adding a linter rule rather than relying on Claude's attention." The lead leaves bootstrap not just with files but with understanding of what good CLAUDE.md looks like.
+
+**Bootstrap pushes back on patterns that violate learned practices.** When the lead's suggestions would produce too-long CLAUDE.md, bootstrap identifies what should move to pointer files. When suggestions would produce vague or aspirational rules, bootstrap asks for concrete examples. When suggestions would put hotfix-style content in CLAUDE.md, bootstrap proposes alternative homes (skills, hooks, pointer files).
+
+**Bootstrap refuses to produce mediocre output.** The "no commit without alignment" discipline extends to "no commit without quality." If the generated content fails the format principles above, bootstrap surfaces the failure to the lead with specific remediation rather than committing degraded content.
+
+### Bootstrap output structure
+
+The bootstrap generator produces a structured set of artifacts, not a single file:
+
+**CLAUDE.md at the repo root.** Short, universal, under 200 lines. Covers WHAT/WHY/HOW. Contains pointers to docs/agent-context/ files with brief descriptions of when each is relevant.
+
+**docs/agent-context/ directory.** Pointer files for task-specific or context-specific content. Files like building.md, testing.md, architecture.md, plus team-specific files based on the work the team does. Each pointer file is focused on one topic and read only when the model determines it is relevant to the current task.
+
+**.preflight/rubric/ directory.** Initial rubric files for the team's operative standards. Started by bootstrap, grown through the rubric-edit loop.
+
+**.preflight/generation-specs/ directory.** Initial generation specs if scaffolding is in scope for the team's work. Empty or absent if the team does not scaffold.
+
+**.preflight/derived/state.json.** Derived state from the three-layer configuration system's detector module. Gitignored. Regenerated on detection input changes.
+
+**Optional config overrides in CLAUDE.md prose.** Natural-language overrides for the three-layer config system, captured during bootstrap when the lead's preferences differ from auto-detected defaults.
+
+All artifacts are committed together when the lead explicitly approves alignment. The structured set reflects the patterns embedded in the bootstrap process.
+
+### Implications for Validate and Update modes
+
+The refinements above sharpen what Validate and Update modes check for.
+
+**Validate mode** verifies the existing CLAUDE.md against the format principles. Is it under 300 lines (ideally under 200)? Does it follow WHAT/WHY/HOW structure? Does it contain style rules that belong in linters? Does it contain task-specific content that belongs in pointer files? The percentage accuracy assessment from Section 3 extends to format compliance, not just content accuracy.
+
+**Update mode** detects format drift in addition to content drift. If CLAUDE.md has grown beyond 300 lines since last bootstrap, Update mode flags this and proposes moving content to pointer files. If new style rules have crept in, Update mode flags this and proposes moving them to linter configuration. The format principles are checked on every bootstrap run, not just at first adoption.
+
+This makes Validate and Update modes *opinionated quality enforcement* rather than passive drift detection. The framework actively maintains CLAUDE.md quality over time, not just at initial creation.
+
+---
+
 ## Sections 5+
 
 Pending after refactor execution completes. Likely topics: adoption and getting started guide, operating model with worked examples, versioning policy when product matures, contribution model when ready for external participation.
