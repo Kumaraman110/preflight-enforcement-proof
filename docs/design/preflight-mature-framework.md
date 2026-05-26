@@ -388,7 +388,7 @@ Section 4A refines two areas of the design document based on research into how g
 
 CLAUDE.md is read at the start of every Claude Code session. It eats context budget every session. The patterns that separate good CLAUDE.md from harmful CLAUDE.md are concrete and learnable from practitioner experience.
 
-**Length target: under 200 lines.** Practitioner consensus converges on this range. HumanLayer's own root CLAUDE.md is under 60 lines. Longer than 300 lines is failure regardless of how good the content is, because instruction-following degrades uniformly as instruction count increases. The bootstrap generator targets under 200 lines for the main CLAUDE.md file. When team context cannot fit in 200 lines, bootstrap produces pointer files (see progressive disclosure below) rather than a longer CLAUDE.md.
+**Length target: 200-300 lines.** Practitioner consensus converges around the 200-line range for typical cases (HumanLayer's own root CLAUDE.md is under 60 lines), but real-world repos vary. Methodology-heavy repos may legitimately need more context that applies universally across sessions. The framework's discipline is to minimize length aggressively while preserving universally-applicable content. Above 300 lines is failure regardless of how good the content is, because instruction-following degrades uniformly as instruction count increases. The bootstrap generator targets the 200-300 range. When the team's universal content fits in 200 lines, that's the target. When it legitimately needs more, expanding to 300 is acceptable as long as the additional content is genuinely universal (not task-specific). Above 300, bootstrap produces pointer files (see progressive disclosure below) rather than a longer CLAUDE.md.
 
 **Progressive disclosure pattern.** Task-specific context lives in pointer files, not in CLAUDE.md. The bootstrap generator produces a structured set of files: a short universal CLAUDE.md plus a docs/agent-context/ directory containing files like building.md, testing.md, architecture.md, migration-conventions.md, and similar. CLAUDE.md contains brief pointers describing each file and when the model should read it. The model reads CLAUDE.md every session but only reads pointer files when their description matches the current task.
 
@@ -410,7 +410,7 @@ Bootstrap embodies expert practice. The quality bar is not "good starting point 
 
 This is achievable because the patterns that make CLAUDE.md good are *learnable and teachable*. Every conversational move in bootstrap reflects a learned lesson from practitioner experience. The bootstrap generator does not need the team to discover the patterns through trial and error. It applies the patterns directly.
 
-**Bootstrap is opinionated about format.** CLAUDE.md will be under 200 lines. Style rules will not appear in CLAUDE.md. Task-specific content will go in pointer files. WHAT, WHY, and HOW will be covered. These are not options the team negotiates; they are the structure bootstrap produces because the patterns are known to work.
+**Bootstrap is opinionated about format.** CLAUDE.md will be in the 200-300 line range. Style rules will not appear in CLAUDE.md. Task-specific content will go in pointer files. WHAT, WHY, and HOW will be covered. These are not options the team negotiates; they are the structure bootstrap produces because the patterns are known to work.
 
 **Bootstrap teaches while it generates.** Each conversational interaction has a chance to explain why something belongs where it goes. When the lead suggests "we always use camelCase," bootstrap responds with "is that enforced by your linter? If yes, it does not belong in CLAUDE.md; if no, consider adding a linter rule rather than relying on Claude's attention." The lead leaves bootstrap not just with files but with understanding of what good CLAUDE.md looks like.
 
@@ -440,7 +440,7 @@ This discipline came from the design test: the migration repo's dangerous git re
 
 The bootstrap generator produces a structured set of artifacts, not a single file:
 
-**CLAUDE.md at the repo root.** Short, universal, under 200 lines. Covers WHAT/WHY/HOW. Contains pointers to docs/agent-context/ files with brief descriptions of when each is relevant.
+**CLAUDE.md at the repo root.** Short, universal, under 300 lines. Covers WHAT/WHY/HOW. Contains pointers to docs/agent-context/ files with brief descriptions of when each is relevant.
 
 **docs/agent-context/ directory.** Pointer files for task-specific or context-specific content. Files like building.md, testing.md, architecture.md, plus team-specific files based on the work the team does. Each pointer file is focused on one topic and read only when the model determines it is relevant to the current task.
 
@@ -458,7 +458,7 @@ All artifacts are committed together when the lead explicitly approves alignment
 
 The refinements above sharpen what Validate and Update modes check for.
 
-**Validate mode** verifies the existing CLAUDE.md against the format principles. Is it under 300 lines (ideally under 200)? Does it follow WHAT/WHY/HOW structure? Does it contain style rules that belong in linters? Does it contain task-specific content that belongs in pointer files? The percentage accuracy assessment from Section 3 extends to format compliance, not just content accuracy.
+**Validate mode** verifies the existing CLAUDE.md against the format principles. Is it under 300 lines (target 200-300)? Does it follow WHAT/WHY/HOW structure? Does it contain style rules that belong in linters? Does it contain task-specific content that belongs in pointer files? The percentage accuracy assessment from Section 3 extends to format compliance, not just content accuracy.
 
 **Update mode** detects format drift in addition to content drift. If CLAUDE.md has grown beyond 300 lines since last bootstrap, Update mode flags this and proposes moving content to pointer files. If new style rules have crept in, Update mode flags this and proposes moving them to linter configuration. The format principles are checked on every bootstrap run, not just at first adoption.
 
