@@ -418,6 +418,24 @@ This is achievable because the patterns that make CLAUDE.md good are *learnable 
 
 **Bootstrap refuses to produce mediocre output.** The "no commit without alignment" discipline extends to "no commit without quality." If the generated content fails the format principles above, bootstrap surfaces the failure to the lead with specific remediation rather than committing degraded content.
 
+### Bootstrap codebase analysis discipline
+
+Bootstrap's codebase analysis is not just architecture verification. It is a deliberate inspection across three dimensions, each of which the design test surfaced as load-bearing.
+
+**Architecture verification.** Read CLAUDE.md's claims about the codebase. Read the codebase. Compare. This is the basic analysis: does the file describe what's actually there?
+
+**Safety-relevant inspection.** Examine codebase properties that carry operational risk regardless of what CLAUDE.md says. Git remotes — does origin point to a sensible default or to a legacy or wrong repository? Secrets handling — are credentials in expected locations, or scattered? Dangerous defaults — does any configuration default to risky behavior (force-push enabled, production environment in test config, etc.)? These checks happen regardless of whether CLAUDE.md mentions them, because their absence in CLAUDE.md is itself the finding.
+
+**Aspirational versus actual.** Some CLAUDE.md content describes systems that exist as architectural intent but have not yet executed in the codebase. Self-improvement loops described but never run. Sub-agents documented but never dispatched. Federation contracts present but never exercised. This content is not drift — it is legitimate architectural documentation that hasn't been operationalized. Bootstrap recognizes this category and treats it differently from drift.
+
+The three categories in Validate mode's verdict are: verified true (codebase evidence supports the claim), verified drift (codebase evidence contradicts the claim), and cannot be verified (no codebase evidence either way, often because the described system hasn't yet run). The accuracy percentage from Section 3 is calculated against verifiable sections only — aspirational content is excluded from the denominator, not counted as drift.
+
+When bootstrap surfaces results, it presents these three categories explicitly. The team lead sees what holds true, what needs revision, and what describes aspirational architecture. The lead decides what to do with each. Bootstrap does not silently treat aspirational content as drift, and does not silently treat drift as aspirational.
+
+For safety-relevant inspection findings, bootstrap surfaces them prominently regardless of whether they relate to anything CLAUDE.md says. A dangerous git remote configuration is a finding even if CLAUDE.md doesn't mention git remotes at all. The codebase analysis is independent of CLAUDE.md's coverage.
+
+This discipline came from the design test: the migration repo's dangerous git remote configuration was caught because the agent independently investigated remotes. The refinement makes that investigation a deliberate part of bootstrap, not an emergent property of a thorough agent.
+
 ### Bootstrap output structure
 
 The bootstrap generator produces a structured set of artifacts, not a single file:
