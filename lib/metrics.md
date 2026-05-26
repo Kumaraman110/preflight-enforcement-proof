@@ -14,7 +14,7 @@ Without metrics, "we're superior" is a claim, not a fact. The system's core cont
     {
       "timestamp": "2026-05-18T14:32:00Z",
       "service": "my-service",
-      "branch": "feature/migrate-service-x",
+      "branch": "feature/migrate-x",
       "skill": "fix-and-close",
       "stage1": {
         "iterations": 3,
