@@ -28,6 +28,21 @@ Every skill MUST self-detect its environment as its first action. Do NOT depend 
 
 4. Also check for `CLAUDE.md` at project root — it provides supplementary team conventions.
 
+## Derived State (preferred source)
+
+If `.preflight/derived/state.json` exists, skills SHOULD read operational values from it rather than re-detecting. The derived state is produced by the detector module (`lib/detector.sh`) and contains pre-computed values with confidence levels.
+
+```bash
+source "${CLAUDE_PLUGIN_ROOT}/lib/derived-state-reader.sh"
+TEST_CMD=$(read_derived "testCommand")
+BUILD_CMD=$(read_derived "buildCommand")
+STACK=$(read_derived "stack")
+```
+
+If derived state is missing or stale, fall back to the detection logic above. The session-start hook regenerates derived state when needed.
+
+Values from derived state include confidence levels. For high-stakes operations (push, PR creation), skills should surface low-confidence values to the user for verification before acting.
+
 ## Why Self-Detection Exists
 
 The SessionStart hook is best-effort. It runs once, at session start, and may not fire if:

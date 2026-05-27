@@ -303,6 +303,18 @@ run_behavioral_tests() {
   else
     yellow "SKIP: drift-detector-test.sh not found"
   fi
+
+  local detector_test="$SCRIPT_DIR/behavioral/detector-test.sh"
+  if [ -f "$detector_test" ]; then
+    if bash "$detector_test"; then
+      PASSES=$((PASSES + 10))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: Detector module behavioral tests failed"
+    fi
+  else
+    yellow "SKIP: detector-test.sh not found"
+  fi
 }
 
 # ═══════════════════════════════════════════════════════════════
