@@ -7,7 +7,7 @@
 # - Coupling analysis produces correct groupings
 # - Rubric cross-check catches contradicting suggestions
 #
-# Usage: bash tests/run-all-tests.sh [--suite stage1|coupling|crosscheck|operative]
+# Usage: bash tests/run-all-tests.sh [--suite stage1|coupling|crosscheck|operative|behavioral]
 #
 # Exit 0 = all assertions pass
 # Exit 1 = at least one assertion failed (details printed)
@@ -281,6 +281,31 @@ run_crosscheck_tests() {
 }
 
 # ═══════════════════════════════════════════════════════════════
+# SUITE: Behavioral (hook unit tests)
+# Validates hook scripts in isolation using temp workspaces.
+# ═══════════════════════════════════════════════════════════════
+
+run_behavioral_tests() {
+  echo ""
+  echo "══════════════════════════════════════════"
+  echo " Behavioral: Hook unit tests"
+  echo "══════════════════════════════════════════"
+  echo ""
+
+  local test_script="$SCRIPT_DIR/behavioral/drift-detector-test.sh"
+  if [ -f "$test_script" ]; then
+    if bash "$test_script"; then
+      PASSES=$((PASSES + 5))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: Drift detector behavioral tests failed"
+    fi
+  else
+    yellow "SKIP: drift-detector-test.sh not found"
+  fi
+}
+
+# ═══════════════════════════════════════════════════════════════
 # MAIN
 # ═══════════════════════════════════════════════════════════════
 
@@ -294,14 +319,16 @@ case "$SUITE" in
     run_operative_rule_tests
     run_coupling_tests
     run_crosscheck_tests
+    run_behavioral_tests
     ;;
   stage1) run_stage1_tests ;;
   operative) run_operative_rule_tests ;;
   coupling) run_coupling_tests ;;
   crosscheck) run_crosscheck_tests ;;
+  behavioral) run_behavioral_tests ;;
   *)
     red "Unknown suite: $SUITE"
-    echo "Usage: $0 [all|stage1|operative|coupling|crosscheck]"
+    echo "Usage: $0 [all|stage1|operative|coupling|crosscheck|behavioral]"
     exit 1
     ;;
 esac

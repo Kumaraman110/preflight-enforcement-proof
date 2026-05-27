@@ -1,0 +1,250 @@
+#!/usr/bin/env bash
+# Drift detector hook. Compares current codebase derived state against cached
+# state from last session. Surfaces actionable drift warnings.
+#
+# Runs at session-start (after session-start hook) or on-demand.
+# Does NOT block — it surfaces drift as warnings, not errors.
+#
+# Cached state lives at .preflight/cache/derived-state.json
+# If no cache exists (first run), writes initial state and exits clean.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PLUGIN_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+CACHE_DIR=".preflight/cache"
+STATE_FILE="$CACHE_DIR/derived-state.json"
+DRIFT_WARNINGS=""
+
+# ─── Helpers ───────────────────────────────────────────────────
+
+add_warning() {
+  local category="$1" message="$2"
+  if [ -z "$DRIFT_WARNINGS" ]; then
+    DRIFT_WARNINGS="[$category] $message"
+  else
+    DRIFT_WARNINGS="$DRIFT_WARNINGS\n[$category] $message"
+  fi
+}
+
+# Detect a working Python interpreter (handles Windows Store stubs)
+PYTHON_CMD=""
+for py_candidate in python python3; do
+  if command -v "$py_candidate" &>/dev/null; then
+    if "$py_candidate" -c "pass" &>/dev/null 2>&1; then
+      PYTHON_CMD="$py_candidate"
+      break
+    fi
+  fi
+done
+
+detect_stack() {
+  # Detect primary stack from project files — uses fast glob/test, no find
+  if compgen -G "./*.csproj" &>/dev/null || compgen -G "./*/*.csproj" &>/dev/null || compgen -G "./*/*/*.csproj" &>/dev/null; then
+    echo "dotnet"
+  elif [ -f pom.xml ] || compgen -G "./*/pom.xml" &>/dev/null; then
+    echo "java"
+  elif [ -f pyproject.toml ] || [ -f requirements.txt ] || compgen -G "./*/*/pyproject.toml" &>/dev/null; then
+    echo "python"
+  elif [ -f package.json ] || compgen -G "./*/*/package.json" &>/dev/null; then
+    echo "node"
+  else
+    echo "unknown"
+  fi
+}
+
+count_source_dirs() {
+  # Count unique parent directories containing source files
+  local count
+  if count=$(find . -maxdepth 3 -type f \( -name "*.cs" -o -name "*.java" -o -name "*.py" -o -name "*.ts" -o -name "*.js" -o -name "*.go" -o -name "*.rs" \) -printf '%h\n' 2>/dev/null | sort -u | wc -l); then
+    echo "${count:-0}"
+  else
+    echo "0"
+  fi
+}
+
+# Read multiple fields from a JSON file in a single interpreter call.
+# Usage: read_json_fields <file> <field1> <field2> ...
+# Output: one value per line, booleans as true/false, missing as empty
+read_json_fields() {
+  local file="$1"; shift
+  local fields=("$@")
+  if [ ! -f "$file" ]; then
+    for _ in "${fields[@]}"; do echo ""; done
+    return
+  fi
+  if command -v jq &>/dev/null; then
+    for f in "${fields[@]}"; do
+      jq -r ".[\"$f\"] // \"\"" "$file" 2>/dev/null || echo ""
+    done
+  elif [ -n "$PYTHON_CMD" ]; then
+    local field_list=""
+    for f in "${fields[@]}"; do
+      field_list="${field_list}'${f}',"
+    done
+    $PYTHON_CMD -c "
+import json
+d=json.load(open('$file'))
+for f in [${field_list}]:
+    v=d.get(f, '')
+    if isinstance(v, bool): print(str(v).lower())
+    elif isinstance(v, (int,float)): print(v)
+    elif isinstance(v, list): print(v[0] if v else '')
+    else: print(v if v else '')
+" 2>/dev/null | tr -d '\r' || {
+      for _ in "${fields[@]}"; do echo ""; done
+    }
+  else
+    for _ in "${fields[@]}"; do echo ""; done
+  fi
+}
+
+# ─── Derive current state ─────────────────────────────────────
+
+CONFIG_FILE=""
+for candidate in ".preflight/config.json" ".cpsl/config.json" ".forge.json"; do
+  if [ -f "$candidate" ]; then
+    CONFIG_FILE="$candidate"
+    break
+  fi
+done
+
+CURRENT_STACK=$(detect_stack)
+CURRENT_SOURCE_DIRS=$(count_source_dirs)
+CURRENT_CONFIG_EXISTS="false"
+CURRENT_RUBRIC_VALID="false"
+CURRENT_SCAN_PROFILE_VALID="false"
+CURRENT_GEN_SPEC_VALID="false"
+RUBRIC_PATH=""
+SCAN_PROFILE=""
+GEN_SPEC=""
+
+if [ -n "$CONFIG_FILE" ]; then
+  CURRENT_CONFIG_EXISTS="true"
+
+  # Read all config fields in one call
+  mapfile -t CONFIG_VALS < <(read_json_fields "$CONFIG_FILE" "rubric" "scanProfile" "generation-spec")
+  RUBRIC_PATH="${CONFIG_VALS[0]:-}"
+  SCAN_PROFILE="${CONFIG_VALS[1]:-}"
+  GEN_SPEC="${CONFIG_VALS[2]:-}"
+
+  # Validate paths exist
+  if [ -n "$RUBRIC_PATH" ] && [ -f "$RUBRIC_PATH" ]; then
+    CURRENT_RUBRIC_VALID="true"
+  elif [ -n "$RUBRIC_PATH" ] && [ -f "$PLUGIN_ROOT/$RUBRIC_PATH" ]; then
+    CURRENT_RUBRIC_VALID="true"
+  elif [ -z "$RUBRIC_PATH" ]; then
+    CURRENT_RUBRIC_VALID="true"
+  fi
+
+  if [ -n "$SCAN_PROFILE" ] && [ -f "$SCAN_PROFILE" ]; then
+    CURRENT_SCAN_PROFILE_VALID="true"
+  elif [ -n "$SCAN_PROFILE" ] && [ -f "$PLUGIN_ROOT/$SCAN_PROFILE" ]; then
+    CURRENT_SCAN_PROFILE_VALID="true"
+  elif [ -z "$SCAN_PROFILE" ]; then
+    if [ -f ".preflight/scan-profiles/$CURRENT_STACK.md" ] || [ -f "$PLUGIN_ROOT/examples/scan-profiles/$CURRENT_STACK.md" ]; then
+      CURRENT_SCAN_PROFILE_VALID="true"
+    fi
+  fi
+
+  if [ -n "$GEN_SPEC" ] && [ -f "$GEN_SPEC" ]; then
+    CURRENT_GEN_SPEC_VALID="true"
+  elif [ -n "$GEN_SPEC" ] && [ -f "$PLUGIN_ROOT/$GEN_SPEC" ]; then
+    CURRENT_GEN_SPEC_VALID="true"
+  elif [ -z "$GEN_SPEC" ]; then
+    CURRENT_GEN_SPEC_VALID="true"
+  fi
+fi
+
+# ─── Build current state JSON ─────────────────────────────────
+
+CURRENT_STATE=$(cat <<STATEEOF
+{
+  "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "stack": "$CURRENT_STACK",
+  "sourceDirCount": $CURRENT_SOURCE_DIRS,
+  "configExists": $CURRENT_CONFIG_EXISTS,
+  "rubricValid": $CURRENT_RUBRIC_VALID,
+  "scanProfileValid": $CURRENT_SCAN_PROFILE_VALID,
+  "genSpecValid": $CURRENT_GEN_SPEC_VALID
+}
+STATEEOF
+)
+
+# ─── Compare against cached state ─────────────────────────────
+
+if [ ! -f "$STATE_FILE" ]; then
+  # First run — write initial state, no drift to report
+  mkdir -p "$CACHE_DIR"
+  echo "$CURRENT_STATE" > "$STATE_FILE"
+  exit 0
+fi
+
+# Read cached state in one call
+if command -v jq &>/dev/null || [ -n "$PYTHON_CMD" ]; then
+  mapfile -t CACHED_VALS < <(read_json_fields "$STATE_FILE" "stack" "sourceDirCount" "configExists" "rubricValid" "scanProfileValid")
+  CACHED_STACK="${CACHED_VALS[0]:-unknown}"
+  CACHED_SOURCE_DIRS="${CACHED_VALS[1]:-0}"
+  CACHED_CONFIG_EXISTS="${CACHED_VALS[2]:-false}"
+  CACHED_RUBRIC_VALID="${CACHED_VALS[3]:-false}"
+  CACHED_SCAN_PROFILE_VALID="${CACHED_VALS[4]:-false}"
+else
+  # Cannot parse cache — treat as first run
+  mkdir -p "$CACHE_DIR"
+  echo "$CURRENT_STATE" > "$STATE_FILE"
+  exit 0
+fi
+
+# ─── Drift checks ─────────────────────────────────────────────
+
+# 1. Stack drift
+if [ "$CURRENT_STACK" != "$CACHED_STACK" ] && [ "$CACHED_STACK" != "unknown" ]; then
+  add_warning "STACK" "Detected stack changed from '$CACHED_STACK' to '$CURRENT_STACK'. Scan profile and generation spec may need updating."
+fi
+
+# 2. Config drift — config disappeared
+if [ "$CACHED_CONFIG_EXISTS" = "true" ] && [ "$CURRENT_CONFIG_EXISTS" = "false" ]; then
+  add_warning "CONFIG" "Project config file no longer found. Framework operating on defaults."
+fi
+
+# 3. Path validity drift — rubric became invalid (was valid, now isn't)
+if [ "$CURRENT_CONFIG_EXISTS" = "true" ] && [ "$CURRENT_RUBRIC_VALID" = "false" ] && [ "$CACHED_RUBRIC_VALID" = "true" ] && [ -n "${RUBRIC_PATH:-}" ]; then
+  add_warning "RUBRIC" "Configured rubric path '$RUBRIC_PATH' does not exist. Review will use fallback."
+fi
+
+# 4. Scan profile validity drift — was valid, now isn't
+if [ "$CURRENT_CONFIG_EXISTS" = "true" ] && [ "$CURRENT_SCAN_PROFILE_VALID" = "false" ] && [ "$CACHED_SCAN_PROFILE_VALID" = "true" ]; then
+  add_warning "PROFILE" "No valid scan profile found for stack '$CURRENT_STACK'. Discovery analyst will use minimal built-in scan only."
+fi
+
+# 5. Coverage drift — significant new source directories
+# Sanitize to integers (handles whitespace from wc -l, trailing spaces, etc.)
+CURRENT_SOURCE_DIRS="${CURRENT_SOURCE_DIRS//[!0-9]/}"
+CACHED_SOURCE_DIRS="${CACHED_SOURCE_DIRS//[!0-9]/}"
+CURRENT_SOURCE_DIRS="${CURRENT_SOURCE_DIRS:-0}"
+CACHED_SOURCE_DIRS="${CACHED_SOURCE_DIRS:-0}"
+if [ "$CURRENT_SOURCE_DIRS" -gt 0 ] && [ "$CACHED_SOURCE_DIRS" -gt 0 ]; then
+  GROWTH=$(( CURRENT_SOURCE_DIRS - CACHED_SOURCE_DIRS ))
+  if [ "$GROWTH" -gt 3 ]; then
+    add_warning "COVERAGE" "$GROWTH new source directories since last session. Verify scan coverage and coupling groups."
+  fi
+fi
+
+# ─── Update cache ─────────────────────────────────────────────
+
+mkdir -p "$CACHE_DIR"
+echo "$CURRENT_STATE" > "$STATE_FILE"
+
+# ─── Output ───────────────────────────────────────────────────
+
+if [ -z "$DRIFT_WARNINGS" ]; then
+  exit 0
+fi
+
+# Format warnings for session context injection
+ESCAPED_WARNINGS=$(echo -e "$DRIFT_WARNINGS" | sed 's/\\/\\\\/g' | sed 's/"/\\"/g' | sed ':a;N;$!ba;s/\n/\\n/g')
+
+cat <<EOF
+{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"⚠️ DRIFT DETECTED:\\n$ESCAPED_WARNINGS\\n\\nRun the discovery-analyst or update .preflight/config.json to resolve."}}
+EOF

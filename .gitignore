@@ -1,0 +1,2 @@
+# Machine-local cached state (drift detector, derived state)
+.preflight/cache/
