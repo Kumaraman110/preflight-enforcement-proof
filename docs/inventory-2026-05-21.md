@@ -211,8 +211,8 @@ Complete inventory of all skills, agents, and hooks in the preflight framework. 
 | **Output contract** | `DONE` \| `BLOCKED` \| `ERROR` + markdown report |
 | **Invoked by** | migrate skill (Phase 1) |
 | **Never does** | Modify code in either repo |
-| **Scans for** | Unity DI registrations, System.Web dependencies, ConfigurationManager, synchronous DB calls, WCF/SOAP references, legacy auth (OWIN), Newtonsoft.Json usage |
-| **Stack coupling** | **Heavily .NET-shaped** — hardcoded scan targets are all .NET Framework patterns |
+| **Scans for** | Loaded dynamically from configured scan profile (`.preflight/config.json` → `.preflight/scan-profiles/` → `examples/scan-profiles/`). Falls back to 12-pattern minimal scan (hardcoded secrets detection only) when no profile resolves. |
+| **Stack coupling** | **Stack-neutral** — scan targets are loaded from profile, not hardcoded. Minimal fallback is universal (secrets detection). |
 
 ---
 
@@ -475,7 +475,8 @@ Stage 1 NEEDS_FIXES (grouped) → write-active-groups → .preflight/gate/active
 |---|---|
 | **Generic** (zero stack assumptions) | self-review, fix-and-close, systematic-debugging, gps-decide, code-reviewer, external-review-handler, implementer, all hooks |
 | **Lightly .NET-flavored** (references in examples/defaults) | test-driven-development, scaffold, routing, rubric-generic |
-| **Heavily .NET-shaped** (hardcoded scan/generation) | migrate, discovery-analyst, generation-specs/dotnet-service, rubric-migration |
+| **Heavily .NET-shaped** (hardcoded scan/generation) | migrate, generation-specs/dotnet-service, rubric-migration |
+| **Profile-driven** (stack-neutral with configured profiles) | discovery-analyst |
 
 **~75% of components are fully generic.** The .NET-specific surface is concentrated in the migration domain skill, its supporting discovery agent, and the .NET-specific rubrics/generation specs. The core loop (review → capture → promote → strengthen) is stack-neutral.
 
@@ -490,7 +491,7 @@ Stage 1 NEEDS_FIXES (grouped) → write-active-groups → .preflight/gate/active
 ### Known gaps
 
 1. **No execution evidence yet.** All contracts are statically verified; no PR has been driven through the full published loop.
-2. **discover-analyst is .NET-only.** Adding discovery profiles for other stacks requires new scan targets.
+2. **discovery-analyst needs profiles per stack.** The agent is now stack-neutral but only a .NET scan profile exists (`examples/scan-profiles/dotnet.md`). Other stacks fall back to 12-pattern minimal scan until profiles are authored.
 3. **migrate prefix pattern is hardcoded.** `CTI.MicroService.IVR.<Name>` assumption needs parameterization.
 4. **Rubric-edit promotion process is untested end-to-end.** The 5-PR cadence is designed but not exercised.
 5. **Windows support is fragile.** `run-hook.cmd` polyglot works but depends on Git for Windows providing bash.
