@@ -76,16 +76,15 @@ Phase 1 runs on every migration, even when the service "looks simple." The readi
 
 1. **Project structure** — locate the `.csproj` in the legacy repo, map internal and external dependencies, identify shared libraries, document the legacy `TargetFramework`.
 
-2. **Technical debt scan** — check for these seven anti-patterns:
-   - Unity DI (`unity.RegisterType` patterns)
-   - `System.Web` dependencies (`HttpContext.Current` usage)
-   - `ConfigurationManager` static usage
-   - Synchronous database calls and fire-and-forget patterns
-   - WCF/SOAP service references
-   - Legacy authentication patterns (OWIN, ASP.NET Identity)
-   - `Newtonsoft.Json` usage that can migrate to `System.Text.Json`
+2. **Technical debt scan** — invoke the `discovery-analyst` sub-agent against the legacy service directory. The analyst loads the appropriate scan profile for this project's stack (configured in `.preflight/config.json`, or auto-detected from project files). It produces:
+   - Technical debt inventory with category IDs, severity levels, counts, and file:line locations
+   - Architecture assessment (coupling to intermediary layers, consolidation candidates)
+   - Readiness score (1-10 per category)
+   - Dependency map (`dependency-map.json`)
 
-   Report a quick table of what's present.
+   If the analyst returns BLOCKED or ERROR, surface the reason and ask the user how to proceed. Do not attempt to run the scan yourself — the analyst has the profile-loading logic and pattern expertise.
+
+   Report the analyst's findings as Phase 1 output.
 
 3. **Business architecture rules** — assess coupling to intermediary layers (DP Manager, shared gateways, etc.):
    - **Decouple from intermediary layers.** Remove the DP Manager (or equivalent gateway) dependency entirely.
@@ -98,10 +97,10 @@ Phase 1 runs on every migration, even when the service "looks simple." The readi
    | Category | What to evaluate |
    |---|---|
    | Dependency Isolation | Can this service migrate without breaking others? |
-   | Package Compatibility | Are NuGet packages .NET 10 compatible? |
-   | Code Pattern Complexity | How much `System.Web` / Unity refactoring is needed? |
+   | Dependency Compatibility | Are dependencies compatible with the target framework? |
+   | Code Pattern Complexity | How much legacy-pattern refactoring is needed? |
    | Performance Opportunity | What async / serialization gains are possible? |
-   | AWS Readiness | How much config and secrets modernization is needed? |
+   | Cloud Readiness | How much config and secrets modernization is needed? |
 
    Produce an **Overall Migration Complexity Score: [X/10]** with a one-paragraph justification, then select the strategy:
    - **Green (8-10):** Direct migration.
@@ -113,33 +112,48 @@ Phase 1 runs on every migration, even when the service "looks simple." The readi
 ## Phase 2 — Execution
 
 <HARD-GATE>
-Before writing ANY code, read the generation spec. Resolve the path from project config (`generation-spec` field) or fall back to `${CLAUDE_PLUGIN_ROOT}/examples/generation-specs/dotnet-service.md` if no config specifies one. For every pattern that applies to this service, PASTE the code block verbatim into the target file as a literal text copy — character for character, preserving whitespace, ordering, and structure. Then modify ONLY at marked `/* ADAPT */` points. Do not "use" patterns (interpretation + reconstruction degrades at high context). Do not "apply" patterns. PASTE them, then adapt at marked points only. The generation spec is pre-validated against the detection spec — verbatim paste means Stage 1 will never flag those patterns. Reconstruction from memory WILL produce drift that gets flagged.
+Before writing ANY code, read the generation spec. Resolve the path from project config (`generation-spec` field) or fall back to `${CLAUDE_PLUGIN_ROOT}/examples/generation-specs/` and select the spec matching the detected stack. If no spec resolves, STOP — inform the user that a generation spec is required for Phase 2. For every pattern that applies to this service, PASTE the code block verbatim into the target file as a literal text copy — character for character, preserving whitespace, ordering, and structure. Then modify ONLY at marked `/* ADAPT */` points. Do not "use" patterns (interpretation + reconstruction degrades at high context). Do not "apply" patterns. PASTE them, then adapt at marked points only. The generation spec is pre-validated against the detection spec — verbatim paste means Stage 1 will never flag those patterns. Reconstruction from memory WILL produce drift that gets flagged.
 </HARD-GATE>
 
 Read ALL of:
-- Generation spec from project config (`generation-spec` field), or `${CLAUDE_PLUGIN_ROOT}/examples/generation-specs/dotnet-service.md` (mandatory — one must resolve)
+- Generation spec (resolved via project config or stack-detection fallback — mandatory, one must resolve)
 - Project's `CLAUDE.md` (if exists — team conventions)
 - `MIGRATION_PATTERNS.md` from the configured reference service (if `migration.referenceService` exists in config)
 
 Apply generation spec patterns FIRST (deterministic, pre-validated). Then write service-specific business logic (the part that requires reasoning).
 
-### The 7 Migration Steps
+### Migration Execution Steps
 
-Do not run `dotnet build` between every micro-step — that wastes cycles. Build at the end of each numbered step.
+The migration steps are defined by the generation spec. The generation spec is the authoritative source for what patterns to apply, in what order, using what tools.
 
-1. **Core migration:** SDK-style `.csproj`, `TargetFramework=net10.0`, package version bumps, Unity → `Microsoft.Extensions.DependencyInjection`.
+**Loading the generation spec:**
+1. Check project config (`generation-spec` field in `.preflight/config.json`) for an explicit path.
+2. If not configured, fall back to `${CLAUDE_PLUGIN_ROOT}/examples/generation-specs/` and look for a spec matching the detected stack.
+3. If no spec resolves, STOP — cannot proceed with Phase 2 without a generation spec. Surface this to the user: "No generation spec found. Configure one in `.preflight/config.json` or place one at `examples/generation-specs/<stack>.md`."
 
-2. **Modernization:** ASP.NET Core hosting, async/await end-to-end with `CancellationToken`, `System.Text.Json` (with source generation where it pays off), `IConfiguration` + Secrets Manager + Parameter Store, `ILogger<T>` with `LogSanitizer.Sanitize` on user-input paths, OpenTelemetry with OTLP export.
+**Execution discipline:**
+- Do not run build commands between every micro-step — that wastes cycles. Build at the end of each logical phase.
+- Apply generation spec patterns FIRST (deterministic, pre-validated). Then write service-specific business logic (the part that requires reasoning).
+- For every pattern from the generation spec, PASTE the code block verbatim into the target file as a literal text copy — character for character, preserving whitespace, ordering, and structure. Then modify ONLY at marked `/* ADAPT */` points.
+- Do not "use" patterns (interpretation + reconstruction degrades at high context). Do not "apply" patterns. PASTE them, then adapt at marked points only.
 
-3. **Test migration:** NUnit + Moq + Bogus. Match the reference service test project layout. The coverage baseline from config (`test.coverageBaseline`, default 96.1%) is the floor.
+**Standard execution phases (generation spec provides the specifics for each):**
 
-4. **Infrastructure:** AWS CDK in C# (matches reference service's `Infra.csproj`, `Program.cs`, `<Service>Stack.cs`, `<Service>StackProps.cs` pattern). ECS Fargate, 256 CPU / 512 MiB default, IMMUTABLE ECR, auto-scaling 70%/80%, min 2 AZs.
+1. **Core migration:** Convert project format, update target framework, migrate dependency management, replace legacy DI container.
 
-5. **Container:** non-root user (uid 1000) with `groupadd`/`useradd` (Debian-based image), port 8080, health check defined only in the ECS task definition (NOT in the Dockerfile).
+2. **Modernization:** Modern hosting patterns, async I/O end-to-end, modern serialization, configuration management (secrets + parameters), structured logging with sanitization, observability instrumentation.
 
-6. **Run `dotnet build`** — must be 0 errors, 0 warnings (`TreatWarningsAsErrors=true`). Fix anything that breaks.
+3. **Test migration:** Match the reference service test project layout and framework. Coverage baseline from config (`test.coverageBaseline`) is the floor.
 
-7. **Run `dotnet test`** — all pass, coverage meets `test.coverageBaseline`. Fix anything that fails.
+4. **Infrastructure:** Cloud infrastructure as code matching the reference service pattern. Compute, networking, container registry, auto-scaling, secrets management.
+
+5. **Container:** Secure container image — non-root user, fixed port, health check defined in orchestrator config (not in container image).
+
+6. **Build verification** — must be 0 errors, 0 warnings (treat warnings as errors). Fix anything that breaks.
+
+7. **Test verification** — all pass, coverage meets `test.coverageBaseline`. Fix anything that fails.
+
+The generation spec fills in the stack-specific details for each phase. The migrate skill orchestrates the sequence. The generation spec provides the patterns.
 
 ## Post-Migration Dependency Map Refresh
 
