@@ -341,7 +341,7 @@ When no config exists: mode is `generic`, rubric is resolved from the plugin's b
 
 **v0.2-pre** means:
 - All contracts (sub-agent I/O, hook formats, config schema, capture templates) are designed and statically verified
-- The test suite passes (39 assertions across 4 suites)
+- The test suite passes (79 assertions across 7 suites)
 - Framework architecture is stack-neutral — scan profiles, generation specs, and rubrics are configurable per team/stack
 - No execution evidence of the full self-improvement loop closing yet — operational proving phase pending
 - Contracts may revise based on early execution evidence

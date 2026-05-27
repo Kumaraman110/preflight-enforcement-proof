@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# Hybrid HEAD-stamp validation for dependency-map.json freshness.
+#
+# Reads .preflight/gate/dependency-map-validated sidecar and determines
+# whether the map is still fresh relative to current HEAD.
+#
+# Exit 0 = map is fresh (or was re-stamped because no map-files changed)
+# Exit 1 = map is stale, refresh needed
+#
+# Three-step logic:
+#   1. If validAtHEAD matches current HEAD → fresh, exit 0
+#   2. If HEAD moved, check git diff for overlap with map files
+#      - Overlap found → stale, exit 1
+#      - Git diff fails → stale (be safe), exit 1
+#   3. No overlap → re-stamp sidecar with current HEAD, exit 0
+#
+# Dependencies: bash, git, node (for JSON parsing — available in all
+# environments where Claude Code runs)
+
+set -euo pipefail
+
+SIDECAR="${1:-.preflight/gate/dependency-map-validated}"
+
+# Guard: sidecar must exist
+if [ ! -f "$SIDECAR" ]; then
+  echo "STALE: sidecar file not found at $SIDECAR. Refresh needed."
+  exit 1
+fi
+
+# Parse sidecar using node (portable across all Claude Code environments)
+SIDECAR_HEAD=$(node -e "const d=JSON.parse(require('fs').readFileSync('$SIDECAR','utf8')); process.stdout.write(d.validAtHEAD||'')" 2>/dev/null) || {
+  echo "STALE: could not parse sidecar. Refresh needed."
+  exit 1
+}
+
+if [ -z "$SIDECAR_HEAD" ]; then
+  echo "STALE: validAtHEAD field empty or missing. Refresh needed."
+  exit 1
+fi
+
+CURRENT_HEAD=$(git rev-parse HEAD 2>/dev/null) || {
+  echo "STALE: not in a git repository. Refresh needed."
+  exit 1
+}
+
+# Step 1: Quick check — has HEAD moved?
+if [ "$SIDECAR_HEAD" = "$CURRENT_HEAD" ]; then
+  echo "FRESH: HEAD matches sidecar. Map is current."
+  exit 0
+fi
+
+# Step 2: Targeted check — did intervening commits touch any map files?
+MAP_FILES=$(node -e "const d=JSON.parse(require('fs').readFileSync('$SIDECAR','utf8')); (d.mapFiles||[]).forEach(f=>console.log(f))" 2>/dev/null) || {
+  echo "STALE: could not parse mapFiles from sidecar. Refresh needed."
+  exit 1
+}
+
+CHANGED_FILES=$(git diff --name-only "$SIDECAR_HEAD..HEAD" 2>/dev/null) || {
+  echo "STALE: git diff failed between $SIDECAR_HEAD and $CURRENT_HEAD. Refresh needed."
+  exit 1
+}
+
+# Check for overlap between changed files and map files
+OVERLAP=$(comm -12 <(echo "$CHANGED_FILES" | sort) <(echo "$MAP_FILES" | sort) 2>/dev/null || echo "")
+
+if [ -n "$OVERLAP" ]; then
+  echo "STALE: intervening commits touched map files: $OVERLAP. Refresh needed."
+  exit 1
+fi
+
+# Step 3: No overlap — map files were untouched. Re-stamp sidecar with current HEAD.
+node -e "
+const fs = require('fs');
+const d = JSON.parse(fs.readFileSync('$SIDECAR', 'utf8'));
+d.validAtHEAD = '$CURRENT_HEAD';
+d.generatedAt = new Date().toISOString();
+fs.writeFileSync('$SIDECAR', JSON.stringify(d, null, 2) + '\n');
+"
+
+echo "FRESH: HEAD moved but map files untouched. Sidecar re-stamped."
+exit 0

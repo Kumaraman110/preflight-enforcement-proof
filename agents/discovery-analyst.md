@@ -213,6 +213,33 @@ In addition to the markdown report, produce a `dependency-map.json` that the fix
 
 The `couplingGroups` array is what the orchestrator uses at fix time. When findings arrive on files in the same group, they MUST be fixed together. Files in `independent` can always be fixed alone.
 
+### Validation Sidecar (REQUIRED — enables staleness detection)
+
+After writing `dependency-map.json` to disk, also write the validation sidecar at `.preflight/gate/dependency-map-validated`. Schema:
+
+```json
+{
+  "validAtHEAD": "<output of: git rev-parse HEAD>",
+  "mapPath": "<relative path to the dependency-map.json you just wrote>",
+  "mapFiles": ["<list of file paths from the map's files field>"],
+  "generatedAt": "<ISO8601 timestamp>",
+  "generatedBy": "discovery-analyst"
+}
+```
+
+The sidecar enables downstream skills to detect when the map has gone stale. Without it, fix-and-close cannot safely consume the map across fix-loop iterations.
+
+Create the `.preflight/gate/` directory if it does not exist. The sidecar is local operational state (gitignored), not source.
+
+### Dependency-Map-Only Refresh Mode
+
+When invoked with brief containing "dependency-map-only refresh", skip the full Phase 1 work (technical debt scan, readiness score, architecture assessment). Only produce:
+
+1. Updated `dependency-map.json` for the current code state
+2. Updated sidecar at `.preflight/gate/dependency-map-validated`
+
+This mode is triggered by the fix-and-close orchestrator when the hybrid HEAD-stamp validation detects that map files have been modified by intervening commits during the fix loop. The refresh is scoped to just the map — no report, no readiness score.
+
 ## Status Codes
 
 Always end your response with one of these status blocks so the orchestrator can act on the result:

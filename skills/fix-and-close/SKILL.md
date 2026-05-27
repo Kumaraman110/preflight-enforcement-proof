@@ -29,7 +29,7 @@ Do NOT push until Stage 1 returns CLEAN AND tests pass. No rationalization overr
 </CRITICAL-INSTRUCTION>
 
 <CRITICAL-INSTRUCTION>
-Do NOT claim success without fresh verification evidence. `dotnet test` output showing 0 failures IS evidence. Stage 1 returning CLEAN IS evidence. "It should work" is NOT evidence.
+Do NOT claim success without fresh verification evidence. Test command output showing 0 failures IS evidence. Stage 1 returning CLEAN IS evidence. "It should work" is NOT evidence.
 </CRITICAL-INSTRUCTION>
 
 <CRITICAL-INSTRUCTION>
@@ -76,7 +76,7 @@ From config (or defaults):
 - `review.*` (Copilot settings)
 - `loop.*` (oscillation, coverage, iteration caps)
 - `capture.*` (file paths)
-- `test.command` (default: `dotnet test` if `.csproj`/`.sln` exists, otherwise skip)
+- `test.command` (default: auto-detect — `dotnet test` if `.csproj`/`.sln`/`.fsproj`/`.vbproj` exists, `mvn test` if `pom.xml` exists, `pytest` if `pyproject.toml`/`requirements.txt` exists, `npm test` if `package.json` exists; otherwise skip with warning)
 - `test.coverageBaseline` (default: none)
 
 ## Execution
@@ -97,7 +97,11 @@ From config (or defaults):
 
    a. **Read ALL findings at once.** Do not start fixing after reading the first one.
    
-   b. **Group by coupling.** Use the dependency map (if one exists at `<service-folder>/dependency-map.json`) as the primary source. Before first use in this session, run the mechanical validation from `${CLAUDE_PLUGIN_ROOT}/lib/dependency-map-validator.md` — never consume the map without validation. If validation passes (with or without corrections applied), write gate evidence: `bash "${CLAUDE_PLUGIN_ROOT}/hooks/write-gate-evidence" map-validated`. If validation produces warnings, apply the corrections (merge groups, move files from independent) before grouping.
+   b. **Group by coupling.** Use the dependency map (if one exists at `<service-folder>/dependency-map.json`) as the primary source.
+   
+      **Freshness check (before every consumption):** Run `bash "${CLAUDE_PLUGIN_ROOT}/hooks/dependency-map-validator"` before reading the map. If exit 0: map is fresh (or was re-stamped). Proceed. If exit 1: map is stale — dispatch the `discovery-analyst` sub-agent with brief: "dependency-map-only refresh — produce updated dependency-map.json for the current code state without re-running Phase 1 technical debt scan." When the analyst returns DONE, re-run the validator to confirm freshness, then proceed.
+      
+      **Structural validation (first use per session):** Run the mechanical validation from `${CLAUDE_PLUGIN_ROOT}/lib/dependency-map-validator.md` — never consume the map without validation. If validation passes (with or without corrections applied), write gate evidence: `bash "${CLAUDE_PLUGIN_ROOT}/hooks/write-gate-evidence" map-validated`. If validation produces warnings, apply the corrections (merge groups, move files from independent) before grouping.
    
       If no dependency map exists, findings are coupled if they share ANY of:
       - Same file
@@ -126,10 +130,10 @@ From config (or defaults):
       - The coupling reason
       - The applicable generation-spec pattern (if one exists)
       - What was tried previously on those files (from your fix history this session)
-      - The constraint (typically: `dotnet build` + `dotnet test` must pass)
+      - The constraint (typically: build + test commands must pass)
       
       The implementer returns DONE or BLOCKED.
-      - DONE: **Do NOT trust the report.** Run `dotnet build` and `dotnet test` YOURSELF after accepting the implementer's changes. If build/test fails, the implementer's DONE was wrong — re-dispatch with the failure output as "what was tried previously." Only after YOUR verification passes: if the group required 2+ iterations OR the pattern recurred across multiple files, flag it for **pattern-capture** (bucket 5) when reporting back to Stage 2.
+      - DONE: **Do NOT trust the report.** Run the build and test commands YOURSELF after accepting the implementer's changes. If build/test fails, the implementer's DONE was wrong — re-dispatch with the failure output as "what was tried previously." Only after YOUR verification passes: if the group required 2+ iterations OR the pattern recurred across multiple files, flag it for **pattern-capture** (bucket 5) when reporting back to Stage 2.
       - BLOCKED: either re-scope the group (split differently, provide more context) or escalate to user.
    
    f. **After all groups fixed:** clear the active groups: `bash "${CLAUDE_PLUGIN_ROOT}/hooks/write-active-groups" '[]'`". Re-run tests. Re-invoke Stage 1.
@@ -198,9 +202,9 @@ These values come from config (`review.*`). If config is absent, use these defau
 
 **Verification Discipline applies here.** (See `${CLAUDE_PLUGIN_ROOT}/lib/verification-discipline.md`.) Stage 2 returning SUCCESS is a CLAIM, not evidence. Verify independently:
 
-- `dotnet test` — fresh run, not cached. Read the output. Count failures. 0 = pass.
-- `dotnet build` — fresh run. Read warnings count. 0 = pass.
-- If project config has a `migration.referenceService`: verify the migrated service has the same directory structure (Program.cs, Services/, Models/, Configuration/, Health/ — whatever the reference has). LIST the directory. Don't assume.
+- **Test command** — run the configured `test.command` (or auto-detected command). Fresh run, not cached. Read the output. Count failures. 0 = pass.
+- **Build command** — run the configured `build.command` (or auto-detected command). Fresh run. Read warnings count. 0 = pass.
+- If project config has a `migration.referenceService`: verify the migrated service has the same directory structure as the reference. LIST the directory. Don't assume.
 - Health endpoint responds (if service can be started locally). Actually curl it. Read the response.
 
 If ANY verification fails, DO NOT declare success. Surface the gap with the actual output that proves it failed.

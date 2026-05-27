@@ -2,5 +2,9 @@
 .preflight/cache/
 .preflight/derived/
 
+# Gate evidence and metrics (local operational state)
+.preflight/gate/
+.preflight/metrics.json
+
 # Migration checkpoint (session-local recovery state)
 .preflight/migrate-checkpoint.json

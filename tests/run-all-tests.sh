@@ -352,6 +352,39 @@ run_scan_profile_tests() {
 }
 
 # ═══════════════════════════════════════════════════════════════
+# SUITE: Dependency-map-validator hook tests
+# Validates: hybrid HEAD-stamp validation logic for map freshness.
+# ═══════════════════════════════════════════════════════════════
+
+run_dependency_map_validator_tests() {
+  echo ""
+  echo "══════════════════════════════════════════"
+  echo " Dependency Map Validator: Hook tests"
+  echo "══════════════════════════════════════════"
+  echo ""
+
+  local test_script="$SCRIPT_DIR/dependency-map-validator/run-tests.sh"
+  if [ -f "$test_script" ]; then
+    local result
+    if result=$(bash "$test_script" 2>&1); then
+      local sub_passes
+      sub_passes=$(echo "$result" | grep "Dependency-map-validator tests:" | awk '{print $3}')
+      PASSES=$((PASSES + ${sub_passes:-0}))
+    else
+      local sub_passes sub_failures
+      sub_passes=$(echo "$result" | grep "Dependency-map-validator tests:" | awk '{print $3}')
+      sub_failures=$(echo "$result" | grep "Dependency-map-validator tests:" | awk '{print $5}')
+      PASSES=$((PASSES + ${sub_passes:-0}))
+      FAILURES=$((FAILURES + ${sub_failures:-1}))
+      red "FAIL: dependency-map-validator suite had failures"
+      echo "$result" | grep "^FAIL:" || true
+    fi
+  else
+    yellow "SKIP: dependency-map-validator/run-tests.sh not found"
+  fi
+}
+
+# ═══════════════════════════════════════════════════════════════
 # MAIN
 # ═══════════════════════════════════════════════════════════════
 
@@ -367,6 +400,7 @@ case "$SUITE" in
     run_crosscheck_tests
     run_behavioral_tests
     run_scan_profile_tests
+    run_dependency_map_validator_tests
     ;;
   stage1) run_stage1_tests ;;
   operative) run_operative_rule_tests ;;
@@ -374,9 +408,10 @@ case "$SUITE" in
   crosscheck) run_crosscheck_tests ;;
   behavioral) run_behavioral_tests ;;
   scan-profiles) run_scan_profile_tests ;;
+  dependency-map-validator) run_dependency_map_validator_tests ;;
   *)
     red "Unknown suite: $SUITE"
-    echo "Usage: $0 [all|stage1|operative|coupling|crosscheck|behavioral|scan-profiles]"
+    echo "Usage: $0 [all|stage1|operative|coupling|crosscheck|behavioral|scan-profiles|dependency-map-validator]"
     exit 1
     ;;
 esac

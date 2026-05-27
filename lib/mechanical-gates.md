@@ -2,10 +2,10 @@
 
 ## Why Prompts Are Not Enough
 
-Every `<HARD-GATE>` in preflight is a markdown instruction that the LLM reads and (usually) follows. But:
+Every `<CRITICAL-INSTRUCTION>` in preflight is a markdown directive that the LLM reads and (usually) follows. But:
 
 - At 65%+ context, attention drifts from instructions read 40K tokens ago
-- Under user pressure ("just push it"), the model weighs user instruction against HARD-GATE
+- Under user pressure ("just push it"), the model weighs user instruction against CRITICAL-INSTRUCTION
 - When logical contradictions arise, there's no programmatic arbiter
 
 Mechanical gates are bash scripts that execute BEFORE the tool call reaches the model. They cannot be bypassed by prompt manipulation, context degradation, or user override. They are `if` statements, not suggestions.
