@@ -142,6 +142,41 @@ else
   FAILURES=$((FAILURES + 1))
 fi
 
+# Test 13: Path exclusions documented in discovery-analyst
+if grep -q "Path Exclusions" "$ANALYST" && \
+   grep -q "\*\*/test\*/" "$ANALYST" && \
+   grep -q "\*\*/fixture\*/" "$ANALYST" && \
+   grep -q "node_modules" "$ANALYST"; then
+  green "PASS: path exclusions documented for Tier 1 false-positive mitigation"
+  PASSES=$((PASSES + 1))
+else
+  red "FAIL: path exclusions missing or incomplete in analyst"
+  FAILURES=$((FAILURES + 1))
+fi
+
+# Test 14: Stop-words documented in discovery-analyst
+if grep -q "Stop-Words" "$ANALYST" && \
+   grep -q "placeholder" "$ANALYST" && \
+   grep -q "changeme" "$ANALYST" && \
+   grep -q "fake" "$ANALYST"; then
+  green "PASS: stop-words documented for Tier 1 false-positive suppression"
+  PASSES=$((PASSES + 1))
+else
+  red "FAIL: stop-words missing or incomplete in analyst"
+  FAILURES=$((FAILURES + 1))
+fi
+
+# Test 15: False-positive fixture contains stop-words that would suppress Tier 1 matches
+FP_FIXTURE="$FIXTURES/test-data/password-in-test.txt"
+if grep -qiE "(password|secret|api_key)\s*=" "$FP_FIXTURE" && \
+   grep -qiE "(placeholder|changeme|fake)" "$FP_FIXTURE"; then
+  green "PASS: false-positive fixture has both credential patterns and stop-words"
+  PASSES=$((PASSES + 1))
+else
+  red "FAIL: false-positive fixture incorrect"
+  FAILURES=$((FAILURES + 1))
+fi
+
 echo ""
 echo "Scan profile tests: $PASSES passed, $FAILURES failed"
 

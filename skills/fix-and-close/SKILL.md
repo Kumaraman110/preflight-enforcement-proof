@@ -24,17 +24,17 @@ The 48% is caused by one specific failure mode: fixing COUPLED findings independ
 
 **Stage 1 runs before every push. No exceptions.**
 
-<HARD-GATE>
+<CRITICAL-INSTRUCTION>
 Do NOT push until Stage 1 returns CLEAN AND tests pass. No rationalization overrides this. If you find yourself thinking "just this once I can skip Stage 1," stop. That thought is the bug.
-</HARD-GATE>
+</CRITICAL-INSTRUCTION>
 
-<HARD-GATE>
+<CRITICAL-INSTRUCTION>
 Do NOT claim success without fresh verification evidence. `dotnet test` output showing 0 failures IS evidence. Stage 1 returning CLEAN IS evidence. "It should work" is NOT evidence.
-</HARD-GATE>
+</CRITICAL-INSTRUCTION>
 
-<HARD-GATE>
+<CRITICAL-INSTRUCTION>
 Do NOT fix coupled findings independently. When multiple findings touch the same file or the same call chain, you MUST read all of them first, design ONE coherent change that addresses all of them simultaneously, then apply that single change. Sequential independent fixes to coupled findings is the primary cause of cascading regressions.
-</HARD-GATE>
+</CRITICAL-INSTRUCTION>
 
 ## Hard Iteration Caps
 

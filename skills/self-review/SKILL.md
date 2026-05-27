@@ -27,9 +27,9 @@ If session context is empty or this skill was invoked cold (no hook ran):
 
 You orchestrate the **`code-reviewer`** sub-agent. You do NOT review code yourself — that is the sub-agent's job. Your job is loop control and fixing.
 
-<HARD-GATE>
+<CRITICAL-INSTRUCTION>
 Always invoke the code-reviewer sub-agent. Do not skip invocation because the diff "looks trivial" or "is just a one-liner." That judgment belongs to the sub-agent. Every time you think "this doesn't need review," that is the exact moment it does.
-</HARD-GATE>
+</CRITICAL-INSTRUCTION>
 
 ### Rationalization Prevention
 

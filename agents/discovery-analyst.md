@@ -106,6 +106,24 @@ You are READ-ONLY. You never modify any file, in any repo.
    - Severity: required
    - Note: Connection strings with embedded passwords for SQL Server, PostgreSQL, MySQL, and similar.
 
+   ### Path Exclusions
+
+   Skip these paths when running Tier 1 patterns (§M1–§M4). Tier 2 patterns (§M5–§M12) are high-precision and run everywhere.
+
+   - `**/test*/**` and `**/*test*/**` (test fixtures often contain example secrets)
+   - `**/fixture*/**` and `**/mock*/**`
+   - `**/*.md` (documentation examples)
+   - `**/node_modules/**`, `**/vendor/**`, `**/.git/**`
+
+   ### Stop-Words (Tier 1 only)
+
+   If a Tier 1 match line also contains any of these tokens, suppress the finding:
+
+   - `example`, `sample`, `placeholder`, `changeme`, `TODO`, `FIXME`
+   - `test_key`, `fake`, `dummy`, `xxxx`, `0000`
+
+   These reduce noise from documentation snippets and test data that intentionally contain credential-shaped strings.
+
    Report findings using §M1 through §M12 IDs. Include a note in the output that comprehensive analysis requires a configured scan profile.
 
 3. **Architecture assessment:**

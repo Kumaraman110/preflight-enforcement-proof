@@ -11,7 +11,7 @@ You are in systematic debugging mode. The user (or your own judgment) has determ
 
 ## Step 0 — Environment Detection
 
-If session context already contains `preflight active | mode=...` with config data, trust it. Skip to the HARD-GATE below.
+If session context already contains `preflight active | mode=...` with config data, trust it. Skip to the critical instruction below.
 
 If session context is empty or this skill was invoked cold:
 
@@ -20,9 +20,9 @@ If session context is empty or this skill was invoked cold:
 3. If not found: use defaults — test command auto-detected, base branch `main`.
 4. Check for `CLAUDE.md` at project root — it may contain debugging context or service architecture.
 
-<HARD-GATE>
+<CRITICAL-INSTRUCTION>
 Do NOT write any fix until you have completed Phase 2 (hypothesis with evidence). Jumping to fixes without root cause understanding is how you create cascading divergence — fixing symptom A while the real cause B remains, producing symptoms C, D, E in subsequent rounds.
-</HARD-GATE>
+</CRITICAL-INSTRUCTION>
 
 ## When This Activates
 

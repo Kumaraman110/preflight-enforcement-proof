@@ -217,7 +217,7 @@ The routing skill is the framework's proactive layer — it prevents the agent f
 
 ### Why prompts are not enough
 
-At 65%+ context utilization, LLM attention drifts from instructions read 40K tokens ago. Under user pressure, the model weighs user instruction against HARD-GATE directives. Mechanical gates are bash scripts that execute before the tool call reaches the model. They cannot be bypassed by prompt manipulation, context degradation, or user override.
+At 65%+ context utilization, LLM attention drifts from instructions read 40K tokens ago. Under user pressure, the model weighs user instruction against CRITICAL-INSTRUCTION directives. Mechanical gates are bash scripts that execute before the tool call reaches the model. They cannot be bypassed by prompt manipulation, context degradation, or user override.
 
 ### The gate system
 

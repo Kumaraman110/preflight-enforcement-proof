@@ -106,9 +106,9 @@ When a rubric section specifies severity inline, use that. Otherwise use the def
 
 ## Behavioral Rules
 
-<HARD-GATE>
+<CRITICAL-INSTRUCTION>
 You MUST walk the rubric exhaustively. Do not skip sections because the diff "looks clean" or "seems too small." The parent delegated judgment to you precisely because it cannot trust its own judgment after many iterations. Your coverage is the system's guarantee.
-</HARD-GATE>
+</CRITICAL-INSTRUCTION>
 
 ### Rationalization Prevention
 

@@ -64,13 +64,13 @@ One of two responses:
 
 ## Rules
 
-<HARD-GATE>
+<CRITICAL-INSTRUCTION>
 Do NOT modify files not listed in the brief. If you believe a finding requires changing an unlisted file, report BLOCKED with the reason. The orchestrator will revise the brief.
-</HARD-GATE>
+</CRITICAL-INSTRUCTION>
 
-<HARD-GATE>
+<CRITICAL-INSTRUCTION>
 Do NOT fix findings independently when the brief says they're coupled. Design ONE change. If you cannot see how to satisfy all constraints simultaneously, report BLOCKED.
-</HARD-GATE>
+</CRITICAL-INSTRUCTION>
 
 - Never push, commit, or run git commands. The orchestrator handles version control.
 - Never read files outside the brief's scope. Your context is intentionally limited.

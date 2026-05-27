@@ -61,9 +61,9 @@ If no config exists, that's fine — use example API rubric from `${CLAUDE_PLUGI
 
 ## Phase 2 — Generation
 
-<HARD-GATE>
+<CRITICAL-INSTRUCTION>
 Before writing ANY code, read the generation spec. Resolve the path from project config (`generation-spec` field) or fall back to `${CLAUDE_PLUGIN_ROOT}/examples/generation-specs/dotnet-service.md`. For every pattern that applies, PASTE the code block verbatim into the target file — character for character. Then modify ONLY at marked `/* ADAPT */` points. Do not reconstruct from memory. Do not "use" or "apply" patterns. PASTE them. Reconstruction drifts at high context (a `SemaphoreSlim(1, 1)` becomes `SemaphoreSlim(1)`, an `EnsureSuccessStatusCode()` moves above the await). Verbatim paste eliminates this class of error entirely.
-</HARD-GATE>
+</CRITICAL-INSTRUCTION>
 
 Generate the service skeleton reading patterns from (in priority order):
 1. Generation spec from project config (`generation-spec` field), or `${CLAUDE_PLUGIN_ROOT}/examples/generation-specs/dotnet-service.md` (mandatory — pre-validated patterns)

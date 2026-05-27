@@ -3,9 +3,9 @@ name: routing
 description: Behavioral routing — loaded at session start, tells the LLM WHEN to invoke each skill. This document is injected into additionalContext by the session-start hook. It is the decision tree the agent follows before every action.
 ---
 
-<HARD-GATE>
+<CRITICAL-INSTRUCTION>
 If you think there is even a 1% chance a skill applies to what you're about to do, invoke it. Not invoking a relevant skill is the single most expensive mistake — one skipped self-review costs 5+ minutes of post-push review cycles. One skipped TDD check means tests written after implementation (harder, less coverage).
-</HARD-GATE>
+</CRITICAL-INSTRUCTION>
 
 ## Before Every Action — Check This Table
 

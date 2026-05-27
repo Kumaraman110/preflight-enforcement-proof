@@ -15,7 +15,7 @@ You are in TDD mode. Every piece of new functionality follows the cycle:
 
 ## Step 0 — Environment Detection
 
-If session context already contains `preflight active | mode=...` with config data, trust it. Skip to the HARD-GATE below.
+If session context already contains `preflight active | mode=...` with config data, trust it. Skip to the critical instruction below.
 
 If session context is empty or this skill was invoked cold:
 
@@ -24,9 +24,9 @@ If session context is empty or this skill was invoked cold:
 3. If not found: auto-detect test command (`dotnet test` if `.csproj`/`.sln`, `npm test` if `package.json`).
 4. Check for `CLAUDE.md` at project root for test conventions (framework, naming, etc.).
 
-<HARD-GATE>
+<CRITICAL-INSTRUCTION>
 Do NOT write implementation code before a failing test exists for the behavior you're about to implement. A test written after implementation proves nothing — it's always green because you wrote it to match what you already built.
-</HARD-GATE>
+</CRITICAL-INSTRUCTION>
 
 ## Rationalization Prevention
 

@@ -1,3 +1,6 @@
 # Machine-local cached state (drift detector, derived state)
 .preflight/cache/
 .preflight/derived/
+
+# Migration checkpoint (session-local recovery state)
+.preflight/migrate-checkpoint.json
