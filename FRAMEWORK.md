@@ -1,13 +1,17 @@
 # preflight Framework
 
-**Version:** v0.1-pre
-Pre-first-execution. Contracts are designed and verified statically; execution evidence pending.
+**Version:** v0.2-pre
+Stack-neutral architecture verified. Self-improvement loop designed but not yet proven through operational use.
 
 ---
 
 ## 1. What preflight is
 
-Preflight is a self-improving code review and development framework for Claude Code. It encodes review discipline as mechanical enforcement, captures external review findings as learning evidence, and promotes validated patterns into detection rules that fire locally on subsequent work. It works from any directory, adapts to project-specific rubrics, and operates across multiple development domains (migration, net-new API, generic) without domain-specific hardcoding in its core loop.
+Preflight is a self-learning engineering harness for AI-assisted development. As model capability commoditizes — frontier models stack within percentage points of each other on every benchmark — the differentiator moves to the harness: the system prompts, skill compositions, sub-agent handoff patterns, and mechanical enforcement that sit between the model and the team's codebase. The harness compounds through use. The model doesn't.
+
+Preflight encodes review discipline as mechanical enforcement, captures external review findings as learning evidence, and promotes validated patterns into detection rules that fire locally on subsequent work. It works from any directory, adapts to project-specific rubrics and scan profiles, and operates across multiple development domains (migration, net-new API, generic) without domain-specific hardcoding in its core loop.
+
+The framework is not static. Every PR that passes through it generates captures. Captures become rubric edits. Rubric edits make the next review smarter. The act of using preflight improves preflight. This is not a feature — it is the architectural commitment.
 
 ---
 
@@ -110,15 +114,15 @@ Validated capture entries become rubric sections through the batched rubric-edit
 
 ### Rubric section ID prefixes
 
-Multi-rubric configurations (e.g., generic + migration rules applied simultaneously) require unambiguous section IDs across rubric files. Each rubric declares its section ID prefix in a top-of-file HTML comment. The default rubrics use:
+Multi-rubric configurations (e.g., generic + migration rules applied simultaneously) require unambiguous section IDs across rubric files. Each rubric declares its section ID prefix in a top-of-file HTML comment. Example prefix conventions:
 
-| Rubric | Prefix | Example IDs |
+| Rubric type | Prefix | Example IDs |
 |---|---|---|
-| `rubric-generic.md` | §G | §G1, §G2.1, §G7.2 |
-| `rubric-migration.md` | §M | §M1, §M4.3, §M9.1 |
-| `rubric-api-design.md` | §A | §A1, §A3.2, §A6.1 |
+| Generic (quality/security) | §G | §G1, §G2.1, §G7.2 |
+| Migration (framework upgrade) | §M | §M1, §M4.3, §M9.1 |
+| API design (net-new service) | §A | §A1, §A3.2, §A6.1 |
 
-Custom rubrics MUST declare a unique prefix in a comment at the top of the file. Section IDs within a rubric MUST conform to the declared prefix. Cross-rubric references in capture files and generation specs use the fully-prefixed ID (e.g., `§M3` refers unambiguously to migration rubric section 3).
+Every rubric MUST declare a unique prefix in a comment at the top of the file. Section IDs within a rubric MUST conform to the declared prefix. Cross-rubric references in capture files and generation specs use the fully-prefixed ID (e.g., `§M3` refers unambiguously to migration rubric section 3).
 
 ---
 
@@ -182,12 +186,13 @@ The routing skill is the framework's proactive layer — it prevents the agent f
 
 ### discovery-analyst
 
-- **Role:** Codebase analysis for migration readiness or architecture assessment
-- **Reads:** source code, project files, dependencies
-- **Writes:** `dependency-map.json` (file on disk)
+- **Role:** Codebase analysis for migration readiness or architecture assessment. Loads scan profiles dynamically based on project stack.
+- **Reads:** source code, project files, dependencies, scan profiles (from config or examples)
+- **Writes:** `dependency-map.json` (file on disk), structured markdown report
 - **Never:** modifies code in either repo
-- **Output:** `DONE` | `BLOCKED` | `ERROR` with markdown report
-- **Invoked:** at the start of domain-specific workflows (Phase 1)
+- **Output:** `DONE` | `BLOCKED` | `ERROR` with markdown report + dependency map
+- **Invoked:** at the start of domain-specific workflows (Phase 1), or for post-migration dependency map refresh
+- **Scan profile loading:** config field → `.preflight/scan-profiles/` → `examples/scan-profiles/` → built-in minimal scan (12 universal secret-detection patterns)
 
 ### implementer
 
@@ -281,27 +286,35 @@ Preflight activates when it finds a project config file (search order: `.preflig
 
 The `rubric` field accepts either a single path (string) or an array of paths. Code-reviewer walks all rubrics in the array during review, citing fully-prefixed section IDs so findings are unambiguous across rubrics.
 
-Recommended configurations by mode:
+Teams configure rubrics appropriate to their stack and domain. The framework ships example rubrics at `examples/rubrics/` — these are starting points, not prescriptions. Teams are expected to author or adapt rubrics to their standards.
 
-| Mode | Recommended `rubric` value |
-|---|---|
-| `generic` | `"examples/rubrics/rubric-generic-dotnet.md"` (string) |
-| `migration` | `["examples/rubrics/rubric-migration-dotnet.md", "examples/rubrics/rubric-generic-dotnet.md"]` |
-| `api-new` | `["examples/rubrics/rubric-api-design.md", "examples/rubrics/rubric-generic-dotnet.md"]` |
+If `rubric` is omitted or null, the framework falls back to example rubrics from `${CLAUDE_PLUGIN_ROOT}/examples/rubrics/` based on the project's configured mode.
 
-If `rubric` is omitted or null, the plugin uses defaults based on mode.
+### Scan profile field
+
+The `scanProfile` field (optional) points to a scan profile that the discovery-analyst uses during Phase 1 technical debt analysis. If not configured, the analyst auto-detects the project stack and resolves a profile from `.preflight/scan-profiles/` or `examples/scan-profiles/`.
+
+Scan profiles define stack-specific technical debt patterns with detection signals. The framework ships example profiles at `examples/scan-profiles/` — teams can author their own for custom patterns.
+
+### Generation spec field
+
+The `generation-spec` field (optional) points to a generation spec that the migrate and scaffold skills use during Phase 2 code generation. If not configured, the skill resolves a spec from `examples/generation-specs/` based on the detected stack.
+
+Generation specs provide copy-pasteable code patterns pre-validated against the rubric. Using them means Stage 1 will never flag the mechanical patterns — the generation spec and detection spec are two sides of the same coin.
 
 ### Mode implications
 
-| Mode | Rubric source | Extra skills | Extra config |
-|---|---|---|---|
-| `generic` | Example rubric (rubric-generic-dotnet.md) | self-review, fix-and-close, TDD, debugging, gps-decide | None |
-| `migration` | rubric-migration-dotnet.md + rubric-generic-dotnet.md | + migrate | `migration.legacyRepoPath` required |
-| `api-new` | rubric-api-design.md + rubric-generic-dotnet.md | + scaffold | None |
+| Mode | Skills available | Extra config |
+|---|---|---|
+| `generic` | self-review, fix-and-close, TDD, debugging, gps-decide | None |
+| `migration` | + migrate | `migration.legacyRepoPath` required |
+| `api-new` | + scaffold | None |
+
+Rubrics, scan profiles, and generation specs are resolved per stack, not per mode. Mode determines which skills activate. Stack-specific content is configured independently.
 
 ### Fallback behavior
 
-When no config exists: mode is `generic`, rubric is the plugin's bundled `examples/rubrics/rubric-generic-dotnet.md`, branch base is `main`, test command is auto-detected. Every skill's Step 0 implements this fallback identically (documented in `lib/skill-bootstrap.md`).
+When no config exists: mode is `generic`, rubric is resolved from the plugin's bundled `examples/rubrics/` based on detected stack, branch base is `main`, test command is auto-detected. Every skill's Step 0 implements this fallback identically (documented in `lib/skill-bootstrap.md`).
 
 ---
 
@@ -310,7 +323,7 @@ When no config exists: mode is `generic`, rubric is the plugin's bundled `exampl
 - **Not a linter.** It does not parse ASTs or run static analysis. It orchestrates an LLM reviewer that walks human-authored detection rules.
 - **Not a CI gate.** It runs locally, before push. CI tools (SonarQube, Veracode, CodeQL) are complementary — they catch different things and run later in the pipeline.
 - **Not a code generator.** The generation specs help produce code that pre-passes the rubric, but the primary value is review discipline, not generation.
-- **Not opinionated about your stack.** The default rubrics target .NET, but the framework is language-agnostic. Swap the rubric and it reviews anything.
+- **Not opinionated about your stack.** The framework's core loop (review, capture, promote, detect) is language-agnostic. Scan profiles, rubrics, and generation specs adapt it to any stack. Example content ships for .NET; other stacks configure their own or generate content through bootstrap.
 - **Not a replacement for human review.** It reduces review round-trips by catching mechanical issues early. The final PR still gets human eyes before merge.
 - **Not a guarantee.** The architectural commitment is a design goal, not a theorem. It depends on capture quality, classification accuracy, and promotion decisions. It gets closer to the goal with each iteration — it does not start at 100%.
 
@@ -318,10 +331,11 @@ When no config exists: mode is `generic`, rubric is the plugin's bundled `exampl
 
 ## 10. Stability and versioning
 
-**v0.1-pre** means:
+**v0.2-pre** means:
 - All contracts (sub-agent I/O, hook formats, config schema, capture templates) are designed and statically verified
 - The test suite passes (39 assertions across 4 suites)
-- No execution evidence exists yet — no real PR has been driven through the full loop using this framework's published form
+- Framework architecture is stack-neutral — scan profiles, generation specs, and rubrics are configurable per team/stack
+- No execution evidence of the full self-improvement loop closing yet — operational proving phase pending
 - Contracts may revise based on early execution evidence
 
 **What changes to expect before v0.1:**
