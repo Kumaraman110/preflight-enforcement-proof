@@ -22,25 +22,25 @@ You are READ-ONLY. You never modify any file, in any repo.
    - Current target framework
 
 2. **Technical debt inventory:**
-   Scan categories are loaded from the project's configured scan profile. Each category specifies: pattern to scan for, file globs to search, detection signal. Report count + locations for each category found.
+   Scan categories are loaded from the project's configured scan profile. Each scan category specifies: pattern to scan for, file globs to search, detection signal. Report count + locations for each scan category found.
 
    **Loading the scan profile:**
    1. Check project config (`.preflight/config.json`) for `scanProfile` field — if present, read that path.
    2. If not configured, check `.preflight/scan-profiles/` for a profile matching the project's stack.
-   3. If neither found, fall back to `${CLAUDE_PLUGIN_ROOT}/examples/scan-profiles/` and look for a profile matching the detected stack (infer from project files: `.csproj` → dotnet, `pom.xml` → java, `requirements.txt`/`pyproject.toml` → python, `package.json` → node).
+   3. If neither found, fall back to `${CLAUDE_PLUGIN_ROOT}/examples/scan-profiles/` and look for a profile matching the detected stack (infer from project files: `.csproj`/`.fsproj`/`.vbproj` → dotnet, `pom.xml` → java, `requirements.txt`/`pyproject.toml` → python, `package.json` → node. If multiple stack indicators exist, prefer the one closest to the working directory; if ambiguous, warn and request explicit configuration in `.preflight/config.json`).
    4. If no profile resolves at all, run the built-in minimal scan (twelve universal patterns described below) and warn: "No scan profile found for this project. Running minimal built-in scan only (hardcoded secrets detection). For comprehensive analysis, configure a scan profile in `.preflight/config.json` or place one at `.preflight/scan-profiles/<stack>.md`."
 
    **Reading the profile:**
-   - Verify the `version` field in frontmatter. Currently only `version: 1` is supported. If the version is unrecognized, warn and attempt best-effort parsing.
+   - Verify the `version` field in frontmatter. Currently only `version: 1` is supported. If the version is unrecognized, warn and attempt best-effort parsing — meaning: attempt to parse using version 1 field layout. If categories have unrecognized fields, skip them and include the skipped field names in the warning. If the profile cannot be parsed at all (no frontmatter, no `## §` categories, empty file), fall back to the built-in minimal scan and report the parse failure reason in the warning.
    - For each `## §` category in the profile:
      - Use the `Signal` field to search across files matching the `Glob` field.
      - If Signal is backtick-enclosed: treat as regex, use grep/ripgrep.
-     - If Signal is plain text: use judgment-based scanning.
+     - If Signal is plain text: use LLM judgment — read the source code and use your own analysis to identify instances. This is not a mechanical regex search; rely on your understanding of the pattern described.
      - Count occurrences and record file:line locations.
      - Note the `Severity` level from the profile.
 
    **Built-in minimal scan (fallback only):**
-   When no profile resolves, the analyst runs a two-tier minimal scan focused on hardcoded secrets — the most universally dangerous category that warrants detection across every stack. These patterns are intentionally minimal — the framework's value is in configured profiles, not in this fallback.
+   When no profile resolves, the analyst runs a two-tier minimal scan focused on hardcoded secrets — the most universally dangerous category that warrants detection across every stack. These patterns are intentionally minimal — the framework's value is in configured profiles, not in this fallback. Findings from the minimal scan are reported in the Discovery Report alongside profile-driven findings. Downstream skills (migrate, fix-and-close) treat severity identically regardless of whether the finding came from a scan profile or from the minimal scan.
 
    **Tier 1 — Generic patterns (catches obvious-stupid cases):**
 

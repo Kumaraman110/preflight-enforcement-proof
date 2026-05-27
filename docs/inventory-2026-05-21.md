@@ -491,7 +491,7 @@ Stage 1 NEEDS_FIXES (grouped) → write-active-groups → .preflight/gate/active
 ### Known gaps
 
 1. **No execution evidence yet.** All contracts are statically verified; no PR has been driven through the full published loop.
-2. **discovery-analyst needs profiles per stack.** The agent is now stack-neutral but only a .NET scan profile exists (`examples/scan-profiles/dotnet.md`). Other stacks fall back to 12-pattern minimal scan until profiles are authored.
+2. **discovery-analyst needs profiles per stack.** The agent is now stack-neutral but only a .NET scan profile exists (`examples/scan-profiles/dotnet-framework.md`). Other stacks fall back to 12-pattern minimal scan until profiles are authored.
 3. **migrate prefix pattern is hardcoded.** `CTI.MicroService.IVR.<Name>` assumption needs parameterization.
 4. **Rubric-edit promotion process is untested end-to-end.** The 5-PR cadence is designed but not exercised.
 5. **Windows support is fragile.** `run-hook.cmd` polyglot works but depends on Git for Windows providing bash.

@@ -50,7 +50,7 @@ This profile covers the seven canonical technical debt categories encountered wh
 **Why:** Synchronous I/O blocks threads and prevents efficient scaling under load. .NET 10 services should be async end-to-end.
 **Severity:** recommended
 **Glob:** *.cs
-**Signal:** `\.ExecuteReader\(|\.ExecuteNonQuery\(|\.GetResponse\(|WebClient|HttpWebRequest|\.Result[^s]|\.Wait\(\)|\.GetAwaiter\(\)\.GetResult\(\)`
+**Signal:** `\.ExecuteReader\(|\.ExecuteNonQuery\(|\.GetResponse\(|WebClient|HttpWebRequest|\.Result(?!s)|\.Wait\(\)|\.GetAwaiter\(\)\.GetResult\(\)`
 **Replacement:** `async/await` end-to-end with `CancellationToken` propagation. Use `IHttpClientFactory` for HTTP, async ADO.NET methods or Dapper async for database.
 
 ---

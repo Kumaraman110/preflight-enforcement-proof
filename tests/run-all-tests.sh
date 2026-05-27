@@ -318,6 +318,40 @@ run_behavioral_tests() {
 }
 
 # ═══════════════════════════════════════════════════════════════
+# SUITE: Scan profile format and pattern tests
+# Validates that the scan profile format spec, example profile,
+# and minimal scan patterns all work correctly.
+# ═══════════════════════════════════════════════════════════════
+
+run_scan_profile_tests() {
+  echo ""
+  echo "══════════════════════════════════════════"
+  echo " Scan Profiles: Format and pattern tests"
+  echo "══════════════════════════════════════════"
+  echo ""
+
+  local test_script="$SCRIPT_DIR/scan-profiles/run-tests.sh"
+  if [ -f "$test_script" ]; then
+    local result
+    if result=$(bash "$test_script" 2>&1); then
+      local sub_passes
+      sub_passes=$(echo "$result" | grep "Scan profile tests:" | awk '{print $4}')
+      PASSES=$((PASSES + ${sub_passes:-0}))
+    else
+      local sub_passes sub_failures
+      sub_passes=$(echo "$result" | grep "Scan profile tests:" | awk '{print $4}')
+      sub_failures=$(echo "$result" | grep "Scan profile tests:" | awk '{print $6}')
+      PASSES=$((PASSES + ${sub_passes:-0}))
+      FAILURES=$((FAILURES + ${sub_failures:-1}))
+      red "FAIL: scan-profiles suite had failures"
+      echo "$result" | grep "^FAIL:" || true
+    fi
+  else
+    yellow "SKIP: scan-profiles/run-tests.sh not found"
+  fi
+}
+
+# ═══════════════════════════════════════════════════════════════
 # MAIN
 # ═══════════════════════════════════════════════════════════════
 
@@ -332,15 +366,17 @@ case "$SUITE" in
     run_coupling_tests
     run_crosscheck_tests
     run_behavioral_tests
+    run_scan_profile_tests
     ;;
   stage1) run_stage1_tests ;;
   operative) run_operative_rule_tests ;;
   coupling) run_coupling_tests ;;
   crosscheck) run_crosscheck_tests ;;
   behavioral) run_behavioral_tests ;;
+  scan-profiles) run_scan_profile_tests ;;
   *)
     red "Unknown suite: $SUITE"
-    echo "Usage: $0 [all|stage1|operative|coupling|crosscheck|behavioral]"
+    echo "Usage: $0 [all|stage1|operative|coupling|crosscheck|behavioral|scan-profiles]"
     exit 1
     ;;
 esac
