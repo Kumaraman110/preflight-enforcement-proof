@@ -128,7 +128,7 @@ Every rubric MUST declare a unique prefix in a comment at the top of the file. S
 
 ## 5. Skills
 
-Preflight provides 7 invocable skills and 1 system skill:
+Preflight provides 8 invocable skills and 1 system skill:
 
 ### Domain-specific skills
 
@@ -138,6 +138,14 @@ Preflight provides 7 invocable skills and 1 system skill:
 | `/preflight:scaffold` | api-new | Net-new API: design, generation from rubric, review loop |
 
 Both domain skills follow the same pattern: Phase 1 analysis, Phase 2 generation/execution, handoff to `/preflight:fix-and-close` for the review pipeline. They are peer domains — neither is primary.
+
+### Adoption skill
+
+| Skill | Mode | Purpose |
+|---|---|---|
+| `/preflight:bootstrap` | any | Team configuration: CLAUDE.md, pointer files, config, scan profile recommendation |
+
+Bootstrap is the framework's adoption mechanism. Any team runs it once and gets expert-practice configuration for their stack in one conversation. Three modes: Generate (fresh team), Validate (verify existing), Update (detect drift). Uses the detector module for codebase analysis.
 
 ### Pipeline skills
 

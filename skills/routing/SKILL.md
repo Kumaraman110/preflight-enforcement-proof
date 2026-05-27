@@ -18,6 +18,7 @@ If you think there is even a 1% chance a skill applies to what you're about to d
 | Start migrating a service | `/preflight:migrate` | Skipping Phase 1 discovery has cost 4+ hours when dependencies cascaded. |
 | Push + PR + review loop (full pipeline) | `/preflight:fix-and-close` | Handles Stage 1 gate, commit, push, Stage 2 Copilot loop, capture, metrics — all with coupled-group protocol and iteration caps. |
 | Lock in a readiness score, pick an architectural approach, or propose a rubric/rule change | `/preflight:gps-decide` (skip for trivial reversible choices) | Confident-but-untested judgment ships unchallenged; a wrong one-way-door call costs weeks, not the seconds a stress-test pass takes |
+| Adopt preflight / set up team config | `/preflight:bootstrap` | Skipping bootstrap means ad-hoc config that drifts. Bootstrap produces expert-practice configuration in one conversation. |
 
 ## Red Flags — You Are Rationalizing
 
@@ -31,6 +32,7 @@ If you think there is even a 1% chance a skill applies to what you're about to d
 | "I'll do the full pipeline later, let me just push this quick" | "Quick push" without gates = Copilot catches 5 things = 5 rounds × 300s = 25 minutes of waiting you could have avoided with 2 minutes of Stage 1. | Invoke fix-and-close. It handles everything. |
 | "Tests are passing, that's enough" | Tests verify behavior. Stage 1 verifies security, style, architecture. Orthogonal. Both must pass. | Run self-review after tests pass. |
 | "I've already decided, a stress-test will just slow me down" | Confident decisions are exactly the untested ones. A one-way-door call wrong costs weeks; the pass costs seconds. | Invoke gps-decide. If the decision is sound it survives the pass unchanged. |
+| "I'll just create a CLAUDE.md manually" | CLAUDE.md that doesn't follow format principles (too long, style rules, task-specific content) costs context budget every session. | Invoke bootstrap. It teaches while generating. |
 
 ## Verification Discipline (Always Active)
 
