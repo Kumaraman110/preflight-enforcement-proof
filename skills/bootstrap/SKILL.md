@@ -127,9 +127,24 @@ Present the draft to the lead. Iterate:
 ### Phase 5 — Commit
 
 When the lead approves:
+
+**Write the approval sentinel BEFORE writing any protected files:**
+```bash
+mkdir -p .preflight/gate && echo "{\"approvedAtHEAD\":\"$(git rev-parse HEAD)\",\"approvedFiles\":[\"CLAUDE.md\",\".preflight/config.json\"],\"approvedAt\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}" > .preflight/gate/bootstrap-write-approved
+```
+List exactly the files the lead approved in `approvedFiles`. The bootstrap-write-gate hook will block writes to existing CLAUDE.md or .preflight/config.json unless this sentinel is present and fresh.
+
+Then:
+- Write CLAUDE.md and .preflight/config.json (the gate will now allow it)
 - Commit all artifacts together in one commit
 - Message: `chore: bootstrap preflight configuration`
 - Do NOT push — that's the lead's decision
+
+**Clean up the sentinel after commit:**
+```bash
+rm -f .preflight/gate/bootstrap-write-approved
+```
+The sentinel auto-invalidates after the commit (HEAD moves), but explicit cleanup is belt-and-suspenders.
 
 ## Validate Mode
 

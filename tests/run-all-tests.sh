@@ -327,6 +327,18 @@ run_behavioral_tests() {
   else
     yellow "SKIP: detect-stack-test.sh not found"
   fi
+
+  local write_gate_test="$SCRIPT_DIR/behavioral/bootstrap-write-gate-test.sh"
+  if [ -f "$write_gate_test" ]; then
+    if bash "$write_gate_test"; then
+      PASSES=$((PASSES + 7))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: Bootstrap write-gate tests failed"
+    fi
+  else
+    yellow "SKIP: bootstrap-write-gate-test.sh not found"
+  fi
 }
 
 # ═══════════════════════════════════════════════════════════════

@@ -32,11 +32,28 @@
         ]
       },
       {
+        "matcher": "Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.cmd\" bootstrap-write-gate \"$TOOL_INPUT\"",
+            "timeout": 5000,
+            "async": false
+          }
+        ]
+      },
+      {
         "matcher": "Edit",
         "hooks": [
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.cmd\" coupled-edit-gate \"$TOOL_INPUT\"",
+            "timeout": 5000,
+            "async": false
+          },
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.cmd\" bootstrap-write-gate \"$TOOL_INPUT\"",
             "timeout": 5000,
             "async": false
           }
