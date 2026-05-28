@@ -466,6 +466,88 @@ This makes Validate and Update modes *opinionated quality enforcement* rather th
 
 ---
 
-## Sections 5+
+## Section 5 — Known Weakness: Dependency-Map Coverage
+
+### The producer
+
+The `agents/discovery-analyst.md` generates `dependency-map.json` via a single LLM pass over the codebase. The map declares which files are coupled (must be fixed together) and which are independent (can be fixed in isolation). The analyst is read-only; it produces the map but cannot verify its own output.
+
+### The consumer
+
+`skills/fix-and-close/SKILL.md` uses the dependency map's `couplingGroups` array to dispatch coupled fixes simultaneously through the Coupled-Group Fix Protocol. This is the mechanism that prevents the cascading-regression failure mode — the failure mode that caused 48% of the 70-round review cycle in the reference migration. If the map is wrong, the protocol creates cascades instead of preventing them (by giving the orchestrator false confidence that interacting files are independent).
+
+### The validator
+
+The mechanical validator (`lib/dependency-map-validator.md` and `hooks/dependency-map-validator`) catches approximately three classes of missed coupling edges:
+
+- **Step 1 — Shared imports.** Verifies that "independent" files do not share `using`/import namespaces with coupled-group files. Shared framework namespaces (`System.*`, `Microsoft.Extensions.*`) are excluded.
+- **Step 2 — Explicit type references.** Verifies that each coupling group has at least one verifiable call-chain edge (a file in the group references a type defined in another file in the group).
+- **Step 3 — DI registration cross-check.** Parses `Program.cs` for `AddScoped<IFoo, Foo>` / `AddTransient<IFoo, Foo>` / `AddSingleton<IFoo, Foo>` registrations and verifies that the implementation file and all consumer files appear in the same coupling group.
+
+### The known blind spots
+
+Three classes of coupling edge are invisible to the current validator:
+
+1. **Factory-lambda DI registrations.** `services.AddSingleton<IFoo>(sp => new Foo(sp.GetRequiredService<IBar>()))` does not match the `Add[Scoped|Transient|Singleton]<IFoo, Foo>` regex in Step 3. The coupling between Foo and IBar is present but undetected.
+2. **Event-bus coupling.** Publisher and subscriber relationships mediated through an event bus have no direct type reference between publisher and subscriber files. They are coupled (changing the event shape breaks both) but share no import or call-chain edge visible to the validator.
+3. **Configuration-binding transitive coupling.** Services coupled through shared `IConfiguration` sections (both read the same config key; changing the key's shape or semantics breaks both) have no type-level reference connecting them.
+
+### The non-reproducibility property
+
+Two engineers running `discovery-analyst` on the same codebase at the same HEAD may produce different `couplingGroups` arrays. The LLM's coupling inference is non-deterministic. There is no mechanism in the current framework to detect or reconcile this divergence. The HEAD-stamp sidecar (`hooks/dependency-map-validator`) handles within-session staleness (map was generated at a different commit than the current code), not cross-engineer reproducibility.
+
+### Named trigger condition
+
+The speculative fix (AST-based coupling extraction) is justified if and only if all three conditions are observed simultaneously in a completed `fix-and-close` run:
+
+1. The dependency-map-validator passes all three steps clean (the map is not detectably wrong).
+2. Stage 2 hits the iteration cap of 3 (fixes are cascading despite the map appearing correct).
+3. Post-mortem identifies the root cause as files treated as independent that were actually coupled through one of the named blind spots (factory-lambda DI, event-bus, config-binding transitive coupling).
+
+Until all three conditions are observed together, the trigger has not fired. Do not build speculative AST extraction.
+
+### Scoped fix if the trigger fires
+
+`lib/ast-coupling-extractor.sh` invoking tree-sitter via Python subprocess for the detected stack (initially C#, the only current consumer's stack). Estimated scope: ~200 lines. The extractor produces deterministic edges for imports and DI registrations. The `dependency-map.json` schema gains a per-edge `source` field (`"ast"` | `"llm"`). The validator's Step 3 becomes ground-truth verification rather than regex heuristic.
+
+### Until the trigger fires
+
+The current LLM-inferred map + bash validator + conservative fallback (over-couple on uncertainty) is unproven but theoretically sound. The validator's posture is conservative: when in doubt, it warns and the orchestrator treats uncertain files as coupled. Over-coupling is safe (wastes implementer dispatch budget). Under-coupling cascades. The conservative default is correct. Do not build speculative AST extraction until the named trigger fires.
+
+---
+
+## Section 6 — Layer 3 Freshness Divergence
+
+The overrides cache at `.preflight/derived/overrides.json` carries both `extractedAtHEAD` and `claudeMdHash` fields. The freshness check (`_resolve_overrides_fresh` in `lib/resolve-config.sh`, the lightweight inline version used during field resolution) tests `claudeMdHash` only — it does not compare `extractedAtHEAD` against current HEAD. The full freshness check (`overrides_are_fresh` in `lib/extract-overrides.sh`) tests both fields but is called only by the extractor itself to decide whether re-extraction is needed.
+
+The rationale: CLAUDE.md content hash is the semantically meaningful signal. If the file's content has not changed, HEAD movement is irrelevant to override freshness — the overrides are a function of the file's text, not of git state. HEAD-stamping is recorded for future use: if a future consumer (e.g., a step 3 wired skill) needs to invalidate overrides on commits that do not touch CLAUDE.md, the `extractedAtHEAD` field is available to consult without re-extracting.
+
+The current contract: overrides are considered stale when CLAUDE.md content is edited. Overrides survive commits that do not touch CLAUDE.md. Step 3 (skill wiring) should verify this contract is correct for its specific consumer.
+
+---
+
+## Section 7 — Current State vs Original Aspiration
+
+### What the framework was designed to be
+
+A self-improving AI code review framework with a three-layer config system (explicit config + derived state + CLAUDE.md overrides), four mechanical gates (pre-push, coupled-edit, bootstrap-write, rubric-validity), a self-learning rubric loop that strengthens per PR through captured findings and batched promotion, coupled-edit awareness preventing the cascading-regression failure mode, and stack-neutral core adaptable to any team on any stack via CLAUDE.md extraction.
+
+### What it is today (May 2026)
+
+A discipline harness with four mechanical gates, all implemented, tested, and wired as PreToolUse hooks. Single source of truth for stack detection across six stacks (dotnet, java, python, node, go, rust) via `lib/detect-stack.sh`. A tested three-layer config resolution library (`lib/resolve-config.sh` + `lib/extract-overrides.sh`) — as of this writing, consumed by zero skills (step 3 wiring is next). Scan profile format spec with format validation. Dependency-map validator with HEAD-stamp freshness and three-step mechanical verification. Bootstrap-write gate preventing unauthorized CLAUDE.md overwrites. Rubric-validity gate blocking Stage 1 dispatch when the rubric file does not exist. Full test suite: 147 assertions passing.
+
+### What is not yet true
+
+Zero PRs have been migrated end-to-end through the full framework. The self-learning rubric loop has never completed a single iteration in production (capture → batched promotion → strengthened rubric → improved next-PR review). The dependency-map mechanism has never been tested under real cascading conditions. Several mechanisms — the override layer (until step 3 wires a consumer), the metrics convergence tracking, the rubric-edit batched-promotion cadence — are implemented and tested in isolation but unproven in operational context. The external-review-handler has never polled a real Copilot review. The coupled-group fix protocol has never dispatched an implementer sub-agent on a real coupled group.
+
+### The honest framing
+
+The framework is structurally complete and internally consistent but operationally unproven. Every gate fires correctly in test fixtures. Every library produces correct output for synthetic inputs. The config resolution layer handles all 27 cells of the precedence matrix. The test suite exercises extraction, freshness, precedence, type discipline, adversarial inputs, and read-only contracts.
+
+None of this tells us whether the framework works in practice. The first test-service migration is the experiment that will tell us which parts work under real conditions and which need work. The gap between "passes all tests" and "works in production" is real, honest, and the immediate next step to close.
+
+---
+
+## Sections 8+
 
 Pending after refactor execution completes. Likely topics: adoption and getting started guide, operating model with worked examples, versioning policy when product matures, contribution model when ready for external participation.
