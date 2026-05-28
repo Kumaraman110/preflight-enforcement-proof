@@ -224,6 +224,152 @@ echo '{"stack":{"value":"python","confidence":"high","evidence":"setup.py"}}' > 
 result=$(resolve_field "stack" "$TMPDIR/path with spaces/config.json" "$TMPDIR/path with spaces/derived.json")
 assert_eq "$result" "node" "Paths with spaces work (config wins)"
 
+# ════════════════════════════════════════════════════════════════
+# FIX B: TYPE-AWARE SENTINEL TESTS (18-27)
+# Forward-looking tests proving numeric 0, boolean false, and
+# empty arrays survive as legitimate explicit values.
+# ════════════════════════════════════════════════════════════════
+
+# Register test-only field types for numeric/boolean/object tests
+# (these don't exist in the production registry)
+_resolve_field_type() {
+  case "$1" in
+    stack|buildCommand|testCommand|packageManager|frameworkVersion|sourceRoot)
+      echo "string" ;;
+    projectFiles)
+      echo "array" ;;
+    test_port)
+      echo "number" ;;
+    test_strict)
+      echo "boolean" ;;
+    test_meta)
+      echo "object" ;;
+    test_includes)
+      echo "array" ;;
+    *)
+      echo "unknown" ;;
+  esac
+}
+
+# Temporarily add test fields to resolvable set
+_RESOLVE_CONFIG_RESOLVABLE_FIELDS="stack buildCommand testCommand packageManager frameworkVersion sourceRoot projectFiles test_port test_strict test_meta test_includes"
+
+# Test 18: String "0" in config → returns "0" (not unset)
+echo "Test 18: String '0' is a legitimate value (not unset)"
+setup_workspace
+echo '{"stack":"0"}' > "$TMPDIR/config.json"
+echo '{"stack":{"value":"python","confidence":"high","evidence":"test"}}' > "$TMPDIR/derived.json"
+
+result=$(resolve_field_with_source "stack" "$TMPDIR/config.json" "$TMPDIR/derived.json")
+assert_eq "$result" "0|explicit" "String '0' survives as explicit"
+
+# Test 19: Numeric 0 in config (number field) → returns "0", source=explicit
+echo "Test 19: Numeric 0 is legitimate for number fields"
+setup_workspace
+echo '{"test_port":0}' > "$TMPDIR/config.json"
+echo '{"test_port":{"value":"8080","confidence":"high","evidence":"test"}}' > "$TMPDIR/derived.json"
+
+result=$(resolve_field_with_source "test_port" "$TMPDIR/config.json" "$TMPDIR/derived.json")
+assert_eq "$result" "0|explicit" "Numeric 0 survives as explicit"
+
+# Test 20: Boolean false in config (boolean field) → returns "false", source=explicit
+echo "Test 20: Boolean false is legitimate for boolean fields"
+setup_workspace
+echo '{"test_strict":false}' > "$TMPDIR/config.json"
+echo '{"test_strict":{"value":"true","confidence":"high","evidence":"test"}}' > "$TMPDIR/derived.json"
+
+result=$(resolve_field_with_source "test_strict" "$TMPDIR/config.json" "$TMPDIR/derived.json")
+assert_eq "$result" "false|explicit" "Boolean false survives as explicit"
+
+# Test 21: Empty array [] in config (array field) → returns "", source=explicit
+echo "Test 21: Empty array is legitimate for array fields"
+setup_workspace
+echo '{"test_includes":[]}' > "$TMPDIR/config.json"
+echo '{"test_includes":["a.cs","b.cs"]}' > "$TMPDIR/derived.json"
+
+result=$(resolve_field_with_source "test_includes" "$TMPDIR/config.json" "$TMPDIR/derived.json")
+# Empty array join is empty string but it's still SET (not sentinel)
+assert_eq "$result" "|explicit" "Empty array survives as explicit (empty join)"
+
+# Test 22: JSON null in config → falls through to derived
+echo "Test 22: JSON null falls through to derived (number field)"
+setup_workspace
+echo '{"test_port":null}' > "$TMPDIR/config.json"
+echo '{"test_port":{"value":"3000","confidence":"high","evidence":"test"}}' > "$TMPDIR/derived.json"
+
+result=$(resolve_field_with_source "test_port" "$TMPDIR/config.json" "$TMPDIR/derived.json")
+assert_eq "$result" "3000|derived" "JSON null in number field → derived fills"
+
+# Test 23: Missing key falls through to derived
+echo "Test 23: Missing key falls through (boolean field)"
+setup_workspace
+echo '{"mode":"generic"}' > "$TMPDIR/config.json"
+echo '{"test_strict":{"value":"true","confidence":"high","evidence":"test"}}' > "$TMPDIR/derived.json"
+
+result=$(resolve_field_with_source "test_strict" "$TMPDIR/config.json" "$TMPDIR/derived.json")
+assert_eq "$result" "true|derived" "Missing key in boolean field → derived fills"
+
+# Test 24: resolve_field_type returns registered types
+echo "Test 24: resolve_field_type returns correct types"
+setup_workspace
+
+t1=$(resolve_field_type "testCommand")
+t2=$(resolve_field_type "projectFiles")
+t3=$(resolve_field_type "test_port")
+t4=$(resolve_field_type "nonexistent_field")
+
+if [ "$t1" = "string" ] && [ "$t2" = "array" ] && [ "$t3" = "number" ] && [ "$t4" = "unknown" ]; then
+  green "PASS: resolve_field_type returns correct types"
+  PASSES=$((PASSES + 1))
+else
+  red "FAIL: resolve_field_type wrong (got: $t1, $t2, $t3, $t4)"
+  FAILURES=$((FAILURES + 1))
+fi
+
+# Test 25: Unknown field type emits warning but still works
+echo "Test 25: Unknown field type warns but resolves"
+setup_workspace
+
+# Temporarily add an unregistered field to resolvable set
+_RESOLVE_CONFIG_RESOLVABLE_FIELDS="$_RESOLVE_CONFIG_RESOLVABLE_FIELDS unknown_field"
+
+# Override type to return unknown for this field (it already does via default)
+echo '{"unknown_field":"hello"}' > "$TMPDIR/config.json"
+echo '{}' > "$TMPDIR/derived.json"
+
+resolve_field "unknown_field" "$TMPDIR/config.json" "$TMPDIR/derived.json" > "$TMPDIR/stdout.txt" 2> "$TMPDIR/stderr.txt"
+result=$(cat "$TMPDIR/stdout.txt")
+stderr_output=$(cat "$TMPDIR/stderr.txt")
+
+if [ "$result" = "hello" ] && echo "$stderr_output" | grep -q "no registered type"; then
+  green "PASS: unknown field resolves with warning"
+  PASSES=$((PASSES + 1))
+else
+  red "FAIL: expected value 'hello' + warning (result='$result', stderr='$stderr_output')"
+  FAILURES=$((FAILURES + 1))
+fi
+
+# Test 26: projectFiles as array in derived → returns joined values
+echo "Test 26: Array field (projectFiles) from derived"
+setup_workspace
+echo '{}' > "$TMPDIR/config.json"
+echo '{"projectFiles":["src/A.cs","src/B.cs","src/C.cs"]}' > "$TMPDIR/derived.json"
+
+result=$(resolve_field "projectFiles" "$TMPDIR/config.json" "$TMPDIR/derived.json")
+expected="src/A.cs
+src/B.cs
+src/C.cs"
+assert_eq "$result" "$expected" "projectFiles array from derived joins correctly"
+
+# Test 27: String "false" in a string field is SET (not confused with boolean)
+echo "Test 27: String 'false' is not confused with boolean false"
+setup_workspace
+echo '{"stack":"false"}' > "$TMPDIR/config.json"
+echo '{"stack":{"value":"node","confidence":"high","evidence":"test"}}' > "$TMPDIR/derived.json"
+
+result=$(resolve_field_with_source "stack" "$TMPDIR/config.json" "$TMPDIR/derived.json")
+assert_eq "$result" "false|explicit" "String 'false' survives as explicit string"
+
 # ─── Results ──────────────────────────────────────────────────
 
 echo ""

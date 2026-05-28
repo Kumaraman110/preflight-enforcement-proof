@@ -18,6 +18,7 @@
 #   resolve_field <name> [config_path] [derived_path]
 #   resolve_field_with_source <name> [config_path] [derived_path]
 #   is_field_resolvable <name>
+#   resolve_field_type <name>
 
 # ─── Constants ────────────────────────────────────────────────
 
@@ -28,6 +29,81 @@ _RESOLVE_CONFIG_DEFAULT_DERIVED=".preflight/derived/state.json"
 # Config-only fields (rubric, capture, mode, branch, review, loop, migration)
 # are NOT in this list and will warn if queried.
 _RESOLVE_CONFIG_RESOLVABLE_FIELDS="stack buildCommand testCommand packageManager frameworkVersion sourceRoot projectFiles"
+
+# ─── Field type registry ─────────────────────────────────────
+# Each resolvable field declares its type. The "is this layer unset for this
+# field" predicate is type-aware: numeric 0, boolean false, and empty arrays
+# are legitimate SET values for their respective types — not "unset."
+#
+# Types: string, number, boolean, array, object
+# Add new entries when new resolvable fields are introduced.
+
+_resolve_field_type() {
+  case "$1" in
+    stack|buildCommand|testCommand|packageManager|frameworkVersion|sourceRoot)
+      echo "string" ;;
+    projectFiles)
+      echo "array" ;;
+    *)
+      echo "unknown" ;;
+  esac
+}
+
+# ─── Unset sentinel ──────────────────────────────────────────
+# This token disambiguates "field missing from JSON" from "field present with
+# value null or empty." It is chosen to be impossible to collide with any real
+# config value: it contains control characters and a UUID-like suffix that no
+# human would write and no generator would produce.
+_RESOLVE_UNSET_SENTINEL="__RESOLVE_UNSET_\x00_7f3a9c2e__"
+
+# ─── Per-type "is unset" predicates ──────────────────────────
+# Return 0 (true) if the value should be treated as "unset" for this type.
+# Return 1 (false) if the value is a legitimate SET value.
+
+_resolve_is_unset_string() {
+  # Unset if: sentinel, JSON null, or empty string
+  local v="$1"
+  [ "$v" = "$_RESOLVE_UNSET_SENTINEL" ] && return 0
+  [ "$v" = "null" ] && return 0
+  [ -z "$v" ] && return 0
+  return 1
+}
+
+_resolve_is_unset_number() {
+  # Unset if: sentinel or JSON null. SET if: any number including 0.
+  local v="$1"
+  [ "$v" = "$_RESOLVE_UNSET_SENTINEL" ] && return 0
+  [ "$v" = "null" ] && return 0
+  [ -z "$v" ] && return 0
+  return 1
+}
+
+_resolve_is_unset_boolean() {
+  # Unset if: sentinel or JSON null. SET if: "true" or "false".
+  local v="$1"
+  [ "$v" = "$_RESOLVE_UNSET_SENTINEL" ] && return 0
+  [ "$v" = "null" ] && return 0
+  [ -z "$v" ] && return 0
+  return 1
+}
+
+_resolve_is_unset_array() {
+  # Unset if: sentinel or JSON null only. Empty string after join of [] is SET.
+  # An empty array is an explicit "no items" — distinct from missing/null.
+  local v="$1"
+  [ "$v" = "$_RESOLVE_UNSET_SENTINEL" ] && return 0
+  [ "$v" = "null" ] && return 0
+  return 1
+}
+
+_resolve_is_unset_object() {
+  # Unset if: sentinel or JSON null. SET if: any object including "{}".
+  local v="$1"
+  [ "$v" = "$_RESOLVE_UNSET_SENTINEL" ] && return 0
+  [ "$v" = "null" ] && return 0
+  [ -z "$v" ] && return 0
+  return 1
+}
 
 # ─── Internal helpers ─────────────────────────────────────────
 
@@ -44,91 +120,103 @@ if [ -z "${_RESOLVE_PYTHON_CMD+x}" ]; then
   done
 fi
 
-# Extract a field value from a JSON file.
-# For derived state: fields are objects with .value sub-key (except projectFiles which is an array).
+# Extract a field value from a JSON file with type-aware extraction.
+# Returns the raw value as a string, or the unset sentinel if field is missing/null.
+# For derived state: fields are objects with .value sub-key (except projectFiles).
 # For config: fields may be top-level or nested (test.command → testCommand).
-# Returns the raw string value, or empty if not found/null/empty.
 _resolve_read_field() {
-  local file="$1" field="$2" source_type="$3"
+  local file="$1" field="$2" source_type="$3" field_type="$4"
 
   if [ ! -f "$file" ]; then
-    echo ""
+    echo "$_RESOLVE_UNSET_SENTINEL"
     return
   fi
 
   if command -v jq &>/dev/null; then
     local result=""
     if [ "$source_type" = "derived" ]; then
-      # Derived state: field is an object with .value, or an array (projectFiles)
-      if [ "$field" = "projectFiles" ]; then
-        result=$(jq -r 'if .projectFiles then (.projectFiles | if type == "array" then join("\n") else . end) else "" end' "$file" 2>/dev/null) || result=""
+      if [ "$field" = "projectFiles" ] || [ "$field_type" = "array" ]; then
+        # Array fields: return JSON array representation for type checking
+        result=$(jq -r "if .[\"$field\"] == null then \"$_RESOLVE_UNSET_SENTINEL\" elif .[\"$field\"] | type == \"array\" then (.[\"$field\"] | join(\"\\n\")) else .[\"$field\"] // \"$_RESOLVE_UNSET_SENTINEL\" end" "$file" 2>/dev/null) || result="$_RESOLVE_UNSET_SENTINEL"
       else
-        result=$(jq -r "if .[\"$field\"] then (if .[\"$field\"] | type == \"object\" then .[\"$field\"].value // \"\" else .[\"$field\"] // \"\" end) else \"\" end" "$file" 2>/dev/null) || result=""
+        result=$(jq -r "if .[\"$field\"] == null then \"$_RESOLVE_UNSET_SENTINEL\" elif .[\"$field\"] | type == \"object\" then (.[\"$field\"].value // \"$_RESOLVE_UNSET_SENTINEL\" | if . == null then \"$_RESOLVE_UNSET_SENTINEL\" else tostring end) else (.[\"$field\"] | tostring) end" "$file" 2>/dev/null) || result="$_RESOLVE_UNSET_SENTINEL"
       fi
     else
       # Config: check direct field, then known nested mappings
       case "$field" in
         testCommand)
-          result=$(jq -r 'if .testCommand then .testCommand // "" elif .test and .test.command then .test.command // "" else "" end' "$file" 2>/dev/null) || result=""
+          result=$(jq -r "if .testCommand != null then (.testCommand | tostring) elif .test != null and .test.command != null then (.test.command | tostring) else \"$_RESOLVE_UNSET_SENTINEL\" end" "$file" 2>/dev/null) || result="$_RESOLVE_UNSET_SENTINEL"
           ;;
         buildCommand)
-          result=$(jq -r 'if .buildCommand then .buildCommand // "" elif .build and .build.command then .build.command // "" else "" end' "$file" 2>/dev/null) || result=""
+          result=$(jq -r "if .buildCommand != null then (.buildCommand | tostring) elif .build != null and .build.command != null then (.build.command | tostring) else \"$_RESOLVE_UNSET_SENTINEL\" end" "$file" 2>/dev/null) || result="$_RESOLVE_UNSET_SENTINEL"
           ;;
         *)
-          result=$(jq -r ".[\"$field\"] // \"\"" "$file" 2>/dev/null) || result=""
+          result=$(jq -r "if .[\"$field\"] == null then \"$_RESOLVE_UNSET_SENTINEL\" else (.[\"$field\"] | if type == \"array\" then join(\"\\n\") else tostring end) end" "$file" 2>/dev/null) || result="$_RESOLVE_UNSET_SENTINEL"
           ;;
       esac
     fi
-    # Normalize: "null" string from jq → empty
-    if [ "$result" = "null" ]; then
-      echo ""
-    else
-      echo "$result"
-    fi
+    echo "$result"
   elif [ -n "$_RESOLVE_PYTHON_CMD" ]; then
     local result=""
     result=$($_RESOLVE_PYTHON_CMD -c "
 import json, sys
+
+SENTINEL = sys.argv[4]
 try:
     d = json.load(open(sys.argv[1]))
 except:
-    print('')
+    print(SENTINEL)
     sys.exit(0)
+
 field = sys.argv[2]
 source_type = sys.argv[3]
+
 if source_type == 'derived':
-    if field == 'projectFiles':
-        v = d.get('projectFiles', [])
-        if isinstance(v, list):
+    if field == 'projectFiles' or '$field_type' == 'array':
+        v = d.get(field)
+        if v is None:
+            print(SENTINEL)
+        elif isinstance(v, list):
             print('\n'.join(str(x) for x in v) if v else '')
         else:
-            print(v if v else '')
+            print(v)
     else:
-        obj = d.get(field, {})
-        if isinstance(obj, dict):
-            v = obj.get('value', '')
-            print(v if v is not None else '')
+        obj = d.get(field)
+        if obj is None:
+            print(SENTINEL)
+        elif isinstance(obj, dict):
+            v = obj.get('value')
+            if v is None:
+                print(SENTINEL)
+            else:
+                print(str(v))
         else:
-            print(obj if obj is not None else '')
+            print(str(obj))
 else:
     # Config: direct field or nested mapping
     if field == 'testCommand':
-        v = d.get('testCommand') or (d.get('test', {}) or {}).get('command')
+        v = d.get('testCommand')
+        if v is None:
+            v = (d.get('test') or {}).get('command')
     elif field == 'buildCommand':
-        v = d.get('buildCommand') or (d.get('build', {}) or {}).get('command')
+        v = d.get('buildCommand')
+        if v is None:
+            v = (d.get('build') or {}).get('command')
     else:
         v = d.get(field)
     if v is None:
-        print('')
+        print(SENTINEL)
     elif isinstance(v, list):
-        print('\n'.join(str(x) for x in v) if v else '')
+        print('\n'.join(str(x) for x in v))
+    elif isinstance(v, bool):
+        print(str(v).lower())
     else:
-        print(v)
-" "$file" "$field" "$source_type" 2>/dev/null | tr -d '\r') || result=""
+        print(str(v))
+" "$file" "$field" "$source_type" "$_RESOLVE_UNSET_SENTINEL" 2>/dev/null | tr -d '\r') || result="$_RESOLVE_UNSET_SENTINEL"
     echo "$result"
   else
     # No jq, no python — cannot parse JSON
-    echo ""
+    echo "$_RESOLVE_UNSET_SENTINEL"
   fi
 }
 
@@ -147,6 +235,12 @@ is_field_resolvable() {
   return 1
 }
 
+# Returns the registered type for a resolvable field.
+# Echoes: string, number, boolean, array, object, or unknown.
+resolve_field_type() {
+  _resolve_field_type "$1"
+}
+
 # Resolve a field value using two-layer precedence.
 # Outputs the resolved value (or empty) to stdout.
 # Emits a stderr warning if the field is not in the resolvable set.
@@ -161,18 +255,24 @@ resolve_field() {
     return
   fi
 
+  local field_type
+  field_type=$(_resolve_field_type "$field")
+  if [ "$field_type" = "unknown" ]; then
+    echo "WARNING: field '$field' has no registered type. Register it in _resolve_field_type(). Defaulting to string." >&2
+  fi
+
   # Layer 1: explicit config wins
   local config_val=""
-  config_val=$(_resolve_read_field "$config_path" "$field" "config")
-  if [ -n "$config_val" ]; then
+  config_val=$(_resolve_read_field "$config_path" "$field" "config" "$field_type")
+  if ! "_resolve_is_unset_${field_type}" "$config_val" 2>/dev/null; then
     echo "$config_val"
     return
   fi
 
   # Layer 2: derived state fills gaps
   local derived_val=""
-  derived_val=$(_resolve_read_field "$derived_path" "$field" "derived")
-  if [ -n "$derived_val" ]; then
+  derived_val=$(_resolve_read_field "$derived_path" "$field" "derived" "$field_type")
+  if ! "_resolve_is_unset_${field_type}" "$derived_val" 2>/dev/null; then
     echo "$derived_val"
     return
   fi
@@ -194,18 +294,24 @@ resolve_field_with_source() {
     return
   fi
 
+  local field_type
+  field_type=$(_resolve_field_type "$field")
+  if [ "$field_type" = "unknown" ]; then
+    echo "WARNING: field '$field' has no registered type. Register it in _resolve_field_type(). Defaulting to string." >&2
+  fi
+
   # Layer 1: explicit config wins
   local config_val=""
-  config_val=$(_resolve_read_field "$config_path" "$field" "config")
-  if [ -n "$config_val" ]; then
+  config_val=$(_resolve_read_field "$config_path" "$field" "config" "$field_type")
+  if ! "_resolve_is_unset_${field_type}" "$config_val" 2>/dev/null; then
     echo "${config_val}|explicit"
     return
   fi
 
   # Layer 2: derived state fills gaps
   local derived_val=""
-  derived_val=$(_resolve_read_field "$derived_path" "$field" "derived")
-  if [ -n "$derived_val" ]; then
+  derived_val=$(_resolve_read_field "$derived_path" "$field" "derived" "$field_type")
+  if ! "_resolve_is_unset_${field_type}" "$derived_val" 2>/dev/null; then
     echo "${derived_val}|derived"
     return
   fi

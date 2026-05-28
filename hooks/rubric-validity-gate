@@ -13,6 +13,11 @@
 #   - Rubric paths don't resolve   → BLOCK (review against phantom rubric is worse than no review)
 #   - All rubric paths resolve     → ALLOW
 #
+# Path reachability is delegated to the OS's existence check. Any unreachable
+# path — missing file, broken symlink, permission-denied, unmounted volume —
+# blocks identically. Platform-specific resolution behavior (e.g., Windows
+# symlink permissions) is the OS's contract, not this gate's.
+#
 # Exit 0 = allow the tool call
 # Exit 1 = block the tool call (hook framework shows the stderr message)
 

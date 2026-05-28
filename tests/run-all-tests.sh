@@ -355,7 +355,7 @@ run_behavioral_tests() {
   local resolve_config_test="$SCRIPT_DIR/behavioral/resolve-config-test.sh"
   if [ -f "$resolve_config_test" ]; then
     if bash "$resolve_config_test"; then
-      PASSES=$((PASSES + 17))
+      PASSES=$((PASSES + 27))
     else
       FAILURES=$((FAILURES + 1))
       red "FAIL: Resolve-config tests failed"

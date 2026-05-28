@@ -96,9 +96,12 @@ else
   FAILURES=$((FAILURES + 1))
 fi
 
-# ─── Test 5: Code-reviewer, rubric path doesn't resolve → BLOCK ─
+# ─── Test 5: Unreachable rubric path (generalized) → BLOCK ──────
+# This covers ALL unreachable-path causes: missing file, broken symlink,
+# permission-denied, unmounted volume. The OS's [ -f ] check rejects them
+# all identically. No platform-specific test needed.
 
-echo "Test 5: code-reviewer spawn, rubric path doesn't exist"
+echo "Test 5: code-reviewer spawn, unreachable rubric path (generalized)"
 setup_workspace
 mkdir -p .preflight
 echo '{"rubric":"nonexistent/rubric.md"}' > .preflight/config.json
