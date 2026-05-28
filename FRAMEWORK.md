@@ -9,6 +9,8 @@ Stack-neutral architecture verified. Self-improvement loop designed but not yet 
 
 Preflight is a self-learning engineering harness for AI-assisted development. As model capability commoditizes — frontier models stack within percentage points of each other on every benchmark — the differentiator moves to the harness: the system prompts, skill compositions, sub-agent handoff patterns, and mechanical enforcement that sit between the model and the team's codebase. The harness compounds through use. The model doesn't.
 
+Preflight is built on Claude Code as its runtime. It installs as a Claude Code plugin and activates automatically when a team's `.preflight/config.json` is present. To set up a team, run `/preflight:bootstrap`.
+
 Preflight encodes review discipline as mechanical enforcement, captures external review findings as learning evidence, and promotes validated patterns into detection rules that fire locally on subsequent work. It works from any directory, adapts to project-specific rubrics and scan profiles, and operates across multiple development domains (migration, net-new API, generic) without domain-specific hardcoding in its core loop.
 
 The framework is not static. Every PR that passes through it generates captures. Captures become rubric edits. Rubric edits make the next review smarter. The act of using preflight improves preflight. This is not a feature — it is the architectural commitment.
@@ -20,6 +22,8 @@ The framework is not static. Every PR that passes through it generates captures.
 Preflight promises one thing:
 
 > **Every issue caught by external review on ServiceN should be caught by local review on ServiceN+1.**
+>
+> *(ServiceN = any unit of work that passes through the pipeline — a migration, a new service, or a PR.)*
 
 This is the contract the system is engineered to deliver. The two sub-agents, the four capture buckets, the rubric-edit promotion process, and the mechanical gates all exist to make this statement true over time. If a design decision would weaken this contract, that decision is wrong.
 
@@ -88,7 +92,7 @@ Every external review finding lands in exactly one bucket:
 | **false-positive** | Stage 1 flagged it but external review disagrees | false-positives.md |
 | **human-judgment** | Genuinely subjective; not automatable | checklist-additions.md (deferred section) |
 
-A fifth bucket, **pattern-capture**, records positive patterns (code that passed review) for generation-spec candidates.
+A fifth bucket, **pattern-capture**, records positive patterns (code that passed review) for generation-spec candidates (a generation spec is a template of validated code patterns used during scaffolding and migration execution).
 
 ---
 
@@ -151,8 +155,11 @@ Bootstrap is the framework's adoption mechanism. Any team runs it once and gets 
 
 | Skill | Purpose |
 |---|---|
-| `/preflight:fix-and-close` | Full pipeline: Stage 1 gate, commit, push, Stage 2 Copilot loop, metrics |
+| `/preflight:fix-and-close` | Full pipeline: Stage 1 gate, commit, push, Stage 2 external review loop, metrics |
 | `/preflight:self-review` | Stage 1 standalone: review current diff, fix locally, loop until clean. Never pushes. |
+| `/preflight:rubric-edit` *(planned)* | Promote validated captures into rubric sections. Reviews accumulated captures, proposes promotions, opens a rubric-edit PR. Closes the self-improvement loop. |
+
+The rubric-edit skill is designed but not yet implemented; the promotion process it will automate is documented in `docs/rubric-edit-process.md` and can be performed manually in the interim.
 
 ### Process skills
 
@@ -181,7 +188,7 @@ The routing skill is the framework's proactive layer — it prevents the agent f
 - **Writes:** nothing (findings are returned as structured output)
 - **Never:** edits code, reads capture files, runs git commands
 - **Output:** `CLEAN` | `NEEDS_FIXES` | `ERROR` with structured findings JSON
-- **Invoked:** before every push, including after Copilot-driven fixes
+- **Invoked:** before every push, including after external-review-driven fixes
 
 ### external-review-handler (Stage 2)
 
@@ -196,7 +203,7 @@ The routing skill is the framework's proactive layer — it prevents the agent f
 
 - **Role:** Codebase analysis for migration readiness or architecture assessment. Loads scan profiles dynamically based on project stack.
 - **Reads:** source code, project files, dependencies, scan profiles (from config or examples)
-- **Writes:** `dependency-map.json` (file on disk), structured markdown report
+- **Writes:** `dependency-map.json` (file on disk), validation sidecar (`.preflight/gate/dependency-map-validated`) for downstream freshness detection, structured markdown report
 - **Never:** modifies code in either repo
 - **Output:** `DONE` | `BLOCKED` | `ERROR` with markdown report + dependency map
 - **Invoked:** at the start of domain-specific workflows (Phase 1), or for post-migration dependency map refresh
@@ -259,7 +266,7 @@ This feeds the gate system: verification passes → evidence written → gate ac
 
 ## 8. Configuration
 
-Preflight activates when it finds a project config file (search order: `.preflight/config.json` > `.cpsl/config.json` > `.forge.json`). If no config exists, it uses generic defaults.
+Preflight activates when it finds a project config file (search order: `.preflight/config.json` > `.cpsl/config.json` (legacy path, retained for backward-compatible migration from CPSL-era configuration) > `.forge.json`). If no config exists, it uses generic defaults.
 
 ### Key fields
 
@@ -300,7 +307,7 @@ If `rubric` is omitted or null, the framework falls back to example rubrics from
 
 ### Scan profile field
 
-The `scanProfile` field (optional) points to a scan profile that the discovery-analyst uses during Phase 1 technical debt analysis. If not configured, the analyst auto-detects the project stack and resolves a profile from `.preflight/scan-profiles/` or `examples/scan-profiles/`.
+The `scanProfile` field (optional) points to a scan profile that the discovery-analyst uses during Phase 1 technical debt analysis. If not configured, the analyst auto-detects the project stack (e.g., .NET from `.csproj`/`.fsproj`, Java from `pom.xml`, Python from `pyproject.toml`/`requirements.txt`, Node from `package.json`) and resolves a profile from `.preflight/scan-profiles/` or `examples/scan-profiles/`.
 
 Scan profiles define stack-specific technical debt patterns with detection signals. The framework ships example profiles at `examples/scan-profiles/` — teams can author their own for custom patterns.
 
@@ -346,7 +353,7 @@ When no config exists: mode is `generic`, rubric is resolved from the plugin's b
 - No execution evidence of the full self-improvement loop closing yet — operational proving phase pending
 - Contracts may revise based on early execution evidence
 
-**What changes to expect before v0.1:**
+**What changes to expect before declaring operational readiness:**
 - First execution (via `/preflight:scaffold` on upcoming API development) will validate or revise polling intervals, iteration caps, and capture template fields
 - Hook behavior under real Claude Code plugin loading (vs development `--plugin-dir`) may surface integration issues
 - The rubric-edit promotion process has not been exercised end-to-end yet
@@ -363,6 +370,7 @@ When no config exists: mode is `generic`, rubric is resolved from the plugin's b
 
 | Document | Purpose |
 |---|---|
+| `docs/design/preflight-mature-framework.md` | Full design rationale (Sections 1-4: thesis, architecture, configuration, surface) |
 | `docs/rubric-edit-process.md` | Full promotion process documentation |
 | `docs/contract-audit-2026-05-20.md` | Complete interface map (23 contracts, producer/consumer pairs) |
 | `lib/skill-bootstrap.md` | Canonical Step 0 environment detection pattern |
