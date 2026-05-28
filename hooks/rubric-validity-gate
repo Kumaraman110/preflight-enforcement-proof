@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+# PreToolUse hook for Agent calls. Only activates when spawning a
+# code-reviewer sub-agent. Blocks if no valid rubric can be resolved.
+#
+# TOOL_INPUT CONTRACT:
+#   Claude Code passes $TOOL_INPUT as the serialized tool parameters.
+#   For the Agent tool, this is JSON: {"prompt":"...","subagent_type":"code-reviewer",...}
+#   We extract subagent_type and only gate on "code-reviewer".
+#
+# Gate semantics (differ from drift-detector's informational signal):
+#   - No config file found         → BLOCK (Stage 1 without rubric has no value)
+#   - Config found, no rubric key  → BLOCK (same reason)
+#   - Rubric paths don't resolve   → BLOCK (review against phantom rubric is worse than no review)
+#   - All rubric paths resolve     → ALLOW
+#
+# Exit 0 = allow the tool call
+# Exit 1 = block the tool call (hook framework shows the stderr message)
+
+set -euo pipefail
+
+TOOL_INPUT="${1:-}"
+
+# ─── Extract subagent_type ────────────────────────────────────
+
+extract_subagent_type() {
+  local input="$1"
+  if command -v jq &>/dev/null; then
+    echo "$input" | jq -r '.subagent_type // ""' 2>/dev/null
+  elif command -v node &>/dev/null; then
+    node -e "try{console.log(JSON.parse(process.argv[1]).subagent_type||'')}catch(e){console.log('')}" "$input" 2>/dev/null
+  else
+    echo "$input" | grep -oP '"subagent_type"\s*:\s*"\K[^"]+' 2>/dev/null || echo ""
+  fi
+}
+
+SUBAGENT_TYPE=$(extract_subagent_type "$TOOL_INPUT")
+
+# Only gate on code-reviewer invocations
+if [ "$SUBAGENT_TYPE" != "code-reviewer" ]; then
+  exit 0
+fi
+
+# ─── This IS a code-reviewer spawn — validate rubric ─────────
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PLUGIN_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# Detect a working Python interpreter (handles Windows Store stubs)
+PYTHON_CMD=""
+for py_candidate in python python3; do
+  if command -v "$py_candidate" &>/dev/null; then
+    if "$py_candidate" -c "pass" &>/dev/null 2>&1; then
+      PYTHON_CMD="$py_candidate"
+      break
+    fi
+  fi
+done
+
+# Read a JSON field from a file (supports string and array values)
+read_rubric_field() {
+  local file="$1"
+  if [ ! -f "$file" ]; then
+    echo ""
+    return
+  fi
+  if command -v jq &>/dev/null; then
+    jq -r '.rubric // ""' "$file" 2>/dev/null || echo ""
+  elif [ -n "$PYTHON_CMD" ]; then
+    $PYTHON_CMD -c "
+import json
+d=json.load(open('$file'))
+v=d.get('rubric', '')
+if isinstance(v, list): print('\n'.join(v) if v else '')
+else: print(v if v else '')
+" 2>/dev/null | tr -d '\r' || echo ""
+  else
+    grep -oP '"rubric"\s*:\s*"\K[^"]+' "$file" 2>/dev/null || echo ""
+  fi
+}
+
+# ─── Locate config ───────────────────────────────────────────
+
+CONFIG_FILE=""
+for candidate in ".preflight/config.json" ".cpsl/config.json" ".forge.json"; do
+  if [ -f "$candidate" ]; then
+    CONFIG_FILE="$candidate"
+    break
+  fi
+done
+
+if [ -z "$CONFIG_FILE" ]; then
+  echo "BLOCKED: No preflight config found (.preflight/config.json, .cpsl/config.json, .forge.json)." >&2
+  echo "Stage 1 review requires a rubric. Configure one via .preflight/config.json." >&2
+  exit 1
+fi
+
+# ─── Extract and validate rubric paths ───────────────────────
+
+RUBRIC_PATH=$(read_rubric_field "$CONFIG_FILE")
+
+if [ -z "$RUBRIC_PATH" ]; then
+  echo "BLOCKED: Config ($CONFIG_FILE) has no 'rubric' field." >&2
+  echo "Stage 1 review requires a rubric path. Add a \"rubric\" key to your config." >&2
+  exit 1
+fi
+
+# Validate all rubric paths (supports array — one path per line)
+while IFS= read -r rp; do
+  [ -z "$rp" ] && continue
+  if [ ! -f "$rp" ] && [ ! -f "$PLUGIN_ROOT/$rp" ]; then
+    echo "BLOCKED: Rubric path not found: $rp" >&2
+    echo "Checked: $rp (absolute/relative to cwd) and $PLUGIN_ROOT/$rp (relative to plugin)" >&2
+    echo "Fix the 'rubric' path in $CONFIG_FILE or create the missing file." >&2
+    exit 1
+  fi
+done <<< "$RUBRIC_PATH"
+
+# All rubric paths resolve — allow the code-reviewer to proceed
+exit 0

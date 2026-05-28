@@ -339,6 +339,18 @@ run_behavioral_tests() {
   else
     yellow "SKIP: bootstrap-write-gate-test.sh not found"
   fi
+
+  local rubric_gate_test="$SCRIPT_DIR/behavioral/rubric-validity-gate-test.sh"
+  if [ -f "$rubric_gate_test" ]; then
+    if bash "$rubric_gate_test"; then
+      PASSES=$((PASSES + 10))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: Rubric validity gate tests failed"
+    fi
+  else
+    yellow "SKIP: rubric-validity-gate-test.sh not found"
+  fi
 }
 
 # ═══════════════════════════════════════════════════════════════

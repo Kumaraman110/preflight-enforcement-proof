@@ -58,6 +58,17 @@
             "async": false
           }
         ]
+      },
+      {
+        "matcher": "Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}/hooks/run-hook.cmd\" rubric-validity-gate \"$TOOL_INPUT\"",
+            "timeout": 5000,
+            "async": false
+          }
+        ]
       }
     ]
   }
