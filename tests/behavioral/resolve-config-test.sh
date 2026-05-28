@@ -370,6 +370,110 @@ echo '{"stack":{"value":"node","confidence":"high","evidence":"test"}}' > "$TMPD
 result=$(resolve_field_with_source "stack" "$TMPDIR/config.json" "$TMPDIR/derived.json")
 assert_eq "$result" "false|explicit" "String 'false' survives as explicit string"
 
+# ════════════════════════════════════════════════════════════════
+# OVERRIDE LAYER TESTS (28-34)
+# Three-layer precedence: config > override > derived
+# ════════════════════════════════════════════════════════════════
+
+# Test 28: Config SET + override SET → config wins (source=explicit)
+echo "Test 28: Config wins over override"
+setup_workspace
+echo '{"testCommand":"from-config"}' > "$TMPDIR/config.json"
+echo '{"overrides":{"testCommand":"from-override"}}' > "$TMPDIR/overrides.json"
+echo '{"testCommand":{"value":"from-derived","confidence":"high","evidence":"test"}}' > "$TMPDIR/derived.json"
+# Create a CLAUDE.md so freshness check passes
+echo "# stub" > "$TMPDIR/CLAUDE.md"
+# Make overrides fresh by matching hash
+CLAUDE_HASH=$(sha256sum "$TMPDIR/CLAUDE.md" 2>/dev/null | cut -d' ' -f1 || shasum -a 256 "$TMPDIR/CLAUDE.md" 2>/dev/null | cut -d' ' -f1)
+echo "{\"claudeMdHash\":\"$CLAUDE_HASH\",\"extractedAtHEAD\":\"abc\",\"overrides\":{\"testCommand\":\"from-override\"}}" > "$TMPDIR/overrides.json"
+
+# cd to tmpdir so CLAUDE.md is found by freshness check
+cd "$TMPDIR"
+result=$(resolve_field_with_source "testCommand" "$TMPDIR/config.json" "$TMPDIR/derived.json" "$TMPDIR/overrides.json")
+assert_eq "$result" "from-config|explicit" "Config wins over override"
+
+# Test 29: Config SILENT + override SET → override wins (source=override)
+echo "Test 29: Override wins when config silent"
+setup_workspace
+echo '{"mode":"generic"}' > "$TMPDIR/config.json"
+echo '{"testCommand":{"value":"from-derived","confidence":"high","evidence":"test"}}' > "$TMPDIR/derived.json"
+echo "# stub" > "$TMPDIR/CLAUDE.md"
+CLAUDE_HASH=$(sha256sum "$TMPDIR/CLAUDE.md" 2>/dev/null | cut -d' ' -f1 || shasum -a 256 "$TMPDIR/CLAUDE.md" 2>/dev/null | cut -d' ' -f1)
+echo "{\"claudeMdHash\":\"$CLAUDE_HASH\",\"extractedAtHEAD\":\"abc\",\"overrides\":{\"testCommand\":\"from-override\"}}" > "$TMPDIR/overrides.json"
+
+cd "$TMPDIR"
+result=$(resolve_field_with_source "testCommand" "$TMPDIR/config.json" "$TMPDIR/derived.json" "$TMPDIR/overrides.json")
+assert_eq "$result" "from-override|override" "Override fills when config silent"
+
+# Test 30: Config SILENT + override SILENT + derived SET → derived wins
+echo "Test 30: Derived fills when config and override both silent"
+setup_workspace
+echo '{}' > "$TMPDIR/config.json"
+echo '{"testCommand":{"value":"from-derived","confidence":"high","evidence":"test"}}' > "$TMPDIR/derived.json"
+echo "# stub" > "$TMPDIR/CLAUDE.md"
+CLAUDE_HASH=$(sha256sum "$TMPDIR/CLAUDE.md" 2>/dev/null | cut -d' ' -f1 || shasum -a 256 "$TMPDIR/CLAUDE.md" 2>/dev/null | cut -d' ' -f1)
+echo "{\"claudeMdHash\":\"$CLAUDE_HASH\",\"extractedAtHEAD\":\"abc\",\"overrides\":{}}" > "$TMPDIR/overrides.json"
+
+cd "$TMPDIR"
+result=$(resolve_field_with_source "testCommand" "$TMPDIR/config.json" "$TMPDIR/derived.json" "$TMPDIR/overrides.json")
+assert_eq "$result" "from-derived|derived" "Derived fills when both config and override silent"
+
+# Test 31: All three silent → unresolved
+echo "Test 31: All three layers silent → unresolved"
+setup_workspace
+echo '{}' > "$TMPDIR/config.json"
+echo '{"testCommand":{"value":null,"confidence":"default","evidence":"none"}}' > "$TMPDIR/derived.json"
+echo "# stub" > "$TMPDIR/CLAUDE.md"
+CLAUDE_HASH=$(sha256sum "$TMPDIR/CLAUDE.md" 2>/dev/null | cut -d' ' -f1 || shasum -a 256 "$TMPDIR/CLAUDE.md" 2>/dev/null | cut -d' ' -f1)
+echo "{\"claudeMdHash\":\"$CLAUDE_HASH\",\"extractedAtHEAD\":\"abc\",\"overrides\":{}}" > "$TMPDIR/overrides.json"
+
+cd "$TMPDIR"
+result=$(resolve_field_with_source "testCommand" "$TMPDIR/config.json" "$TMPDIR/derived.json" "$TMPDIR/overrides.json")
+assert_eq "$result" "|unresolved" "All three silent → unresolved"
+
+# Test 32: Override file missing → skip layer 2, fall through to derived
+echo "Test 32: Missing override file falls through to derived"
+setup_workspace
+echo '{}' > "$TMPDIR/config.json"
+echo '{"testCommand":{"value":"from-derived","confidence":"high","evidence":"test"}}' > "$TMPDIR/derived.json"
+
+result=$(resolve_field_with_source "testCommand" "$TMPDIR/config.json" "$TMPDIR/derived.json" "$TMPDIR/nonexistent-overrides.json")
+assert_eq "$result" "from-derived|derived" "Missing override file → derived"
+
+# Test 33: Override file STALE → skip with warning, fall through to derived
+echo "Test 33: Stale override file skipped with warning"
+setup_workspace
+echo '{}' > "$TMPDIR/config.json"
+echo '{"testCommand":{"value":"from-derived","confidence":"high","evidence":"test"}}' > "$TMPDIR/derived.json"
+echo "# original content" > "$TMPDIR/CLAUDE.md"
+echo "{\"claudeMdHash\":\"wrong-hash\",\"extractedAtHEAD\":\"abc\",\"overrides\":{\"testCommand\":\"stale-value\"}}" > "$TMPDIR/overrides.json"
+
+cd "$TMPDIR"
+resolve_field_with_source "testCommand" "$TMPDIR/config.json" "$TMPDIR/derived.json" "$TMPDIR/overrides.json" > "$TMPDIR/stdout33.txt" 2> "$TMPDIR/stderr33.txt"
+result=$(cat "$TMPDIR/stdout33.txt")
+stderr33=$(cat "$TMPDIR/stderr33.txt")
+
+if [ "$result" = "from-derived|derived" ] && echo "$stderr33" | grep -q "stale"; then
+  green "PASS: Stale override skipped with warning, fell through to derived"
+  PASSES=$((PASSES + 1))
+else
+  red "FAIL: Expected derived + stale warning (result='$result', stderr='$stderr33')"
+  FAILURES=$((FAILURES + 1))
+fi
+
+# Test 34: Override with value containing colons (e.g., URLs)
+echo "Test 34: Override value with colons preserved"
+setup_workspace
+echo '{}' > "$TMPDIR/config.json"
+echo '{}' > "$TMPDIR/derived.json"
+echo "# stub" > "$TMPDIR/CLAUDE.md"
+CLAUDE_HASH=$(sha256sum "$TMPDIR/CLAUDE.md" 2>/dev/null | cut -d' ' -f1 || shasum -a 256 "$TMPDIR/CLAUDE.md" 2>/dev/null | cut -d' ' -f1)
+echo "{\"claudeMdHash\":\"$CLAUDE_HASH\",\"extractedAtHEAD\":\"abc\",\"overrides\":{\"buildCommand\":\"docker build -t registry:5000/app:latest .\"}}" > "$TMPDIR/overrides.json"
+
+cd "$TMPDIR"
+result=$(resolve_field_with_source "buildCommand" "$TMPDIR/config.json" "$TMPDIR/derived.json" "$TMPDIR/overrides.json")
+assert_eq "$result" "docker build -t registry:5000/app:latest .|override" "Value with colons preserved"
+
 # ─── Results ──────────────────────────────────────────────────
 
 echo ""

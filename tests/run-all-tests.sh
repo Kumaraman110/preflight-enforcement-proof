@@ -355,13 +355,25 @@ run_behavioral_tests() {
   local resolve_config_test="$SCRIPT_DIR/behavioral/resolve-config-test.sh"
   if [ -f "$resolve_config_test" ]; then
     if bash "$resolve_config_test"; then
-      PASSES=$((PASSES + 27))
+      PASSES=$((PASSES + 34))
     else
       FAILURES=$((FAILURES + 1))
       red "FAIL: Resolve-config tests failed"
     fi
   else
     yellow "SKIP: resolve-config-test.sh not found"
+  fi
+
+  local extract_overrides_test="$SCRIPT_DIR/behavioral/extract-overrides-test.sh"
+  if [ -f "$extract_overrides_test" ]; then
+    if bash "$extract_overrides_test"; then
+      PASSES=$((PASSES + 10))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: Extract-overrides tests failed"
+    fi
+  else
+    yellow "SKIP: extract-overrides-test.sh not found"
   fi
 }
 
