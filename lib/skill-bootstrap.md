@@ -30,7 +30,7 @@ Every skill MUST self-detect its environment as its first action. Do NOT depend 
 
 ## Derived State (preferred source)
 
-If `.preflight/derived/state.json` exists, skills SHOULD read operational values from it rather than re-detecting. The derived state is produced by the detector module (`lib/detector.sh`) and contains pre-computed values with confidence levels.
+Skills MAY read derived state for performance if it is present; self-detection is the primary path. Derived state has no required consumer. If `.preflight/derived/state.json` exists, it contains pre-computed values with confidence levels produced by the detector module (`lib/detector.sh`).
 
 ```bash
 source "${CLAUDE_PLUGIN_ROOT}/lib/derived-state-reader.sh"

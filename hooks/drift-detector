@@ -39,20 +39,7 @@ for py_candidate in python python3; do
   fi
 done
 
-detect_stack() {
-  # Detect primary stack from project files — uses fast glob/test, no find
-  if compgen -G "./*.csproj" &>/dev/null || compgen -G "./*/*.csproj" &>/dev/null || compgen -G "./*/*/*.csproj" &>/dev/null; then
-    echo "dotnet"
-  elif [ -f pom.xml ] || compgen -G "./*/pom.xml" &>/dev/null; then
-    echo "java"
-  elif [ -f pyproject.toml ] || [ -f requirements.txt ] || compgen -G "./*/*/pyproject.toml" &>/dev/null; then
-    echo "python"
-  elif [ -f package.json ] || compgen -G "./*/*/package.json" &>/dev/null; then
-    echo "node"
-  else
-    echo "unknown"
-  fi
-}
+source "${PLUGIN_ROOT}/lib/detect-stack.sh"
 
 count_source_dirs() {
   # Count unique parent directories containing source files (portable — no GNU -printf)
@@ -110,7 +97,8 @@ for candidate in ".preflight/config.json" ".cpsl/config.json" ".forge.json"; do
   fi
 done
 
-CURRENT_STACK=$(detect_stack)
+detect_stack
+CURRENT_STACK="$STACK_VALUE"
 CURRENT_SOURCE_DIRS=$(count_source_dirs)
 CURRENT_CONFIG_EXISTS="false"
 CURRENT_RUBRIC_VALID="false"

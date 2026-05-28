@@ -315,6 +315,18 @@ run_behavioral_tests() {
   else
     yellow "SKIP: detector-test.sh not found"
   fi
+
+  local detect_stack_test="$SCRIPT_DIR/behavioral/detect-stack-test.sh"
+  if [ -f "$detect_stack_test" ]; then
+    if bash "$detect_stack_test"; then
+      PASSES=$((PASSES + 7))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: Detect-stack shared module tests failed"
+    fi
+  else
+    yellow "SKIP: detect-stack-test.sh not found"
+  fi
 }
 
 # ═══════════════════════════════════════════════════════════════
