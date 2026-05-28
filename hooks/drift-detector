@@ -55,9 +55,9 @@ detect_stack() {
 }
 
 count_source_dirs() {
-  # Count unique parent directories containing source files
+  # Count unique parent directories containing source files (portable — no GNU -printf)
   local count
-  if count=$(find . -maxdepth 3 -type f \( -name "*.cs" -o -name "*.java" -o -name "*.py" -o -name "*.ts" -o -name "*.js" -o -name "*.go" -o -name "*.rs" \) -printf '%h\n' 2>/dev/null | sort -u | wc -l); then
+  if count=$(find . -maxdepth 3 -type f \( -name "*.cs" -o -name "*.java" -o -name "*.py" -o -name "*.ts" -o -name "*.js" -o -name "*.go" -o -name "*.rs" \) 2>/dev/null | sed 's|/[^/]*$||' | sort -u | wc -l); then
     echo "${count:-0}"
   else
     echo "0"
@@ -90,7 +90,7 @@ for f in [${field_list}]:
     v=d.get(f, '')
     if isinstance(v, bool): print(str(v).lower())
     elif isinstance(v, (int,float)): print(v)
-    elif isinstance(v, list): print(v[0] if v else '')
+    elif isinstance(v, list): print('\\n'.join(v) if v else '')
     else: print(v if v else '')
 " 2>/dev/null | tr -d '\r' || {
       for _ in "${fields[@]}"; do echo ""; done
@@ -129,13 +129,18 @@ if [ -n "$CONFIG_FILE" ]; then
   SCAN_PROFILE="${CONFIG_VALS[1]:-}"
   GEN_SPEC="${CONFIG_VALS[2]:-}"
 
-  # Validate paths exist
-  if [ -n "$RUBRIC_PATH" ] && [ -f "$RUBRIC_PATH" ]; then
+  # Validate rubric paths — if array, ALL elements must resolve
+  if [ -z "$RUBRIC_PATH" ]; then
     CURRENT_RUBRIC_VALID="true"
-  elif [ -n "$RUBRIC_PATH" ] && [ -f "$PLUGIN_ROOT/$RUBRIC_PATH" ]; then
+  else
     CURRENT_RUBRIC_VALID="true"
-  elif [ -z "$RUBRIC_PATH" ]; then
-    CURRENT_RUBRIC_VALID="true"
+    while IFS= read -r rp; do
+      [ -z "$rp" ] && continue
+      if [ ! -f "$rp" ] && [ ! -f "$PLUGIN_ROOT/$rp" ]; then
+        CURRENT_RUBRIC_VALID="false"
+        break
+      fi
+    done <<< "$RUBRIC_PATH"
   fi
 
   if [ -n "$SCAN_PROFILE" ] && [ -f "$SCAN_PROFILE" ]; then
@@ -159,8 +164,11 @@ fi
 
 # ─── Build current state JSON ─────────────────────────────────
 
+CACHE_SCHEMA_VERSION=1
+
 CURRENT_STATE=$(cat <<STATEEOF
 {
+  "schemaVersion": $CACHE_SCHEMA_VERSION,
   "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
   "stack": "$CURRENT_STACK",
   "sourceDirCount": $CURRENT_SOURCE_DIRS,
@@ -183,12 +191,21 @@ fi
 
 # Read cached state in one call
 if command -v jq &>/dev/null || [ -n "$PYTHON_CMD" ]; then
-  mapfile -t CACHED_VALS < <(read_json_fields "$STATE_FILE" "stack" "sourceDirCount" "configExists" "rubricValid" "scanProfileValid")
-  CACHED_STACK="${CACHED_VALS[0]:-unknown}"
-  CACHED_SOURCE_DIRS="${CACHED_VALS[1]:-0}"
-  CACHED_CONFIG_EXISTS="${CACHED_VALS[2]:-false}"
-  CACHED_RUBRIC_VALID="${CACHED_VALS[3]:-false}"
-  CACHED_SCAN_PROFILE_VALID="${CACHED_VALS[4]:-false}"
+  mapfile -t CACHED_VALS < <(read_json_fields "$STATE_FILE" "schemaVersion" "stack" "sourceDirCount" "configExists" "rubricValid" "scanProfileValid")
+  CACHED_SCHEMA="${CACHED_VALS[0]:-}"
+  CACHED_STACK="${CACHED_VALS[1]:-unknown}"
+  CACHED_SOURCE_DIRS="${CACHED_VALS[2]:-0}"
+  CACHED_CONFIG_EXISTS="${CACHED_VALS[3]:-false}"
+  CACHED_RUBRIC_VALID="${CACHED_VALS[4]:-false}"
+  CACHED_SCAN_PROFILE_VALID="${CACHED_VALS[5]:-false}"
+
+  # Schema version mismatch — treat as first run (overwrite, no warnings)
+  # Empty/missing = pre-schema cache (backwards-compatible, proceed normally)
+  if [ -n "$CACHED_SCHEMA" ] && [ "$CACHED_SCHEMA" != "$CACHE_SCHEMA_VERSION" ]; then
+    mkdir -p "$CACHE_DIR"
+    echo "$CURRENT_STATE" > "$STATE_FILE"
+    exit 0
+  fi
 else
   # Cannot parse cache — treat as first run
   mkdir -p "$CACHE_DIR"

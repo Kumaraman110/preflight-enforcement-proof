@@ -51,8 +51,8 @@ cat > .preflight/gate/dependency-map-validated <<ENDJSON
 }
 ENDJSON
 
-OUTPUT=$(bash "$VALIDATOR" ".preflight/gate/dependency-map-validated" 2>&1) || true
-EXIT_CODE=${PIPESTATUS[0]:-$?}
+EXIT_CODE=0
+OUTPUT=$(bash "$VALIDATOR" ".preflight/gate/dependency-map-validated" 2>&1) || EXIT_CODE=$?
 
 if [ "$EXIT_CODE" -eq 0 ] && echo "$OUTPUT" | grep -q "FRESH"; then
   green "PASS: fresh sidecar returns exit 0"
@@ -89,8 +89,8 @@ ENDJSON
 echo "other change" > unrelated.txt
 git add unrelated.txt && git commit -q -m "unrelated change"
 
-OUTPUT=$(bash "$VALIDATOR" ".preflight/gate/dependency-map-validated" 2>&1) || true
-EXIT_CODE=${PIPESTATUS[0]:-$?}
+EXIT_CODE=0
+OUTPUT=$(bash "$VALIDATOR" ".preflight/gate/dependency-map-validated" 2>&1) || EXIT_CODE=$?
 
 if [ "$EXIT_CODE" -eq 0 ] && echo "$OUTPUT" | grep -q "re-stamped"; then
   green "PASS: HEAD moved, no overlap — re-stamped, exit 0"
@@ -126,10 +126,10 @@ ENDJSON
 echo "modified" > service.cs
 git add service.cs && git commit -q -m "modify tracked file"
 
-OUTPUT=$(bash "$VALIDATOR" ".preflight/gate/dependency-map-validated" 2>&1) || true
-EXIT_CODE=${PIPESTATUS[0]:-$?}
+EXIT_CODE=0
+OUTPUT=$(bash "$VALIDATOR" ".preflight/gate/dependency-map-validated" 2>&1) || EXIT_CODE=$?
 
-if echo "$OUTPUT" | grep -q "STALE"; then
+if [ "$EXIT_CODE" -eq 1 ] && echo "$OUTPUT" | grep -q "STALE"; then
   green "PASS: HEAD moved with map-file overlap — stale, exit 1"
   PASSES=$((PASSES + 1))
 else
@@ -148,10 +148,10 @@ setup_temp_repo
 echo "content" > file.txt
 git add file.txt && git commit -q -m "init"
 
-OUTPUT=$(bash "$VALIDATOR" ".preflight/gate/dependency-map-validated" 2>&1) || true
-EXIT_CODE=${PIPESTATUS[0]:-$?}
+EXIT_CODE=0
+OUTPUT=$(bash "$VALIDATOR" ".preflight/gate/dependency-map-validated" 2>&1) || EXIT_CODE=$?
 
-if echo "$OUTPUT" | grep -q "not found"; then
+if [ "$EXIT_CODE" -eq 1 ] && echo "$OUTPUT" | grep -q "not found"; then
   green "PASS: missing sidecar returns exit 1"
   PASSES=$((PASSES + 1))
 else
@@ -180,10 +180,10 @@ cat > .preflight/gate/dependency-map-validated <<ENDJSON
 }
 ENDJSON
 
-OUTPUT=$(bash "$VALIDATOR" ".preflight/gate/dependency-map-validated" 2>&1) || true
-EXIT_CODE=${PIPESTATUS[0]:-$?}
+EXIT_CODE=0
+OUTPUT=$(bash "$VALIDATOR" ".preflight/gate/dependency-map-validated" 2>&1) || EXIT_CODE=$?
 
-if echo "$OUTPUT" | grep -q "STALE"; then
+if [ "$EXIT_CODE" -eq 1 ] && echo "$OUTPUT" | grep -q "STALE"; then
   green "PASS: invalid SHA in sidecar triggers stale, exit 1"
   PASSES=$((PASSES + 1))
 else

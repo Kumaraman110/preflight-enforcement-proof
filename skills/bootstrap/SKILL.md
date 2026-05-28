@@ -50,10 +50,10 @@ These are the constraints your output must satisfy. They are not suggestions.
 
 Run the detector module first:
 ```bash
-source "${CLAUDE_PLUGIN_ROOT}/lib/detector.sh"
+bash "${CLAUDE_PLUGIN_ROOT}/lib/detector.sh"
 ```
 
-If derived state exists at `.preflight/derived/state.json`, read it. Otherwise run the detector to produce it.
+If derived state exists at `.preflight/derived/state.json`, read it. Otherwise run the detector to produce it. If the detector fails or is unavailable, fall back to manual detection: identify the stack yourself from project files (.csproj, pom.xml, package.json, go.mod, Cargo.toml, requirements.txt/pyproject.toml), surface your finding, and proceed. Detector failure must not block bootstrap.
 
 Then perform three-dimensional analysis:
 

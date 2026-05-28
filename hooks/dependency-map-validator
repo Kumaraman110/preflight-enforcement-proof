@@ -28,7 +28,7 @@ if [ ! -f "$SIDECAR" ]; then
 fi
 
 # Parse sidecar using node (portable across all Claude Code environments)
-SIDECAR_HEAD=$(node -e "const d=JSON.parse(require('fs').readFileSync('$SIDECAR','utf8')); process.stdout.write(d.validAtHEAD||'')" 2>/dev/null) || {
+SIDECAR_HEAD=$(node -e "const d=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')); process.stdout.write(d.validAtHEAD||'')" "$SIDECAR" 2>/dev/null) || {
   echo "STALE: could not parse sidecar. Refresh needed."
   exit 1
 }
@@ -50,10 +50,20 @@ if [ "$SIDECAR_HEAD" = "$CURRENT_HEAD" ]; then
 fi
 
 # Step 2: Targeted check — did intervening commits touch any map files?
-MAP_FILES=$(node -e "const d=JSON.parse(require('fs').readFileSync('$SIDECAR','utf8')); (d.mapFiles||[]).forEach(f=>console.log(f))" 2>/dev/null) || {
+MAP_FILES=$(node -e "const d=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')); (d.mapFiles||[]).forEach(f=>console.log(f))" "$SIDECAR" 2>/dev/null) || {
   echo "STALE: could not parse mapFiles from sidecar. Refresh needed."
   exit 1
 }
+
+# Non-fatal cross-check: compare sidecar mapFiles count against actual map file
+MAP_PATH=$(node -e "const d=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')); process.stdout.write(d.mapPath||'')" "$SIDECAR" 2>/dev/null || true)
+if [ -n "$MAP_PATH" ] && [ -f "$MAP_PATH" ]; then
+  MAP_FILE_COUNT=$(node -e "const d=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')); process.stdout.write(String((d.files||[]).length))" "$MAP_PATH" 2>/dev/null || echo "")
+  SIDECAR_FILE_COUNT=$(echo "$MAP_FILES" | grep -c . 2>/dev/null || echo "0")
+  if [ -n "$MAP_FILE_COUNT" ] && [ "$MAP_FILE_COUNT" != "$SIDECAR_FILE_COUNT" ]; then
+    echo "WARNING: sidecar mapFiles count ($SIDECAR_FILE_COUNT) differs from dependency-map files count ($MAP_FILE_COUNT) — sidecar may be stale" >&2
+  fi
+fi
 
 CHANGED_FILES=$(git diff --name-only "$SIDECAR_HEAD..HEAD" 2>/dev/null) || {
   echo "STALE: git diff failed between $SIDECAR_HEAD and $CURRENT_HEAD. Refresh needed."
@@ -71,11 +81,13 @@ fi
 # Step 3: No overlap — map files were untouched. Re-stamp sidecar with current HEAD.
 node -e "
 const fs = require('fs');
-const d = JSON.parse(fs.readFileSync('$SIDECAR', 'utf8'));
-d.validAtHEAD = '$CURRENT_HEAD';
+const p = process.argv[1];
+const h = process.argv[2];
+const d = JSON.parse(fs.readFileSync(p, 'utf8'));
+d.validAtHEAD = h;
 d.generatedAt = new Date().toISOString();
-fs.writeFileSync('$SIDECAR', JSON.stringify(d, null, 2) + '\n');
-"
+fs.writeFileSync(p, JSON.stringify(d, null, 2) + '\n');
+" "$SIDECAR" "$CURRENT_HEAD"
 
 echo "FRESH: HEAD moved but map files untouched. Sidecar re-stamped."
 exit 0

@@ -39,7 +39,7 @@ BUILD_CMD=$(read_derived "buildCommand")
 STACK=$(read_derived "stack")
 ```
 
-If derived state is missing or stale, fall back to the detection logic above. The session-start hook regenerates derived state when needed.
+If derived state is missing or stale, fall back to the detection logic above. Derived state is produced by the detector module (invoked during bootstrap). It is not automatically regenerated at session start; skills self-detect when derived state is absent or stale.
 
 Values from derived state include confidence levels. For high-stakes operations (push, PR creation), skills should surface low-confidence values to the user for verification before acting.
 

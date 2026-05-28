@@ -14,7 +14,7 @@ json_escape() {
   local s="$1"; s="${s//\\/\\\\}"; s="${s//\"/\\\"}"; printf '%s' "$s"
 }
 
-find_files() { find . -maxdepth 3 -name "$1" -print 2>/dev/null | head -20; }
+find_files() { find . -maxdepth 3 -name "$1" -print 2>/dev/null | sort | head -20; }
 
 # ─── Stack Detection ─────────────────────────────────────────────
 detect_stack() {
@@ -105,34 +105,34 @@ detect_framework_version() {
     dotnet)
       local csproj; csproj=$(find_files '*.csproj' | head -1)
       if [ -n "$csproj" ]; then
-        local fw; fw=$(grep -oP '(?<=<TargetFramework>)[^<]+' "$csproj" 2>/dev/null || true)
-        [ -z "$fw" ] && fw=$(grep -o '<TargetFramework>[^<]*' "$csproj" 2>/dev/null | sed 's/<TargetFramework>//' || true)
+        local fw; fw=$(grep -o '<TargetFramework>[^<]*' "$csproj" 2>/dev/null | sed 's/<TargetFramework>//' || true)
         [ -n "$fw" ] && { value="$fw"; confidence="high"; evidence="TargetFramework in $csproj"; }
       fi ;;
     java)
       if [ -f "pom.xml" ]; then
-        local jver; jver=$(grep -oP '(?<=<java.version>)[^<]+' pom.xml 2>/dev/null || true)
-        [ -z "$jver" ] && jver=$(grep -oP '(?<=<maven.compiler.source>)[^<]+' pom.xml 2>/dev/null || true)
+        local jver; jver=$(grep -o '<java.version>[^<]*' pom.xml 2>/dev/null | sed 's/<java.version>//' || true)
+        [ -z "$jver" ] && jver=$(grep -o '<maven.compiler.source>[^<]*' pom.xml 2>/dev/null | sed 's/<maven.compiler.source>//' || true)
         [ -n "$jver" ] && { value="$jver"; confidence="high"; evidence="java.version in pom.xml"; }
       fi ;;
     python)
       if [ -f "pyproject.toml" ]; then
-        local pyver; pyver=$(grep -oP 'python_requires\s*=\s*"[^"]*' pyproject.toml 2>/dev/null | sed 's/.*"//' || true)
-        [ -n "$pyver" ] && { value="$pyver"; confidence="medium"; evidence="python_requires in pyproject.toml"; }
+        local pyver; pyver=$(sed -n 's/.*requires-python\s*=\s*"\([^"]*\)".*/\1/p' pyproject.toml 2>/dev/null || true)
+        [ -z "$pyver" ] && pyver=$(sed -n 's/.*python_requires\s*=\s*"\([^"]*\)".*/\1/p' pyproject.toml 2>/dev/null || true)
+        [ -n "$pyver" ] && { value="$pyver"; confidence="medium"; evidence="requires-python in pyproject.toml"; }
       fi ;;
     node)
       if [ -f "package.json" ]; then
-        local nver; nver=$(grep -oP '"node"\s*:\s*"[^"]*' package.json 2>/dev/null | sed 's/.*"//' || true)
+        local nver; nver=$(grep -o '"node"[[:space:]]*:[[:space:]]*"[^"]*' package.json 2>/dev/null | sed 's/.*"//' || true)
         [ -n "$nver" ] && { value="$nver"; confidence="medium"; evidence="engines.node in package.json"; }
       fi ;;
     go)
       if [ -f "go.mod" ]; then
-        local gover; gover=$(grep -oP '^go\s+\K[0-9.]+' go.mod 2>/dev/null || true)
+        local gover; gover=$(sed -n 's/^go[[:space:]]\+\([0-9.]\+\).*/\1/p' go.mod 2>/dev/null || true)
         [ -n "$gover" ] && { value="$gover"; confidence="high"; evidence="go directive in go.mod"; }
       fi ;;
     rust)
       if [ -f "Cargo.toml" ]; then
-        local edition; edition=$(grep -oP 'edition\s*=\s*"\K[^"]+' Cargo.toml 2>/dev/null || true)
+        local edition; edition=$(sed -n 's/.*edition[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' Cargo.toml 2>/dev/null || true)
         [ -n "$edition" ] && { value="$edition"; confidence="high"; evidence="edition in Cargo.toml"; }
       fi ;;
   esac
@@ -213,5 +213,5 @@ detect_source_root
 detect_project_files
 
 mkdir -p "$(dirname "$OUTPUT_PATH")"
-generate_json > "$OUTPUT_PATH"
+generate_json > "$OUTPUT_PATH.tmp" && mv "$OUTPUT_PATH.tmp" "$OUTPUT_PATH"
 exit 0
