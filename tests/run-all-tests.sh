@@ -351,6 +351,18 @@ run_behavioral_tests() {
   else
     yellow "SKIP: rubric-validity-gate-test.sh not found"
   fi
+
+  local resolve_config_test="$SCRIPT_DIR/behavioral/resolve-config-test.sh"
+  if [ -f "$resolve_config_test" ]; then
+    if bash "$resolve_config_test"; then
+      PASSES=$((PASSES + 17))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: Resolve-config tests failed"
+    fi
+  else
+    yellow "SKIP: resolve-config-test.sh not found"
+  fi
 }
 
 # ═══════════════════════════════════════════════════════════════
