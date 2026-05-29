@@ -4,36 +4,47 @@
 # present and fresh (HEAD-stamped).
 #
 # New-file creation always passes. Unrelated files always pass.
-# Fails closed (blocks) ONLY for the two protected files on hook error.
 #
-# Inputs:
-#   $1 — serialized tool parameters JSON (file_path field)
+# FAIL BEHAVIOR:
+#   On well-formed JSON (the only input Claude Code produces), the gate
+#   fails CLOSED for the two protected files: a write to an existing
+#   CLAUDE.md or .preflight/config.json without a fresh approval sentinel
+#   is BLOCKED. On malformed JSON (which Claude Code does not produce),
+#   the gate passes through. A substring fallback was deliberately rejected
+#   because "CLAUDE.md" appears in legitimate file contents constantly and
+#   would cause false blocks of normal edits. The existing fail-closed
+#   branches for well-formed-but-problematic cases (unparseable sentinel,
+#   not-in-git-repo) remain unchanged.
+#
+# INPUT CONTRACT:
+#   Claude Code pipes a JSON object to stdin: {"tool_name":"Write",
+#   "tool_input":{"file_path":"...", "content":"..."}, ...}. We read
+#   stdin and extract tool_input.file_path via jq (or node/grep fallback).
 #
 # Exit 0 = allow
 # Exit 1 = block (reason on stderr)
 
 set -uo pipefail
 
-TOOL_INPUT="${1:-}"
+STDIN_JSON="$(cat)"
 SENTINEL=".preflight/gate/bootstrap-write-approved"
 
 PROTECTED_FILES="CLAUDE.md .preflight/config.json"
 
-# ─── Extract file_path from tool input ───────────────────────
+# ─── Extract file_path from stdin JSON ───────────────────────
 
 FILE_PATH=""
 if command -v jq &>/dev/null; then
-  FILE_PATH=$(echo "$TOOL_INPUT" | jq -r '.file_path // empty' 2>/dev/null || echo "")
+  FILE_PATH=$(printf '%s' "$STDIN_JSON" | jq -r '.tool_input.file_path // empty' 2>/dev/null || echo "")
 elif command -v node &>/dev/null; then
-  FILE_PATH=$(echo "$TOOL_INPUT" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{process.stdout.write(JSON.parse(d).file_path||'')}catch(e){}})" 2>/dev/null || echo "")
+  FILE_PATH=$(printf '%s' "$STDIN_JSON" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const j=JSON.parse(d);process.stdout.write((j.tool_input&&j.tool_input.file_path)||'')}catch(e){}})" 2>/dev/null || echo "")
 else
-  FILE_PATH=$(echo "$TOOL_INPUT" | grep -o '"file_path"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"file_path"[[:space:]]*:[[:space:]]*"//;s/"$//' || echo "")
+  FILE_PATH=$(printf '%s' "$STDIN_JSON" | grep -o '"file_path"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"file_path"[[:space:]]*:[[:space:]]*"//;s/"$//' || echo "")
 fi
 
-# If we couldn't parse input at all, use raw input as fallback
-if [ -z "$FILE_PATH" ]; then
-  FILE_PATH="$TOOL_INPUT"
-fi
+# If extraction yielded nothing (malformed JSON), FILE_PATH stays empty,
+# is_protected returns nothing, and the gate passes through. See FAIL
+# BEHAVIOR in the header comment for rationale.
 
 # ─── Determine if target is protected ────────────────────────
 
