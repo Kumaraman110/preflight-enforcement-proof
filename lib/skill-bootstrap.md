@@ -28,9 +28,11 @@ Every skill MUST self-detect its environment as its first action. Do NOT depend 
 
 4. Also check for `CLAUDE.md` at project root — it provides supplementary team conventions.
 
-## Derived State (preferred source)
+## Derived State and the Three-Layer Resolution Library
 
-Skills MAY read derived state for performance if it is present; self-detection is the primary path. Derived state has no required consumer. If `.preflight/derived/state.json` exists, it contains pre-computed values with confidence levels produced by the detector module (`lib/detector.sh`).
+Skills MAY read derived state through `lib/resolve-config.sh` if the three-layer resolution is wired for their field. As of commit 4a66e3c+, `skills/test-driven-development` reads `testCommand` through `resolve_field_with_source`, exercising the full config > CLAUDE.md override > derived precedence. Other skills self-detect inline; they MAY adopt the resolution library in the future when their consumers demand it.
+
+If `.preflight/derived/state.json` exists, it contains pre-computed values with confidence levels produced by the detector module (`lib/detector.sh`).
 
 ```bash
 source "${CLAUDE_PLUGIN_ROOT}/lib/derived-state-reader.sh"

@@ -375,6 +375,18 @@ run_behavioral_tests() {
   else
     yellow "SKIP: extract-overrides-test.sh not found"
   fi
+
+  local tdd_resolution_test="$SCRIPT_DIR/behavioral/tdd-skill-resolution-test.sh"
+  if [ -f "$tdd_resolution_test" ]; then
+    if bash "$tdd_resolution_test"; then
+      PASSES=$((PASSES + 7))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: TDD-skill resolution tests failed"
+    fi
+  else
+    yellow "SKIP: tdd-skill-resolution-test.sh not found"
+  fi
 }
 
 # ═══════════════════════════════════════════════════════════════
