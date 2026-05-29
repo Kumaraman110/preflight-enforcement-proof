@@ -2,31 +2,34 @@
 # PreToolUse hook for Bash commands. Only activates the gate when
 # the command is a git push. All other bash commands pass through.
 #
-# TOOL_INPUT CONTRACT:
-#   Claude Code passes $TOOL_INPUT as the serialized tool parameters.
-#   For the Bash tool, this is JSON: {"command": "git push ..."}
-#   The regex below (line ~18) matches 'git push' inside the JSON string
-#   value, which works because the command text appears literally within
-#   the JSON. If Claude Code's hook contract changes to pass only the
-#   extracted "command" field as a raw string, the regex still works
-#   (direct match). This is intentionally tolerant of both formats.
+# INPUT CONTRACT (corrected):
+#   Claude Code pipes a JSON object to stdin: {"tool_name":"Bash",
+#   "tool_input":{"command":"..."}, ...}. We read stdin and extract
+#   tool_input.command via jq. As a fallback (if jq fails or JSON is
+#   malformed), we grep the raw stdin blob for 'git push' so a push is
+#   never silently allowed.
 #
 # Exit 0 = allow the tool call
 # Exit 1 = block the tool call (hook framework shows the stderr message)
 
 set -euo pipefail
 
-TOOL_INPUT="${1:-}"
+STDIN_JSON="$(cat)"
 
-# Extract the command from the tool input
-# The input is the raw command string passed to Bash tool
-COMMAND="$TOOL_INPUT"
+# Primary: extract the command field via jq
+COMMAND="$(printf '%s' "$STDIN_JSON" | jq -r '.tool_input.command // empty' 2>/dev/null || true)"
+
+# Fallback: if extraction yielded nothing, use the raw blob so a push
+# is still detected (fail-safe for the push case; non-pushes still pass).
+if [ -z "$COMMAND" ]; then
+  COMMAND="$STDIN_JSON"
+fi
 
 # Only gate on git push commands
-if ! echo "$COMMAND" | grep -qE '(^|&&|\|\||;)\s*git\s+push'; then
+if ! printf '%s' "$COMMAND" | grep -qE '(^|&&|\|\||;|")\s*git\s+push'; then
   exit 0
 fi
 
-# This IS a git push — run the full pre-push gate
+# This IS a git push - run the full pre-push gate
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 exec bash "$SCRIPT_DIR/pre-push-gate"
