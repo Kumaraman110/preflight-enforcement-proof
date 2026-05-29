@@ -8,3 +8,6 @@
 
 # Migration checkpoint (session-local recovery state)
 .preflight/migrate-checkpoint.json
+
+# Graphify output (external comprehension tool)
+graphify-out/
