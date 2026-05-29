@@ -127,3 +127,54 @@ Key design decisions:
 5. **The `discovery-analyst` subagent_type doesn't exist.** The skill references it explicitly but it's not in the agent registry. Fell back to general-purpose with explicit instructions. Framework gap — the skill assumes agent types that haven't been built.
 
 6. **No oscillation observed.** Single Stage 1 pass found all issues, single fix pass addressed them. The Coupled-Group Protocol wasn't stress-tested because no coupled findings cascaded. N=1 data point — need more services to validate convergence behavior.
+
+---
+
+## Critical Finding — Post-Run Parity Audit
+
+**Audit document:** `docs/pr12-parity-audit.md`
+
+### Headline numbers
+
+- 7 of 14 divergence points classified as UNDOCUMENTED_DEVIATION
+- 6 of 8 legacy validation codes missing entirely (W0002, W0003, W0004, W0005, W0007, W0008)
+- 2 codes return wrong values (E0002→W0024, W0011→W0023)
+- 1 code invented (S0000 — legacy uses E0000 for success)
+- SlideToken latency profile changed: fire-and-forget → synchronous await
+- PostgreSQL silently introduced as backend (legacy is SQL Server); 5 stored function names invented
+
+### Root cause
+
+Discovery-analyst read 183 lines of controller while 500 lines of repository (`CPSLTokenRepository.cs`) contained 80% of the wire-contract surface: the 8-step validation chain, the result-code mapping, the error HTTP-status override, the downstream fan-out pattern, and the fire-and-forget SlideToken behavior.
+
+### Frontend impact
+
+Every known consumer (247_CUSTOMERIVR, LIVEPERSON_BOT, NETOMI, NLX, CPADMINUI, EZR, CPUI, NAVI) would see breaking changes if this migration were deployed. Breaking changes span: validation response shape (ProblemDetails vs legacy JSON), result code mapping (6 codes missing, 2 wrong, 1 invented), error HTTP status (400→500), and SlideToken latency profile (instant→blocking).
+
+### What this means for the framework
+
+1. **Success metrics are calibrated for code quality, not contract preservation.** Stage 1 checks rubric compliance (security, patterns, style). Nothing checks that the migrated wire contract matches the legacy wire contract. A migration can pass Stage 1 perfectly and break every caller.
+
+2. **Discovery-analyst scope is structurally too narrow.** The skill reads the controller file provided as input. It does not transitively trace into the business layer, repository, or utility classes where the actual validation, error-handling, and response-shaping logic lives. Controller-only discovery produces controller-only understanding.
+
+3. **No parity gate exists distinct from the code-quality gate.** The framework has Stage 1 (rubric/quality) and Stage 2 (Copilot review). Neither compares migrated behavior against legacy behavior. A "Stage 0.5" parity check — comparing result codes, HTTP statuses, response shapes, and latency profiles against a forensic legacy spec — is missing entirely.
+
+4. **Silent backend swaps are not flagged by any framework component.** Changing from SQL Server to PostgreSQL, from HTTP intermediary to direct SQL, or from synchronous to async semantics — none of these trigger any warning, decision-point, or acknowledgment requirement. The agent makes these choices silently and reports confidence.
+
+5. **Confidence is proportional to examination scope, not to requirement scope.** The agent examined 183 lines (controller) thoroughly and produced confident output. But the migration required understanding 700+ lines (controller + repository + auth filter + utilities). The confidence signal was operationally misleading — it reported high confidence over a narrow scope while the full scope was much larger.
+
+### Revised next-steps recommendation
+
+**Re-running the framework on the same service with the same framework will reproduce the same gaps.** The framework's structural limitations are deterministic; a second run produces the same narrow discovery, the same missing validation chain, the same invented codes.
+
+**The right sequence is: framework gap remediation first, then re-run.**
+
+Specific framework changes needed before any re-run:
+
+(a) **Migrate skill must require repository/business-logic-layer reading, not just controller.** The discovery-analyst must transitively follow all dependencies in the controller's constructor (repository, services, utilities) and read them as part of Phase 1. Controller-only discovery is insufficient for any migration where the controller is a thin routing layer.
+
+(b) **A parity gate must exist as a Stage distinct from Stage 1.** It compares migrated behavior against a forensic legacy spec (result codes, HTTP statuses, response shapes, error paths, latency profiles). The rubric checks code quality; the parity gate checks behavioral equivalence. These are orthogonal concerns.
+
+(c) **The framework must flag silent infrastructure changes** (DB backend swap, ORM swap, persistence model change, sync→async semantic change) as explicit decisions requiring acknowledgment. These are not implementation details — they are architectural decisions with operational impact.
+
+(d) **ResultMessages / error-code mappings must be explicit comparison artifacts.** The framework should produce a "legacy result codes → migrated result codes" mapping table as a Phase 2 output, and Stage 1 should verify that every legacy code is either preserved or documented as a deliberate deviation.
