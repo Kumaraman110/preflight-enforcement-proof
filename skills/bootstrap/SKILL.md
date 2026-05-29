@@ -1,7 +1,7 @@
 ---
 name: bootstrap
 description: Produces or validates a team's CLAUDE.md and supporting configuration through structured dialogue with the lead engineer. Three modes — Generate (fresh team), Validate (verify existing), Update (detect drift). The framework's adoption mechanism for any team on any stack.
-argument-hint: <mode: generate|validate|update> [--force to skip mode detection]
+argument-hint: "<mode: generate|validate|update> [--force to skip mode detection]"
 allowed-tools: Read, Glob, Grep, Bash, Write, Edit, Agent
 ---
 
