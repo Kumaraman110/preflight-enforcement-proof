@@ -534,7 +534,7 @@ A self-improving AI code review framework with a three-layer config system (expl
 
 ### What it is today (May 2026)
 
-A discipline harness with four mechanical gates, all implemented, tested, and wired as PreToolUse hooks. Single source of truth for stack detection across six stacks (dotnet, java, python, node, go, rust) via `lib/detect-stack.sh`. A tested three-layer config resolution library (`lib/resolve-config.sh` + `lib/extract-overrides.sh`) — consumed by 1 skill (`test-driven-development`) for 1 field (`testCommand`). Scan profile format spec with format validation. Dependency-map validator with HEAD-stamp freshness and three-step mechanical verification. Bootstrap-write gate preventing unauthorized CLAUDE.md overwrites. Rubric-validity gate blocking Stage 1 dispatch when the rubric file does not exist. Full test suite: 147 assertions passing.
+A discipline harness with four mechanical gates, all implemented, tested, and wired as PreToolUse hooks. Single source of truth for stack detection across six stacks (dotnet, java, python, node, go, rust) via `lib/detect-stack.sh`. A tested three-layer config resolution library (`lib/resolve-config.sh` + `lib/extract-overrides.sh`) — consumed by 1 skill (`test-driven-development`) for 1 field (`testCommand`). Scan profile format spec with format validation. Dependency-map validator with HEAD-stamp freshness and three-step mechanical verification. Bootstrap-write gate preventing unauthorized CLAUDE.md overwrites. Rubric-validity gate blocking Stage 1 dispatch when the rubric file does not exist. Full test suite: 154 assertions passing.
 
 ### What is not yet true
 
