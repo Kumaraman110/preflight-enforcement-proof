@@ -1,7 +1,7 @@
 # The Preflight Mature Framework — Design Document
 
-**Status:** Sections 1-4 locked. Sections 5+ pending after refactor execution.
-**Last update:** May 21, 2026
+**Status:** Sections 1-4 locked. Sections 5-7 active. Sections 8+ pending.
+**Last update:** May 28, 2026
 **Authorship:** Collaborative — Kumar Aman with CTO-mode AI
 
 ---
@@ -534,11 +534,11 @@ A self-improving AI code review framework with a three-layer config system (expl
 
 ### What it is today (May 2026)
 
-A discipline harness with four mechanical gates, all implemented, tested, and wired as PreToolUse hooks. Single source of truth for stack detection across six stacks (dotnet, java, python, node, go, rust) via `lib/detect-stack.sh`. A tested three-layer config resolution library (`lib/resolve-config.sh` + `lib/extract-overrides.sh`) — consumed by 1 skill (`test-driven-development`) for 1 field (`testCommand`). Scan profile format spec with format validation. Dependency-map validator with HEAD-stamp freshness and three-step mechanical verification. Bootstrap-write gate preventing unauthorized CLAUDE.md overwrites. Rubric-validity gate blocking Stage 1 dispatch when the rubric file does not exist. Full test suite: 154 assertions passing.
+A discipline harness with four mechanical gates, all implemented, tested, and wired as PreToolUse hooks. Single source of truth for stack detection across six stacks (dotnet, java, python, node, go, rust) via `lib/detect-stack.sh`. A tested three-layer config resolution library (`lib/resolve-config.sh` + `lib/extract-overrides.sh`) — consumed by 1 skill (`test-driven-development`) for 1 field (`testCommand`). Scan profile format spec with format validation. Dependency-map validator with HEAD-stamp freshness and three-step mechanical verification. Bootstrap-write gate preventing unauthorized CLAUDE.md overwrites. Rubric-validity gate blocking Stage 1 dispatch when the rubric file does not exist. Review-thread resolution primitives (`lib/resolve-review-thread.sh`) — state-based GraphQL resolution replacing the temporal "no newer comments" success proxy, with conditional resolution by stability classification, exponential-backoff retry, rate-limit monitoring, and graceful degradation when auth scope is insufficient. Full test suite: 164 assertions passing.
 
 ### What is not yet true
 
-Zero PRs have been migrated end-to-end through the full framework. The self-learning rubric loop has never completed a single iteration in production (capture → batched promotion → strengthened rubric → improved next-PR review). The dependency-map mechanism has never been tested under real cascading conditions. Several mechanisms — the override layer (until step 3 wires a consumer), the metrics convergence tracking, the rubric-edit batched-promotion cadence — are implemented and tested in isolation but unproven in operational context. The external-review-handler has never polled a real Copilot review. The coupled-group fix protocol has never dispatched an implementer sub-agent on a real coupled group.
+Zero PRs have been migrated end-to-end through the full framework. The self-learning rubric loop has never completed a single iteration in production (capture → batched promotion → strengthened rubric → improved next-PR review). The dependency-map mechanism has never been tested under real cascading conditions. Several mechanisms — the metrics convergence tracking, the rubric-edit batched-promotion cadence — are implemented and tested in isolation but unproven in operational context. The external-review-handler has never polled a real Copilot review. The coupled-group fix protocol has never dispatched an implementer sub-agent on a real coupled group. The review-thread resolution primitives have never resolved a real GitHub thread — all tests use mocked `gh` responses.
 
 ### The honest framing
 

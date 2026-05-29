@@ -179,6 +179,26 @@ These values come from config (`review.*`). If config is absent, use these defau
 | `review.initialWaitSeconds` | 90 | Seconds to wait before the first poll (Copilot needs time to analyze) |
 | Heartbeat interval | 30 minutes | If Copilot has been silent for 30+ minutes, emit a status update so the user reading the chat later knows polling continued and approximately how long it has been waiting |
 
+11.5. **Resolve threads for findings fixed this round (Copilot fix rounds only).**
+
+    On the SECOND and subsequent pushes (i.e., after Stage 2 has returned NEEDS_PARENT_FIXES at least once and you've fixed + pushed), invoke thread resolution for the findings you just fixed:
+
+    ```bash
+    source "${CLAUDE_PLUGIN_ROOT}/lib/resolve-review-thread.sh"
+    resolve_review_check_auth
+    ```
+
+    If auth check passes, for each STABLE/TRIVIAL-STABLE finding from the previous Stage 2 round that you fixed in this push:
+    - Call `resolve_review_post_reply <thread_node_id> "Fixed in <SHA> — <one-line summary>"`
+    - Call `resolve_review_resolve_thread <thread_node_id>`
+
+    For CONTRADICTS_RUBRIC findings: post reply only (`"Won't fix — contradicts rubric §<N.N>"`), do NOT resolve.
+    For UNSTABLE findings: post reply only (`"Deferred — surfaced to user"`), do NOT resolve.
+
+    If auth check fails (returns non-zero), skip silently — the loop still works without resolution, threads just stay open.
+
+    **Why here and not in external-review-handler:** The handler classifies and captures. Resolution happens AFTER the parent fixes and pushes — because only after the push does the fix SHA exist. The handler provides the thread node IDs in its JSON output; this step consumes them.
+
 12. **Invoke `external-review-handler` sub-agent.**
 
 13. **Handle status codes:**

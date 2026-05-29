@@ -29,6 +29,14 @@ Read project config (search order: `.preflight/config.json` > `.cpsl/config.json
 - `review.initialWaitSeconds` (default: `90`)
 - `loop.oscillation.*`
 - `capture.*` paths
+- `review.resolveThreads` (default: `true`) — set to `false` to disable thread resolution entirely
+
+**Thread resolution preflight (early — before the loop starts):**
+```bash
+source "${CLAUDE_PLUGIN_ROOT}/lib/resolve-review-thread.sh"
+resolve_review_check_auth
+```
+If auth check fails, log a warning and continue — `_RRT_RESOLUTION_AVAILABLE` will be `false` and Step 9.5 will skip gracefully. If `review.resolveThreads` is `false`, skip the auth check and set `_RRT_RESOLUTION_AVAILABLE=false` directly.
 
 If no config exists, use defaults above. Capture files default to:
 - `docs/review/calibration-log.md`
@@ -148,6 +156,42 @@ Return findings with status code. Mark each finding's stability:
 - `CONTRADICTS_RUBRIC` → parent surfaces to user with both sides, does NOT auto-fix
 
 Control returns to you at Step 3.
+
+### Step 9.5 — Thread resolution (after parent pushes fix round)
+
+When the parent reports DONE for a set of findings and has pushed the fix commit, resolve the corresponding review threads on GitHub. This replaces the temporal "no newer comments" success proxy with state-based resolution.
+
+**Prerequisites:**
+1. Source `${CLAUDE_PLUGIN_ROOT}/lib/resolve-review-thread.sh`
+2. Run `resolve_review_check_auth`. If it returns non-zero, skip all resolution silently (graceful degradation — the rest of the loop still works, threads just stay open for manual resolution).
+
+**For each finding the parent reports as fixed:**
+
+| Finding stability | Action |
+|---|---|
+| STABLE / TRIVIAL-STABLE | Post reply: `"Fixed in <SHA> — addresses <one-line summary>"` → resolve thread |
+| CONTRADICTS_RUBRIC | Post reply: `"Won't fix — contradicts rubric §<N.N>. See false-positives.md entry."` → do NOT resolve |
+| UNSTABLE | Post reply: `"Deferred — surfaced to user for manual review."` → do NOT resolve |
+| STUCK (from Step 6 termination) | No action. Thread stays open for human triage. |
+
+**Skip conditions (per thread):**
+- Thread is already resolved (`resolve_review_check_thread_state` returns "resolved") → skip
+- Thread has `line: null` (file-level comment, not line-specific) → skip — these are architectural and should stay open for human review
+- `_RRT_RESOLUTION_AVAILABLE` is false → skip all (auth insufficient)
+
+**Reply format:**
+- Include the fix commit SHA (short, 7 chars) so the thread links to the actual fix
+- One sentence describing what was changed — enough for a reviewer scanning resolved threads to understand without clicking through
+- Do NOT include the full diff or code block in the reply
+
+**Error handling:**
+- If `resolve_review_post_reply` fails permanently (returns 1), log the failure and continue to next thread. Do not abort the loop.
+- If `resolve_review_resolve_thread` fails permanently (returns 1) after reply succeeded, the reply is still useful — continue.
+- Return code 2 (permission denied) from any function → set `_RRT_RESOLUTION_AVAILABLE=false` and skip remaining threads.
+- Return code 3 (auth unavailable) → already skipping, no action needed.
+
+**Why resolve only REAL (STABLE/TRIVIAL-STABLE) findings:**
+Resolving a thread signals "this is handled, no further attention needed." CONTRADICTS_RUBRIC threads need human arbitration. UNSTABLE threads need human judgment. Resolving them would hide decisions that haven't been made. The reply without resolution keeps the thread visible while communicating the system's assessment.
 
 ---
 
@@ -382,3 +426,5 @@ A human can then refine the BAD/GOOD patterns (making detection mechanical → u
 - Never decline to classify — every comment lands in a bucket
 - Never omit the JSON block
 - Never silently swallow errors
+- Never resolve UNSTABLE or CONTRADICTS_RUBRIC threads — those need human judgment
+- Never resolve threads without posting a reply first — the reply is the audit trail
