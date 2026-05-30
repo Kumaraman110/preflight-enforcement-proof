@@ -47,8 +47,11 @@ else
   SUBAGENT_TYPE=$(printf '%s' "$STDIN_JSON" | grep -o '"subagent_type"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"subagent_type"[[:space:]]*:[[:space:]]*"//;s/"$//' || echo "")
 fi
 
-# Only gate on code-reviewer invocations
-if [ "$SUBAGENT_TYPE" != "code-reviewer" ]; then
+# Only gate on code-reviewer invocations. The framework namespaces subagent_type
+# with the plugin prefix (e.g., "preflight:code-reviewer"). Match bare or any
+# "<prefix>:code-reviewer" form. The colon prevents false-positives like
+# "not-a-code-reviewer" or "code-reviewer-helper".
+if ! { [ "$SUBAGENT_TYPE" = "code-reviewer" ] || [[ "$SUBAGENT_TYPE" == *":code-reviewer" ]]; }; then
   exit 0
 fi
 
