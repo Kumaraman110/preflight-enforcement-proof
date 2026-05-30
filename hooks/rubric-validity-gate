@@ -2,10 +2,21 @@
 # PreToolUse hook for Agent calls. Only activates when spawning a
 # code-reviewer sub-agent. Blocks if no valid rubric can be resolved.
 #
-# TOOL_INPUT CONTRACT:
-#   Claude Code passes $TOOL_INPUT as the serialized tool parameters.
-#   For the Agent tool, this is JSON: {"prompt":"...","subagent_type":"code-reviewer",...}
-#   We extract subagent_type and only gate on "code-reviewer".
+# INPUT CONTRACT:
+#   Claude Code pipes a JSON object to stdin: {"tool_name":"Agent",
+#   "tool_input":{"prompt":"...","subagent_type":"code-reviewer",...}}.
+#   We read stdin and extract tool_input.subagent_type via jq (or
+#   node/grep fallback).
+#
+# FAIL BEHAVIOR:
+#   On well-formed JSON (the only input Claude Code produces), the gate
+#   blocks code-reviewer spawns when no valid rubric resolves. On malformed
+#   JSON (which Claude Code does not produce), extraction yields empty,
+#   SUBAGENT_TYPE is "" which != "code-reviewer", so the gate passes
+#   through (exit 0). A grep-blob fallback was deliberately rejected
+#   because "code-reviewer" can appear in Agent prompt text without
+#   subagent_type being set to it — grepping the blob would false-block
+#   Agent calls that merely MENTION code-reviewer in their prompt.
 #
 # Gate semantics (differ from drift-detector's informational signal):
 #   - No config file found         → BLOCK (Stage 1 without rubric has no value)
@@ -23,22 +34,18 @@
 
 set -euo pipefail
 
-TOOL_INPUT="${1:-}"
+STDIN_JSON="$(cat)"
 
-# ─── Extract subagent_type ────────────────────────────────────
+# ─── Extract subagent_type from stdin JSON ────────────────────
 
-extract_subagent_type() {
-  local input="$1"
-  if command -v jq &>/dev/null; then
-    echo "$input" | jq -r '.subagent_type // ""' 2>/dev/null
-  elif command -v node &>/dev/null; then
-    node -e "try{console.log(JSON.parse(process.argv[1]).subagent_type||'')}catch(e){console.log('')}" "$input" 2>/dev/null
-  else
-    echo "$input" | grep -oP '"subagent_type"\s*:\s*"\K[^"]+' 2>/dev/null || echo ""
-  fi
-}
-
-SUBAGENT_TYPE=$(extract_subagent_type "$TOOL_INPUT")
+SUBAGENT_TYPE=""
+if command -v jq &>/dev/null; then
+  SUBAGENT_TYPE=$(printf '%s' "$STDIN_JSON" | jq -r '.tool_input.subagent_type // ""' 2>/dev/null || echo "")
+elif command -v node &>/dev/null; then
+  SUBAGENT_TYPE=$(printf '%s' "$STDIN_JSON" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const j=JSON.parse(d);process.stdout.write((j.tool_input&&j.tool_input.subagent_type)||'')}catch(e){}})" 2>/dev/null || echo "")
+else
+  SUBAGENT_TYPE=$(printf '%s' "$STDIN_JSON" | grep -o '"subagent_type"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"subagent_type"[[:space:]]*:[[:space:]]*"//;s/"$//' || echo "")
+fi
 
 # Only gate on code-reviewer invocations
 if [ "$SUBAGENT_TYPE" != "code-reviewer" ]; then
