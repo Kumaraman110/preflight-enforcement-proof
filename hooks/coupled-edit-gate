@@ -6,8 +6,20 @@
 # The LLM must acknowledge the full group (by writing a .preflight/gate/group-ack file)
 # before editing any member of the group.
 #
-# Inputs:
-#   $1 — the file_path being edited (from tool input)
+# INPUT CONTRACT:
+#   Claude Code pipes a JSON object to stdin: {"tool_name":"Edit",
+#   "tool_input":{"file_path":"...", "old_string":"...", "new_string":"..."}}.
+#   We read stdin and extract tool_input.file_path via jq (or node/grep fallback).
+#
+# FAIL BEHAVIOR:
+#   On well-formed JSON (the only input Claude Code produces), the gate
+#   blocks edits to files in unacknowledged coupling groups. On malformed
+#   JSON (which Claude Code does not produce), extraction yields empty,
+#   and the gate passes through. A grep-blob fallback was deliberately
+#   rejected because file_path appears in EVERY Edit tool call — grepping
+#   raw stdin would always match, causing false blocks that deadlock the
+#   session. The fail-open on malformed JSON is safe because the gate only
+#   matters when active-groups.json exists (transient orchestrator state).
 #
 # Evidence:
 #   .preflight/gate/active-groups.json — written by the orchestrator when Stage 1
@@ -22,23 +34,24 @@
 
 set -euo pipefail
 
-TOOL_INPUT="${1:-}"
+STDIN_JSON="$(cat)"
 GATE_DIR=".preflight/gate"
 GROUPS_FILE="$GATE_DIR/active-groups.json"
 
-# Extract file_path from tool input (JSON with "file_path" field)
-# When called from hooks.json, input is the serialized tool parameters
+# ─── Extract file_path from stdin JSON ───────────────────────
 FILE_PATH=""
 if command -v jq &>/dev/null; then
-  FILE_PATH=$(echo "$TOOL_INPUT" | jq -r '.file_path // empty' 2>/dev/null || echo "")
-elif echo "$TOOL_INPUT" | grep -q "file_path"; then
-  # Fallback: grep extraction
-  FILE_PATH=$(echo "$TOOL_INPUT" | grep -o '"file_path"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"file_path"[[:space:]]*:[[:space:]]*"//;s/"$//')
+  FILE_PATH=$(printf '%s' "$STDIN_JSON" | jq -r '.tool_input.file_path // empty' 2>/dev/null || echo "")
+elif command -v node &>/dev/null; then
+  FILE_PATH=$(printf '%s' "$STDIN_JSON" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const j=JSON.parse(d);process.stdout.write((j.tool_input&&j.tool_input.file_path)||'')}catch(e){}})" 2>/dev/null || echo "")
+else
+  FILE_PATH=$(printf '%s' "$STDIN_JSON" | grep -o '"file_path"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"file_path"[[:space:]]*:[[:space:]]*"//;s/"$//' || echo "")
 fi
 
-# If we couldn't extract a file path (might be plain path in test mode), use raw input
+# If extraction yielded nothing (malformed JSON), pass through.
+# See FAIL BEHAVIOR in header: file_path is too common to grep-fallback safely.
 if [ -z "$FILE_PATH" ]; then
-  FILE_PATH="$TOOL_INPUT"
+  exit 0
 fi
 
 # If no active groups file exists, no coupling enforcement is active
