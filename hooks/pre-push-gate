@@ -3,7 +3,7 @@
 # before allowing a push. This cannot be bypassed by prompt manipulation.
 #
 # Exit 0 = allow push
-# Exit 1 = block push (outputs reason to stderr)
+# Exit 2 = block push (outputs reason to stderr; Claude Code blocks on exit 2)
 #
 # Evidence files written by the review loop:
 #   .preflight/gate/stage1-clean   — written when Stage 1 returns CLEAN
@@ -35,7 +35,7 @@ check_evidence() {
 
   if [ ! -f "$GATE_DIR/$file" ]; then
     echo "BLOCKED: $label has not run. Run /preflight:fix-and-close or /preflight:self-review first." >&2
-    exit 1
+    exit 2
   fi
 
   local evidence_head
@@ -43,7 +43,7 @@ check_evidence() {
 
   if [ "$evidence_head" != "$CURRENT_HEAD" ] && [ "$evidence_head" != "$PARENT_HEAD" ]; then
     echo "BLOCKED: $label evidence is stale (was at $evidence_head, now at $CURRENT_HEAD). Code changed since last check — re-run Stage 1." >&2
-    exit 1
+    exit 2
   fi
 }
 

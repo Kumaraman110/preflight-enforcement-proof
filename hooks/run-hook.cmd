@@ -1,5 +1,5 @@
 :; # Polyglot: runs as bash on Unix, cmd on Windows (finds git-bash)
-:; exec bash "${CLAUDE_PLUGIN_ROOT}/hooks/$1" "$@" 2>/dev/null; exit $?
+:; exec bash "${CLAUDE_PLUGIN_ROOT}/hooks/$1" "$@"; exit $?
 @echo off
 setlocal
 set "HOOK=%~1"
@@ -10,5 +10,5 @@ where git >nul 2>&1 && (
 if defined GIT_PATH (
   "%GIT_PATH%..\bin\bash.exe" "%SCRIPT%" %*
 ) else (
-  bash "%SCRIPT%" %* 2>nul
+  bash "%SCRIPT%" %*
 )

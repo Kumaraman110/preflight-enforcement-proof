@@ -30,7 +30,7 @@
 # symlink permissions) is the OS's contract, not this gate's.
 #
 # Exit 0 = allow the tool call
-# Exit 1 = block the tool call (hook framework shows the stderr message)
+# Exit 2 = block the tool call (stderr fed back to Claude; Claude Code blocks on exit 2)
 
 set -euo pipefail
 
@@ -103,7 +103,7 @@ done
 if [ -z "$CONFIG_FILE" ]; then
   echo "BLOCKED: No preflight config found (.preflight/config.json, .cpsl/config.json, .forge.json)." >&2
   echo "Stage 1 review requires a rubric. Configure one via .preflight/config.json." >&2
-  exit 1
+  exit 2
 fi
 
 # ─── Extract and validate rubric paths ───────────────────────
@@ -113,7 +113,7 @@ RUBRIC_PATH=$(read_rubric_field "$CONFIG_FILE")
 if [ -z "$RUBRIC_PATH" ]; then
   echo "BLOCKED: Config ($CONFIG_FILE) has no 'rubric' field." >&2
   echo "Stage 1 review requires a rubric path. Add a \"rubric\" key to your config." >&2
-  exit 1
+  exit 2
 fi
 
 # Validate all rubric paths (supports array — one path per line)
@@ -123,7 +123,7 @@ while IFS= read -r rp; do
     echo "BLOCKED: Rubric path not found: $rp" >&2
     echo "Checked: $rp (absolute/relative to cwd) and $PLUGIN_ROOT/$rp (relative to plugin)" >&2
     echo "Fix the 'rubric' path in $CONFIG_FILE or create the missing file." >&2
-    exit 1
+    exit 2
   fi
 done <<< "$RUBRIC_PATH"
 

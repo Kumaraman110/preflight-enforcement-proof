@@ -10,7 +10,7 @@
 #   never silently allowed.
 #
 # Exit 0 = allow the tool call
-# Exit 1 = block the tool call (hook framework shows the stderr message)
+# Exit 2 = block the tool call (stderr fed back to Claude; Claude Code blocks on exit 2)
 
 set -euo pipefail
 

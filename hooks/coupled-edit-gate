@@ -30,7 +30,7 @@
 #   it sets "acknowledged": true for that group. Only then can edits proceed.
 #
 # Exit 0 = allow the edit
-# Exit 1 = block the edit (outputs reason to stderr)
+# Exit 2 = block the edit (outputs reason to stderr; Claude Code blocks on exit 2)
 
 set -euo pipefail
 
@@ -106,7 +106,7 @@ To proceed:
 
 File: $FILE_PATH
 EOF
-  exit 1
+  exit 2
 fi
 
 exit 0

@@ -22,7 +22,7 @@
 #   stdin and extract tool_input.file_path via jq (or node/grep fallback).
 #
 # Exit 0 = allow
-# Exit 1 = block (reason on stderr)
+# Exit 2 = block (reason on stderr; Claude Code blocks on exit 2)
 
 set -uo pipefail
 
@@ -103,7 +103,7 @@ To proceed: obtain lead approval, then write the sentinel:
   mkdir -p .preflight/gate
   echo '{"approvedAtHEAD":"$(git rev-parse HEAD 2>/dev/null || echo UNKNOWN)","approvedFiles":["CLAUDE.md",".preflight/config.json"],"approvedAt":"'"\$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"}' > $SENTINEL
 EOF
-  exit 1
+  exit 2
 fi
 
 # ─── Sentinel exists — validate freshness ────────────────────
@@ -113,7 +113,7 @@ if [ -z "$CURRENT_HEAD" ]; then
   cat >&2 <<EOF
 BLOCKED: Cannot verify approval sentinel — not in a git repository.
 EOF
-  exit 1
+  exit 2
 fi
 
 # Parse sentinel
@@ -131,7 +131,7 @@ else
 BLOCKED: Cannot parse approval sentinel (no jq or node available).
 Failing closed for protected file $PROTECTED_NAME.
 EOF
-  exit 1
+  exit 2
 fi
 
 # Validate HEAD freshness
@@ -139,7 +139,7 @@ if [ -z "$SENTINEL_HEAD" ]; then
   cat >&2 <<EOF
 BLOCKED: Approval sentinel is malformed (no approvedAtHEAD field).
 EOF
-  exit 1
+  exit 2
 fi
 
 if [ "$SENTINEL_HEAD" != "$CURRENT_HEAD" ]; then
@@ -149,7 +149,7 @@ Sentinel HEAD: $SENTINEL_HEAD
 Current HEAD:  $CURRENT_HEAD
 Re-confirm with the lead before overwriting $PROTECTED_NAME.
 EOF
-  exit 1
+  exit 2
 fi
 
 # Validate file coverage
@@ -159,7 +159,7 @@ if [ -n "$SENTINEL_FILES" ]; then
 BLOCKED: Approval sentinel does not cover $PROTECTED_NAME.
 Approved files: $(echo "$SENTINEL_FILES" | tr '\n' ' ')
 EOF
-    exit 1
+    exit 2
   fi
 fi
 
