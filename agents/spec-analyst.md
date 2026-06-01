@@ -91,6 +91,18 @@ For each comparison surface, read the mapped files and extract behaviors:
 
 These won't match the recognition pattern but are still observable behaviors.
 
+### Result-Determination Classification (pass-through vs local)
+
+For EVERY path that produces an outcome (success or failure), classify how the result-determining field (e.g. ResultCode) gets its value:
+
+**Pass-through (delegated):** The service calls a downstream, deserializes its response, and returns it without locally overwriting the result field. Pattern: `response = Deserialize<X>(downstreamCall)` followed by returning `response` with no `response.ResultCode = <something>` on that path. Record this as a `side_effect` behavior with `"result_determination": "pass-through"` in the observable.
+
+**Local:** The service explicitly assigns the result field (`ResultCode = "E0001"` or `ResultCode = result.code ?? "S0000"`). The existing `result_code` behavior captures this. Add `"result_determination": "local"` to its observable.
+
+A given code path is EITHER pass-through OR local, never both. If a path deserializes a downstream response AND THEN conditionally overwrites the result field (e.g., checks for W0006 and overrides status), the override path is "local" and the non-override path is "pass-through" — record both.
+
+This classification enables the parity gate to detect when a migration changes the result-determination mechanism (e.g., legacy delegates to downstream, migrated hardcodes locally) even if the final result code values happen to be identical.
+
 ---
 
 ## Canonical Behavior IDs
@@ -129,9 +141,9 @@ Each category has REQUIRED keys that must be present. A behavior whose observabl
 
 | Category | Required keys | Optional keys |
 |---|---|---|
-| `result_code` | `result_code`, `http_status` | `response_header`, `body_field` |
+| `result_code` | `result_code`, `http_status` | `response_header`, `body_field`, `result_determination` |
 | `wire_contract` | `field`, `type` | `required`, `default_value` |
-| `side_effect` | `target`, `method` | `path`, `condition` |
+| `side_effect` | `target`, `method` | `path`, `condition`, `result_determination` |
 | `state_transition` | `from`, `to` | `trigger_condition` |
 | `error_path` | `trigger`, `result_code` OR `http_status` | `exception_type` |
 
