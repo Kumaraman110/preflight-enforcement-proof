@@ -83,33 +83,73 @@ For each comparison surface, read the mapped files and extract behaviors:
    - Implied by control flow but not literally assigned → YES (confidence: inferred)
 3. If YES: create a behavior entry.
 
-**For each behavior entry:**
-- `id` — a stable identifier: `<category>:<surface_number>:<code_or_name>` (e.g., `result_code:3:E0001`)
-- `name` — human-readable name (e.g., "Auth failure — invalid channel")
-- `category` — from the vocabulary (MUST match exactly)
-- `confidence` — "high" or "inferred"
-- `citations` — array of `{file, line, snippet}` where the behavior is emitted. The snippet must be the actual source line (not paraphrased). Multiple citations are valid if the same code is emitted in multiple places.
-- `trigger` — natural language description of what causes this behavior
-- `response` — natural language description of what the caller observes
-- `observable` — structured object with mechanically-checkable values. For result codes: `{"result_code": "E0001", "http_status": 200}`. For wire contracts: `{"field": "ResultCode", "type": "string"}`. For side effects: `{"target": "downstream-service", "method": "POST"}`. The key requirement: if this object's values change between legacy and migrated, the behavior has changed.
-
 **Beyond pattern-matched candidates**, also extract:
 - Wire contract behaviors (request/response field names and types)
 - Side effects (downstream HTTP calls, database writes)
 - State transitions (session creation, token invalidation)
+- Error paths (exception handling that produces observable outcomes)
 
 These won't match the recognition pattern but are still observable behaviors.
 
-### Phase 5 — Completeness Check
+---
 
-1. Take `matches_found` from Phase 3 (all pattern matches).
-2. Take `matches_in_spec` — the subset that appears as behaviors in Phase 4.
-3. Compute `missing` = `matches_found` minus `matches_in_spec` minus explicitly-excluded non-behaviors (those only in comments/logs — document why each was excluded).
-4. If `missing` is non-empty: the spec is INCOMPLETE. Report loudly.
+## Canonical Behavior IDs
+
+<CRITICAL-INSTRUCTION>
+Behavior IDs must be DERIVED FROM CONTENT, not free-invented. The same behavior found by two independent runs MUST produce the same ID. This is what makes two behavior specs diffable by the parity gate.
+
+The ID formula is: `<category>:<canonical-key>`
+
+Canonical-key derivation per category:
+- **result_code** → the code itself. Example: `result_code:E0001`
+- **wire_contract** → the field path or endpoint. Example: `wire_contract:response.ResultCode` or `wire_contract:POST:/ivr/token`
+- **side_effect** → target + method. Example: `side_effect:token-manager:POST`
+- **state_transition** → the transition description. Example: `state_transition:channel-id-propagated`
+- **error_path** → the trigger condition. Example: `error_path:model-state-invalid` or `error_path:web-exception-downstream`
+
+Rules for canonical-key:
+- Lowercase, hyphen-separated words (no camelCase, no spaces, no underscores)
+- No sequence numbers, no run-specific prefixes, no arbitrary labels
+- Derived ONLY from the behavior's own observable content
+- If two behaviors in the same category have genuinely different observables, they get different canonical-keys
+- If the same logical behavior is emitted at multiple code locations, it is ONE behavior with multiple citations (not N behaviors)
+
+WHY: the parity gate diffs `{id → observable}` between legacy and migrated specs. If IDs are random per run, diffing produces false positives on every comparison. Content-derived IDs mean: same behavior = same id = clean diff.
+</CRITICAL-INSTRUCTION>
 
 ---
 
-## Output
+## Observable Object — Source of Truth for Parity
+
+The `observable` object is what the parity gate diffs. It is the mechanically-checkable assertion that, if changed, means the behavior changed. Prose fields (`trigger`, `response`, `name`) are human-facing context — they may vary in wording between runs. The `observable` must be canonical and content-determined.
+
+### Required Observable Keys by Category
+
+Each category has REQUIRED keys that must be present. A behavior whose observable cannot be populated with its required keys is either mis-categorized or not a real behavior — drop it or recategorize.
+
+| Category | Required keys | Optional keys |
+|---|---|---|
+| `result_code` | `result_code`, `http_status` | `response_header`, `body_field` |
+| `wire_contract` | `field`, `type` | `required`, `default_value` |
+| `side_effect` | `target`, `method` | `path`, `condition` |
+| `state_transition` | `from`, `to` | `trigger_condition` |
+| `error_path` | `trigger`, `result_code` OR `http_status` | `exception_type` |
+
+If you cannot determine a required key's value from the source, mark it `"unknown"` — do NOT omit the key and do NOT invent a value.
+
+---
+
+## Output Schema — HARD CONTRACT
+
+<CRITICAL-INSTRUCTION>
+The output JSON must use EXACTLY these top-level keys, in this exact order:
+`service`, `extracted_at`, `extracted_from`, `comparison_surfaces`, `category_vocabulary`, `behaviors`, `completeness_check`
+
+The `completeness_check` object must contain EXACTLY these keys:
+`pattern`, `scanned_files`, `matches_found`, `matches_in_spec`, `missing`
+
+Emit these keys VERBATIM. Do not rename them (no `metadata`, no `matches_missing`, no `matchesFound`). Do not reorder them. Do not nest them differently. Do not add wrapper objects. A downstream tool parses these exact keys — deviation breaks it.
+</CRITICAL-INSTRUCTION>
 
 ### behavior-spec.json
 
@@ -120,26 +160,64 @@ Write to `.preflight/<service>/behavior-spec.json` in the target repo:
   "service": "<service-name>",
   "extracted_at": "<ISO8601 timestamp>",
   "extracted_from": ["<file1>", "<file2>"],
-  "comparison_surfaces": ["<surface1>", "<surface2>"],
+  "comparison_surfaces": ["Auth / channel gate", "Request validation & normalization", "Business logic / orchestration", "Data access", "Result-code definitions", "Wire format"],
   "category_vocabulary": ["result_code", "wire_contract", "error_path", "side_effect", "state_transition"],
   "behaviors": [
     {
-      "id": "result_code:3:E0001",
-      "name": "Business logic failure — invalid input",
+      "id": "result_code:E0001",
+      "name": "Auth failure — invalid channel",
       "category": "result_code",
       "confidence": "high",
       "citations": [
         {
           "file": "path/to/File.cs",
           "line": 47,
-          "snippet": "response.ResultCode = \"E0001\";"
+          "snippet": "ResultCode = \"E0001\""
         }
       ],
-      "trigger": "Input validation fails in the business logic layer",
-      "response": "Caller receives ResultCode E0001 with descriptive message",
+      "trigger": "Channel authorization fails — unrecognized channel ID",
+      "response": "Caller receives ResultCode E0001 with HTTP 401",
       "observable": {
         "result_code": "E0001",
-        "http_status": 200
+        "http_status": 401
+      }
+    },
+    {
+      "id": "wire_contract:response.ResultCode",
+      "name": "ResultCode field on response",
+      "category": "wire_contract",
+      "confidence": "high",
+      "citations": [
+        {
+          "file": "path/to/Response.cs",
+          "line": 12,
+          "snippet": "public string ResultCode { get; set; }"
+        }
+      ],
+      "trigger": "Any request to the service",
+      "response": "Response always contains a ResultCode string field",
+      "observable": {
+        "field": "ResultCode",
+        "type": "string"
+      }
+    },
+    {
+      "id": "side_effect:token-manager:POST",
+      "name": "Downstream token manager call",
+      "category": "side_effect",
+      "confidence": "high",
+      "citations": [
+        {
+          "file": "path/to/Repository.cs",
+          "line": 88,
+          "snippet": "client.PostAsync(tokenManagerUrl, content)"
+        }
+      ],
+      "trigger": "Valid token request after validation passes",
+      "response": "HTTP POST to downstream token manager service",
+      "observable": {
+        "target": "token-manager",
+        "method": "POST"
       }
     }
   ],
@@ -153,12 +231,24 @@ Write to `.preflight/<service>/behavior-spec.json` in the target repo:
 }
 ```
 
+### Self-Check Before Finishing
+
+Before reporting DONE, re-read the JSON you just wrote and verify:
+1. Top-level keys are exactly: `service`, `extracted_at`, `extracted_from`, `comparison_surfaces`, `category_vocabulary`, `behaviors`, `completeness_check` — no more, no less, in this order.
+2. `completeness_check` keys are exactly: `pattern`, `scanned_files`, `matches_found`, `matches_in_spec`, `missing`.
+3. Every behavior has an `id` matching the canonical formula `<category>:<canonical-key>`.
+4. Every behavior's `observable` contains all required keys for its category.
+5. `matches_found` and `matches_in_spec` are arrays of strings (the matched codes/patterns), not objects.
+
+If any check fails, fix the JSON before reporting DONE.
+
 ### Markdown Summary
 
 Also emit a markdown summary (in your response text) with:
 - Service name and extraction timestamp
 - Files analyzed
 - Behavior count by category
+- Full list of behavior IDs (sorted alphabetically)
 - Completeness check result (PASS or INCOMPLETE with details)
 
 ---
@@ -218,3 +308,6 @@ Context: <what was happening>
 - Never fabricate line numbers — verify each citation with a grep/read
 - Never run state-changing commands (git add, git commit, git push)
 - Never read files outside the declared scope without documenting the deviation in `extracted_from`
+- Never use sequence numbers or arbitrary prefixes in behavior IDs — derive from content
+- Never emit a behavior without populating all required observable keys for its category
+- Never rename or reorder the mandated JSON keys
