@@ -103,6 +103,20 @@ A given code path is EITHER pass-through OR local, never both. If a path deseria
 
 This classification enables the parity gate to detect when a migration changes the result-determination mechanism (e.g., legacy delegates to downstream, migrated hardcodes locally) even if the final result code values happen to be identical.
 
+### Chain-Following for Pass-Through Paths (Downstream Contract Surface)
+
+When you record a pass-through side_effect behavior AND the project's comparison surfaces include a "Downstream contract" surface, attempt to FOLLOW THE CHAIN to resolve the passed-through value:
+
+1. Identify the downstream emitter — the service/file that originally assigns the result code that flows through unchanged. This is typically named in the "Downstream contract" surface description in CLAUDE.md, or discoverable from the dependency map.
+2. If the downstream emitter is in the declared scope (on disk, listed as an extractable file), scan it for the recognition pattern. For each match that is assigned on a success path, record it as a `result_code` behavior with:
+   - confidence: "high" (the downstream explicitly assigns it)
+   - citation: points at the DOWNSTREAM emitter file:line
+   - observable: includes `"result_determination": "pass-through-origin"` and `"via": "<intermediate services>"` to distinguish it from codes assigned locally in the service itself
+   - id: `result_code:<code>` (same canonical id scheme — if E0000 is the code, id is `result_code:E0000`)
+3. If the downstream emitter is NOT on disk or NOT in scope (e.g., the chain was collapsed in migration and the DB stored procedure is the actual origin with no extractable source), do NOT fabricate a behavior. Instead, note in the pass-through side_effect's description that the resolved value is unknown/unresolvable from source. The parity gate will catch the asymmetry via the mechanism difference alone (pass-through vs local).
+
+**Symmetry honesty:** If the legacy has a follow-able chain but the migrated service collapsed it (local assignment, no downstream emitter), do NOT fabricate a symmetric migrated downstream behavior. The migrated success is already captured as a local `result_code` behavior. The parity engine correctly reports: legacy has `result_code:E0000` (pass-through-origin) while migrated has `result_code:S0000` (local) — the asymmetry IS the real deviation.
+
 ---
 
 ## Canonical Behavior IDs
