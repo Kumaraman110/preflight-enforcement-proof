@@ -23,10 +23,10 @@ if [ -z "$GATE_NAME" ]; then
 fi
 
 case "$GATE_NAME" in
-  tests-pass|stage1-clean|map-validated)
+  tests-pass|stage1-clean|map-validated|parity-clean)
     ;;
   *)
-    echo "Unknown gate: $GATE_NAME. Expected: tests-pass|stage1-clean|map-validated" >&2
+    echo "Unknown gate: $GATE_NAME. Expected: tests-pass|stage1-clean|map-validated|parity-clean" >&2
     exit 1
     ;;
 esac

@@ -58,5 +58,14 @@ if [ -f "dependency-map.json" ] || find . -name "dependency-map.json" -maxdepth 
   check_evidence "map-validated" "Dependency map validation"
 fi
 
+# Gate 4: Parity check (if a behavior-spec baseline exists for the service)
+BASELINE_FOUND=""
+if find . -path "*/.preflight/*/behavior-spec.json" -maxdepth 3 2>/dev/null | grep -q .; then
+  BASELINE_FOUND="true"
+fi
+if [ -n "$BASELINE_FOUND" ]; then
+  check_evidence "parity-clean" "Behavior parity check"
+fi
+
 # All gates pass
 exit 0
