@@ -102,13 +102,13 @@ The ID formula is: `<category>:<canonical-key>`
 
 Canonical-key derivation per category:
 - **result_code** → the code itself. Example: `result_code:E0001`
-- **wire_contract** → the field path or endpoint. Example: `wire_contract:response.ResultCode` or `wire_contract:POST:/ivr/token`
-- **side_effect** → target + method. Example: `side_effect:token-manager:POST`
-- **state_transition** → the transition description. Example: `state_transition:channel-id-propagated`
-- **error_path** → the trigger condition. Example: `error_path:model-state-invalid` or `error_path:web-exception-downstream`
+- **wire_contract** → `<direction>.<PropertyName>` using the VERBATIM source-code property name. Example: `wire_contract:response.ResultCode`, `wire_contract:request.ANI`. For endpoints: `wire_contract:endpoint:<METHOD>:<route>`. Example: `wire_contract:endpoint:POST:/ivr/tokenmanager/Token`
+- **side_effect** → target + method (lowercase). Example: `side_effect:token-manager:POST`
+- **state_transition** → the transition description (lowercase, hyphen-separated). Example: `state_transition:channel-id-propagated`
+- **error_path** → the trigger condition (lowercase, hyphen-separated). Example: `error_path:model-state-invalid` or `error_path:web-exception-downstream`
 
 Rules for canonical-key:
-- Lowercase, hyphen-separated words (no camelCase, no spaces, no underscores)
+- **wire_contract is the exception to lowercasing**: use the VERBATIM property name from source (preserving PascalCase, camelCase, or whatever the source declares). All other categories use lowercase, hyphen-separated words.
 - No sequence numbers, no run-specific prefixes, no arbitrary labels
 - Derived ONLY from the behavior's own observable content
 - If two behaviors in the same category have genuinely different observables, they get different canonical-keys
@@ -136,6 +136,18 @@ Each category has REQUIRED keys that must be present. A behavior whose observabl
 | `error_path` | `trigger`, `result_code` OR `http_status` | `exception_type` |
 
 If you cannot determine a required key's value from the source, mark it `"unknown"` — do NOT omit the key and do NOT invent a value.
+
+### wire_contract Observable — Verbatim Source Rules
+
+<CRITICAL-INSTRUCTION>
+The `field` value in a wire_contract observable MUST be the VERBATIM source-code property name — exact casing, exact spelling as declared in the source class/interface. Never normalize, never lowercase, never hyphenate. If the property is `ANI` in source, it is `ANI` in the observable. If it is `ExpirationTimeInSeconds`, it is `ExpirationTimeInSeconds`.
+
+The `type` value MUST be the C# declared type of the property (or the language's equivalent declared type). Report it verbatim from the property declaration. Normalize ONLY cosmetic container spelling: always use `List<X>` form (never `array<X>`, `IList<X>`, or `IEnumerable<X>` — map all to `List<X>` for canonical diffing). Primitive types use lowercase: `string`, `int`, `bool`, `double`.
+
+If the source genuinely does not unambiguously declare a field's type (dynamic, object, var with unclear inference), set type to `"unknown"` and confidence to `"inferred"`. The parity gate treats inferred-confidence wire behaviors as advisory (non-blocking).
+
+SELF-CHECK for wire_contract: before finishing, confirm each wire_contract behavior's `field` value appears as a property name in one of the scoped source files (grep for `public.*<field>` or `<field>\s*{`). If it doesn't grep-match, you made up the name — fix it.
+</CRITICAL-INSTRUCTION>
 
 ---
 
@@ -198,7 +210,8 @@ Write to `.preflight/<service>/behavior-spec.json` in the target repo:
       "response": "Response always contains a ResultCode string field",
       "observable": {
         "field": "ResultCode",
-        "type": "string"
+        "type": "string",
+        "required": true
       }
     },
     {
