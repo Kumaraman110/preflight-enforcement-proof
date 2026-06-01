@@ -128,10 +128,10 @@ The ID formula is: `<category>:<canonical-key>`
 
 Canonical-key derivation per category:
 - **result_code** → the code itself. Example: `result_code:E0001`
-- **wire_contract** → `<direction>.<PropertyName>` using the VERBATIM source-code property name. Example: `wire_contract:response.ResultCode`, `wire_contract:request.ANI`. For endpoints: `wire_contract:endpoint:<METHOD>:<route>`. Example: `wire_contract:endpoint:POST:/ivr/tokenmanager/Token`
-- **side_effect** → target + method (lowercase). Example: `side_effect:token-manager:POST`
-- **state_transition** → the transition description (lowercase, hyphen-separated). Example: `state_transition:channel-id-propagated`
-- **error_path** → the trigger condition (lowercase, hyphen-separated). Example: `error_path:model-state-invalid` or `error_path:web-exception-downstream`
+- **wire_contract** → `<direction>.<PropertyName>` using the VERBATIM source-code property name. Example: `wire_contract:response.ResultCode`, `wire_contract:request.ANI`. For nested fields in collections, use `<parent>.<ChildProperty>` (dot notation, no brackets). Example: `wire_contract:response.DeflectionExitPoints.ExitPointName` (never `[]`). For endpoints: `wire_contract:endpoint:<METHOD>:<route>`. Example: `wire_contract:endpoint:POST:/ivr/tokenmanager/Token`
+- **side_effect** → `<logical-role>:<normalized-operation>` (lowercase). The logical-role is the WHAT, never the HOW/WHERE. Use a stack-neutral name that describes the operation's purpose, not its implementation technology. Stored procedure calls use `datastore:<normalized_proc_name>`. HTTP calls to named services use `<service-role>:<method-lowercase>`. Examples: `side_effect:datastore:cpsl_set_cc_token_v2`, `side_effect:deflection:get-exit-points`, `side_effect:token-manager:post`. NORMALIZATION for stored procedure names: lowercase, underscores (convert camelCase like `setCCToken` → `set_cc_token`; preserve existing underscores). The same proc called via SQL Server or PostgreSQL MUST produce the same ID — the datastore prefix is tech-neutral.
+- **state_transition** → the transition itself (lowercase, hyphen-separated), describing WHAT changes state, not HOW. Example: `state_transition:token-created`, `state_transition:token-validated`, `state_transition:channel-id-propagated`
+- **error_path** → the trigger condition from the CALLER'S PERSPECTIVE (lowercase, hyphen-separated). Describe what the caller observes, not implementation internals. A catch-all for unhandled exceptions → `error_path:unhandled-exception`. An exception in a specific operation → `error_path:<operation>-exception`. Examples: `error_path:unhandled-exception`, `error_path:slide-token-exception`, `error_path:model-state-invalid`
 
 Rules for canonical-key:
 - **wire_contract is the exception to lowercasing**: use the VERBATIM property name from source (preserving PascalCase, camelCase, or whatever the source declares). All other categories use lowercase, hyphen-separated words.
@@ -139,6 +139,24 @@ Rules for canonical-key:
 - Derived ONLY from the behavior's own observable content
 - If two behaviors in the same category have genuinely different observables, they get different canonical-keys
 - If the same logical behavior is emitted at multiple code locations, it is ONE behavior with multiple citations (not N behaviors)
+
+### Cross-Extraction Canonicalization (CRITICAL for parity comparison)
+
+The same logical behavior extracted from LEGACY source and from MIGRATED source MUST produce the same canonical ID. This is the foundational invariant that makes parity comparison work. If it breaks, the same behavior shows up as MISSING+ADDED instead of a clean match (or a real CHANGED if the observable differs).
+
+**The principle:** IDs encode WHAT the behavior is (logical purpose), never HOW or WHERE it's implemented. A migration that changes implementation but preserves behavior MUST produce matching IDs. A real behavioral change produces an observable diff under the SAME id — surfacing as a clean CHANGED entry, not phantom MISSING+ADDED noise.
+
+**Specific rules to ensure cross-side stability:**
+
+1. **side_effect stored procedures**: Use `datastore:<normalized_proc_name>`. NEVER encode the database engine (`db:`, `postgresql:`, `sqlserver:`). NEVER encode the intermediary service (`tokenmanager:`). The proc name is the anchor: normalize it to lowercase with underscores (convert `cpsl_setCCToken_v2` → `cpsl_set_cc_token_v2`; convert `ValidateToken_v2` → `validate_token_v2`). Both `SELECT cpsl_setCCToken_v2(...)` (PostgreSQL) and `EXEC cpsl_setCCToken_v2 ...` (SQL Server) → same ID: `side_effect:datastore:cpsl_set_cc_token_v2`.
+
+2. **side_effect HTTP calls to named services**: Use `<service-logical-role>:<method>`. The logical role is the business purpose, not the URL or technology. Example: both `GetDeflectionEndPoints(ANI)` (legacy library call) and `POST /api/Deflection/GetExitPoints` (migrated HTTP) → `side_effect:deflection:get-exit-points` because they serve the same logical role: fetching deflection data.
+
+3. **error_path catch-alls**: A global/unhandled exception handler → `error_path:unhandled-exception` regardless of whether legacy wraps in CTIAPIException or migrated uses UseExceptionHandler. The canonical-key describes the trigger condition from the caller's perspective.
+
+4. **state_transition**: Use the logical transition name (`token-created`, `token-terminated`) regardless of which layer performs it. Legacy having an intermediate service that calls the proc vs migrated calling the proc directly doesn't change WHAT state transition occurred.
+
+5. **wire_contract nested fields**: Always use dot notation without brackets: `response.DeflectionExitPoints.ExitPointName`, not `response.DeflectionExitPoints[].ExitPointName`.
 
 WHY: the parity gate diffs `{id → observable}` between legacy and migrated specs. If IDs are random per run, diffing produces false positives on every comparison. Content-derived IDs mean: same behavior = same id = clean diff.
 </CRITICAL-INSTRUCTION>

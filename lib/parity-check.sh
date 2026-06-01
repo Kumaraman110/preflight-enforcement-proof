@@ -66,6 +66,14 @@ def normalize_observable(obs):
         return obs
     return {k: v for k, v in sorted(obs.items())}
 
+def is_empty_observable(obs):
+    """An observable is 'empty' if it's None, not a dict, or a dict with no keys."""
+    if obs is None:
+        return True
+    if not isinstance(obs, dict):
+        return True
+    return len(obs) == 0
+
 def observables_equal(obs_a, obs_b):
     """Compare two observables. Field names are case-sensitive; other values compared as-is."""
     if not isinstance(obs_a, dict) or not isinstance(obs_b, dict):
@@ -120,11 +128,21 @@ def main():
         else:
             cdata = curr_map[bid]
             if not observables_equal(bdata["observable"], cdata["observable"]):
+                # If one side has an empty observable, the comparison is meaningless —
+                # this is a spec-quality issue (extraction didn't populate it), not a
+                # proven behavior change. Downgrade to advisory ("uncomparable").
+                if is_empty_observable(bdata["observable"]) or is_empty_observable(cdata["observable"]):
+                    severity = "advisory"
+                    reason = "uncomparable"
+                else:
+                    severity = "blocking" if bdata["confidence"] == "high" else "advisory"
+                    reason = "observable_differs"
                 changed.append({
                     "id": bid,
                     "category": bdata["category"],
                     "confidence": bdata["confidence"],
-                    "severity": "blocking" if bdata["confidence"] == "high" else "advisory",
+                    "severity": severity,
+                    "reason": reason,
                     "baseline_observable": bdata["observable"],
                     "current_observable": cdata["observable"]
                 })
