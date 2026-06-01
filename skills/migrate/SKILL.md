@@ -98,6 +98,16 @@ Phase 1 runs on every migration, even when the service "looks simple." The readi
 
    Report the analyst's findings as Phase 1 output.
 
+2b. **Behavioral extraction** — use the Agent tool with `subagent_type: spec-analyst` to spawn the behavioral analyst against the legacy service directory. The spec-analyst consumes the dependency map produced in step 2 (or an explicit file list derived from the comparison surfaces in CLAUDE.md if no map exists for the legacy path). It produces:
+   - `behavior-spec.json` documenting all externally-observable behaviors with citation-grounded evidence
+   - A completeness check verifying all pattern matches in scope are accounted for
+
+   If CLAUDE.md has no "Behavioral Contract" section, the spec-analyst will return BLOCKED. Surface this to the user — they need to declare the recognition pattern, category vocabulary, and comparison surfaces before behavioral extraction can proceed. This is not a fatal error for the migration — proceed to step 3 without a behavior spec, but warn that parity checking will be unavailable post-migration.
+
+   If the spec-analyst returns DONE_INCOMPLETE, surface the missing entries. The user decides whether to investigate or accept.
+
+   The behavior spec is the BASELINE for the future parity gate. After Phase 2, the same extraction runs against the migrated code and the two specs are diffed to detect behavioral drift.
+
 3. **Business architecture rules** — assess coupling to intermediary layers (shared gateways, dispatch proxies, etc.):
    - **Decouple from intermediary layers.** Remove the shared dispatch component (or equivalent gateway) dependency entirely.
    - **Move gateway logic into the target microservice.** Connect directly to downstream/backend services without going through intermediary dispatchers.
