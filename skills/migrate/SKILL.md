@@ -198,9 +198,78 @@ After Phase 2 completes and before the first Stage 1 run, rebuild the dependency
 
 **Write checkpoint:** `phase: phase2_complete`.
 
+## Behavioral Parity Verification
+
+After Phase 2 completes and the dependency map is validated, verify behavioral preservation before handing off to the review pipeline. This step uses the SAME spec-analyst that produced the legacy baseline (step 2b) — now pointed at the migrated code — and the parity engine to detect drift.
+
+<CRITICAL-INSTRUCTION>
+Do NOT skip parity verification. Gate 4 will block the push if a behavior-spec baseline exists and no parity-clean evidence is present. Running parity here prevents hitting that block during fix-and-close (where the fix loop has no context for parity violations — only rubric findings).
+</CRITICAL-INSTRUCTION>
+
+### Step 1 — Extract migrated behavior spec
+
+Use the Agent tool with `subagent_type: spec-analyst` to spawn the behavioral analyst against the MIGRATED service directory. The spec-analyst consumes the fresh dependency map produced by the post-Phase-2 discovery refresh (the same map at `<service-folder>/dependency-map.json` that was just validated). It produces:
+- `behavior-spec.json` documenting all externally-observable behaviors of the MIGRATED implementation with citation-grounded evidence
+- A completeness check verifying all pattern matches in scope are accounted for
+
+The output path is `.preflight/<service>/behavior-spec-current.json` — distinct from the legacy baseline at `.preflight/<service>/behavior-spec.json`.
+
+**Status handling (mirrors step 2b):**
+- **DONE**: proceed to parity comparison.
+- **DONE_INCOMPLETE**: surface the missing entries. The user decides whether to investigate or accept. If accepted, proceed with the incomplete spec (parity will flag missing behaviors as ADDED on the legacy side — i.e., things the migrated code doesn't have).
+- **BLOCKED**: surface the reason. If the Behavioral Contract section is missing from CLAUDE.md, parity cannot proceed — warn and skip to handoff (same as step 2b's fallback). Gate 4 will not activate if no baseline was produced in step 2b either.
+- **ERROR**: surface verbatim. Do not retry automatically.
+
+### Step 2 — Run parity comparison
+
+Run the parity engine:
+
+```bash
+bash "${CLAUDE_PLUGIN_ROOT}/lib/parity-check.sh" \
+  ".preflight/<service>/behavior-spec.json" \
+  ".preflight/<service>/behavior-spec-current.json"
+```
+
+Interpret the exit code:
+
+| Exit | Meaning | Action |
+|---|---|---|
+| **0** (CLEAN) | No blocking or advisory violations | Write evidence and proceed |
+| **1** (ADVISORY) | Advisory-only violations (error_path gaps, uncomparable observables) | Write evidence and proceed — advisory findings are informational warnings, not blockers |
+| **2** (BLOCKING) | Blocking violations exist (dropped result codes, changed wire contract, removed side effects, removed state transitions) | Do NOT write evidence. Surface the full parity report to the user. |
+
+**On exit 2 (blocking violations):**
+
+Surface the parity report showing all MISSING and CHANGED blocking-tier entries. Present to the user:
+
+> "Parity check found **N blocking violations** — behaviors present in the legacy service that are missing or changed in the migrated code. These represent observable behavioral drift that the gate will block on.
+>
+> [list violations by category: result_code, wire_contract, side_effect, state_transition]
+>
+> Options:
+> 1. **Fix** — address the violations (add missing behaviors, restore wire contract fields, etc.) and re-run parity
+> 2. **Accept** — these are intentional architectural changes (e.g., removing a legacy intermediary). Write parity-clean evidence with an override note and proceed.
+> 3. **Investigate** — review specific violations before deciding"
+
+If the user chooses **Fix**: apply the fixes (using the same coupled-group discipline — multiple violations in the same file/chain are coupled), re-run spec-analyst on the migrated code, re-run parity-check.sh. Loop until exit 0 or 1, or user chooses Accept.
+
+If the user chooses **Accept**: write parity-clean evidence (the user has reviewed and acknowledged the intentional drift). Proceed to handoff.
+
+### Step 3 — Write parity evidence
+
+On exit 0 or exit 1 (or user-accepted exit 2):
+
+```bash
+bash "${CLAUDE_PLUGIN_ROOT}/hooks/write-gate-evidence" parity-clean
+```
+
+This satisfies Gate 4. The push in fix-and-close will not be blocked by parity.
+
+**Write checkpoint:** `phase: parity_verified`.
+
 ## Handoff to /preflight:fix-and-close
 
-Once Phase 2 is complete, the dependency map is validated, and code compiles + tests pass, invoke `/preflight:fix-and-close` to run the full Stage 1 → push → Stage 2 pipeline.
+Once Phase 2 is complete, the dependency map is validated, parity is verified (or user-accepted), and code compiles + tests pass, invoke `/preflight:fix-and-close` to run the full Stage 1 → push → Stage 2 pipeline.
 
 Pass the commit-message hint derived from Phase 1 (e.g. `feat(<service>): migrate to <target-platform>`).
 
