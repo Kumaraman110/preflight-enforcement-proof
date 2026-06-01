@@ -85,6 +85,13 @@ EXHAUSTIVE FILE WALK: You MUST enumerate candidates from EVERY in-scope file. Do
 EXHAUSTIVE STORED-PROC RULE: For database files (any file containing stored procedure calls), enumerate EVERY DISTINCT stored procedure name that appears. Run a grep for procedure-call patterns across the ENTIRE file, not just the first few methods. A file with 5 stored procedures MUST produce 5 side_effect candidates. If you find 4, you missed one — re-scan.
 
 Specifically: after grepping, COUNT the distinct procedure names found. Compare to the number of side_effect_candidates you recorded for that file. If they differ, re-scan. This mechanical count-check catches the intermittent "noticed 4 of 5 procs" failure mode.
+
+ANTI-DEAD-CODE-EXCLUSION RULE: You are a BEHAVIORAL EXTRACTION agent, not a reachability analyzer. If a public/internal method exists in a scoped file and contains a stored-procedure call, HTTP call, or any side-effecting operation, it is a candidate — PERIOD. You do NOT get to exclude it because you think it's "unreachable" or "dead code." Reachability analysis requires full call-graph resolution including DI registrations, interface implementations, and dynamic dispatch — you cannot do this reliably. The ONLY valid exclusion reasons for a side-effect candidate are:
+1. The method is explicitly marked `[Obsolete]` or commented out (not compiled)
+2. The file is explicitly listed as out-of-scope by the parent's file list
+3. The operation is purely in-memory (no external boundary crossed)
+
+"I don't see a direct call to this method" is NEVER a valid exclusion reason. Interfaces, DI, and service composition mean methods are called indirectly. When in doubt, INCLUDE.
 </CRITICAL-INSTRUCTION>
 
 Grep ALL in-scope files for these patterns (adapt to the language — these are C#/.NET patterns):
@@ -123,6 +130,13 @@ The mapping:
 - A proc that EXTENDS expiration → state_transition (from: current-expiry, to: extended-expiry)
 - A proc that VALIDATES and returns current state → state_transition (from: unconfirmed, to: confirmed/validated) — YES, validation IS a state transition because it confirms the token is still active and may trigger side effects like sliding expiration
 
+DISTINCT CREATE PROCS = DISTINCT TRANSITIONS: If a service has MULTIPLE creation procs that create DIFFERENT types of records (e.g., cpsl_set_cc_token_v2 creates a CC token AND cpsl_set_mp_token_v1 creates an MP token), these are SEPARATE state_transitions with DISTINCT IDs (token-created vs mp-token-created). Do NOT merge them into one "token-created" transition. The test: if the procs create different logical things (different token types, different record kinds), they are distinct transitions.
+
+MECHANICAL COUNT-CHECK: After enumeration, count:
+- Number of datastore procs from 3b.1 that mutate state: N
+- Number of state_transition candidates: should be ≥ N (may be N+1 or more if non-DB state mutations exist like context propagation)
+- If state_transition count < N, you missed a proc's transition. Go back to the proc list and ask: "which proc's state-change did I not capture?"
+
 Count your datastore side_effect candidates from 3b.1. If any of them mutate state (most do), the state_transition candidate count should be close to that number. If you have 5 datastore procs and only 3 state_transitions, ask: what do the other 2 procs do to state?
 </CRITICAL-INSTRUCTION>
 
@@ -139,9 +153,19 @@ Each distinct state-mutating operation is ONE candidate. A stored proc called at
 <CRITICAL-INSTRUCTION>
 PER-FILE EXHAUSTIVE WALK: You MUST scan EVERY in-scope file for error paths, not just controllers and repositories. Middleware files, Program.cs global handlers, service classes, and data-access layers ALL may contain error paths. Walk them ALL.
 
-For each file, grep for: `catch`, `throw`, null/empty checks that produce error responses (e.g., `if (result is null)` followed by an error return), and response-writing code with non-success status codes.
+MANDATORY FILE-WALK ORDER: Process files in this deterministic order to prevent the "different item missed each run" failure mode:
+1. Middleware / auth filter files (first, because these are most commonly skipped)
+2. Controller files
+3. Service / business-logic files
+4. Repository / data-access files
+5. Program.cs / startup / global handler files
+6. Any remaining in-scope files
+
+For EACH file in this order, grep for: `catch`, `throw`, null/empty checks that produce error responses (e.g., `if (result is null)` followed by an error return), and response-writing code with non-success status codes. Record candidates from EACH file before moving to the next. Do NOT batch or summarize — enumerate per-file.
 
 NULL-RESULT BRANCHES: In data-access layers, every `if (result is null)` or `if (result == null)` branch that returns an error result is its own error_path candidate. If a file has 3 methods each with a null check that returns a different error code, that is 3 error_path candidates — not 1.
+
+GLOBAL EXCEPTION HANDLER: Program.cs or Startup.cs with UseExceptionHandler, app.Use(async (context, next) => { try/catch }), or a middleware that catches all unhandled exceptions is ALWAYS an error_path candidate (error_path:unhandled-exception). Check for it explicitly — it exists in virtually every ASP.NET Core service and is the single most-skipped error path.
 </CRITICAL-INSTRUCTION>
 
 Grep ALL in-scope files for:
@@ -193,14 +217,32 @@ Every candidate MUST have an `accounted_as` field pointing to the behavior ID it
 
 #### 3b.5 — Final Reconciliation (Self-Check Before Phase 4)
 
-After completing enumeration, STOP and reconcile:
+After completing enumeration, STOP and reconcile. This reconciliation is NOT optional. Produce a reconciliation table IN YOUR REASONING before proceeding.
 
-1. **Proc count check:** List every distinct stored-procedure name found across all files. Count = N. Verify you have N `datastore:*` candidates. If not, find the missing proc.
-2. **State transition count check:** For each datastore proc that mutates state, verify a corresponding state_transition candidate exists.
-3. **Error path file coverage:** For each in-scope file, verify you searched it for error paths. List any file with 0 error_path candidates found — is that really true, or did you skip it?
-4. **Middleware/global handler check:** Explicitly confirm you enumerated error paths from middleware files AND global exception handlers (Program.cs UseExceptionHandler or equivalent). These are the most commonly skipped.
+1. **Proc count check:** List every distinct stored-procedure name found across all files. Count = N. Verify you have N `datastore:*` side_effect candidates. If not, find the missing proc.
 
-Only proceed to Phase 4 after reconciliation passes. If reconciliation reveals a gap, go back and enumerate the missing items BEFORE extracting.
+2. **State transition count check:** For each datastore proc:
+   - Name the proc
+   - Ask: "does this proc mutate state?" (create/update/delete/extend/validate → YES)
+   - If YES: name the state_transition candidate it maps to
+   - If you have M state-mutating procs, you MUST have ≥ M state_transition candidates
+   - SPECIAL CHECK: if you have multiple CREATE procs (e.g., cpsl_set_cc_token AND cpsl_set_mp_token), verify EACH has its OWN distinct state_transition (token-created AND mp-token-created, NOT just one merged "token-created")
+
+3. **Error path file coverage:** For each in-scope file, verify you searched it for error paths. Produce a mini-table:
+   | File | Error-path candidates found | Count |
+   If any file shows 0 and it contains ANY code (not just DTOs/models), re-examine it.
+
+4. **Middleware/global handler check:** Explicitly confirm you enumerated error paths from:
+   - [ ] Auth middleware / filter files (missing-header, invalid-format, not-in-cache paths)
+   - [ ] Global exception handler in Program.cs (UseExceptionHandler or equivalent)
+   - [ ] Repository null-result branches (each method's "if null → error" path)
+   - [ ] Controller-level catch blocks
+   
+   For each checkbox, name the specific file and candidates found. If a checkbox has 0, justify why (e.g., "no middleware in this service" — rare but possible).
+
+5. **Fire-and-forget check (side_effect only):** If the service contains Task.Factory.StartNew, Task.Run, or `_ = MethodAsync()` patterns, verify each is captured as a side_effect candidate (the background operation IS a side effect even if the result is discarded by the caller).
+
+Only proceed to Phase 4 after ALL reconciliation checks pass. If ANY reveals a gap, go back and enumerate the missing items BEFORE extracting.
 
 ### Phase 4 — Behavioral Extraction
 

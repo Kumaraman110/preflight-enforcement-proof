@@ -117,12 +117,13 @@ def main():
     # Advisory tier: categories where extraction is intermittent — violations are
     # real signals but may also reflect extraction gaps, so they warn (not block).
     #
-    # Tier evidence (measured 2026-06-01):
-    #   result_code:     BLOCKING — grep-anchored, deterministic
-    #   wire_contract:   BLOCKING — declaration-anchored, deterministic
-    #   side_effect:     BLOCKING on legacy (5/5), ADVISORY on migrated (4/5)
-    #   state_transition: BLOCKING on legacy (5/5), ADVISORY on migrated (4/5)
-    #   error_path:      BLOCKING on legacy (5/5), ADVISORY on migrated (4/5)
+    # Tier evidence (measured 2026-06-01, v3 iteration with tightened prompt):
+    #   result_code:      BLOCKING — grep-anchored, deterministic (5/5 both sides)
+    #   wire_contract:    BLOCKING — declaration-anchored, deterministic (5/5 both sides)
+    #   side_effect:      BLOCKING — 5/5 legacy, 5/5 migrated (anti-dead-code-exclusion rule)
+    #   state_transition: BLOCKING — 5/5 legacy, 5/5 migrated (distinct-create-procs rule)
+    #   error_path:       ADVISORY — 5/5 legacy, 3/5 migrated (middleware auth path naming
+    #                     variance causes intermittent misses on migrated side)
     #
     # Implementation: since parity compares legacy (baseline) vs migrated (current),
     # a MISSING behavior means it was in the baseline but not in current. If the
@@ -130,10 +131,11 @@ def main():
     # category is advisory-tier, a CHANGED entry where the current side might have
     # extraction gaps is downgraded to advisory.
     #
-    # For simplicity and honesty: categories not yet proven complete on BOTH sides
-    # are advisory-tier for the purpose of blocking pushes.
-    BLOCKING_CATEGORIES = {"result_code", "wire_contract"}
-    ADVISORY_CATEGORIES = {"side_effect", "state_transition", "error_path"}
+    # error_path remains advisory because migrated-side extraction completeness is
+    # not guaranteed (3/5) — violations are real signals but may also reflect
+    # extraction gaps. Manual review recommended for error_path findings.
+    BLOCKING_CATEGORIES = {"result_code", "wire_contract", "side_effect", "state_transition"}
+    ADVISORY_CATEGORIES = {"error_path"}
 
     def compute_severity(category, confidence):
         """Determine severity based on category tier and confidence."""
