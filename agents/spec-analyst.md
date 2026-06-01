@@ -69,11 +69,144 @@ Before extracting behaviors, perform a mechanical scan:
 3. This is your `matches_found` — the universe of candidates that COULD be behaviors.
 4. Every candidate that is actually emitted (assigned to a result field, returned to a caller) MUST appear in the final spec. Candidates that only appear in comments, log strings, or lookup tables are NOT behaviors — but still record them in `matches_found` for the completeness check.
 
+### Phase 3b — Non-Result-Code Enumeration (Completeness Baseline)
+
+<CRITICAL-INSTRUCTION>
+Just as Phase 3 mechanically enumerates result-code candidates BEFORE extracting them, this phase mechanically enumerates ALL candidates for side_effect, state_transition, and error_path BEFORE extraction. The enumeration is the completeness guarantee: every enumerated candidate must be accounted for in the final spec (either as an extracted behavior or explicitly listed as excluded with a reason).
+
+This is the defense against silent false negatives. A behavior CANNOT be dropped if it was enumerated as a candidate first.
+
+EXHAUSTIVE FILE WALK: You MUST enumerate candidates from EVERY in-scope file. Do NOT stop after the "main" files. Walk the file list from Phase 2 top-to-bottom and enumerate from EACH file. A common failure mode is skipping middleware, helper, or downstream files — every file in scope gets enumerated. If a file has zero candidates, note that explicitly ("File X: 0 candidates").
+</CRITICAL-INSTRUCTION>
+
+#### 3b.1 — Side-Effect Candidate Enumeration
+
+<CRITICAL-INSTRUCTION>
+EXHAUSTIVE STORED-PROC RULE: For database files (any file containing stored procedure calls), enumerate EVERY DISTINCT stored procedure name that appears. Run a grep for procedure-call patterns across the ENTIRE file, not just the first few methods. A file with 5 stored procedures MUST produce 5 side_effect candidates. If you find 4, you missed one — re-scan.
+
+Specifically: after grepping, COUNT the distinct procedure names found. Compare to the number of side_effect_candidates you recorded for that file. If they differ, re-scan. This mechanical count-check catches the intermittent "noticed 4 of 5 procs" failure mode.
+</CRITICAL-INSTRUCTION>
+
+Grep ALL in-scope files for these patterns (adapt to the language — these are C#/.NET patterns):
+
+**HTTP/network calls:**
+- `HttpClient`, `WebClient`, `UploadString`, `PostAsync`, `GetAsync`, `SendAsync`, `UploadStringTaskAsync`, `PostAsJsonAsync`, `GetFromJsonAsync`
+- `RestClient`, `WebRequest`, `GetResponse`
+
+**Database/stored-procedure calls:**
+- `Execute`, `ExecuteAsync`, `Query`, `QueryAsync`, `QueryFirstOrDefault`, `QueryFirstOrDefaultAsync`
+- `StoredProcedure`, `CommandType`, `EXEC`, `SELECT.*FROM.*\(` (function call syntax)
+- ANY string literal that looks like a stored procedure name (e.g., `"cpsl_..."`, `"sp_..."`, `"fn_..."`)
+
+**Fire-and-forget / background tasks:**
+- `Task.Factory.StartNew`, `Task.Run`, `_ = `, `ThreadPool.QueueUserWorkItem`
+
+**Boundary-crossing operations:**
+- Methods named `Log*` that write to external systems (not in-process string building)
+- Cache writes: `Set`, `Add`, `GetOrCreate` on cache instances
+- Repository calls that write to external systems (e.g., `CustomerInfoCollection`, `DICustomerInfoRepository`)
+
+Record EVERY match as a `side_effect_candidate`: file, line, matched pattern, brief description.
+
+Group candidates that clearly represent the SAME side effect at multiple call sites (e.g., 4 calls to `Logger.LogSessionAsAsync` = 1 logical side_effect with 4 citations, not 4 separate side_effects). But do NOT merge candidates that have DIFFERENT targets or operations (e.g., `ErrorLogHelper.LogError` and `Logger.LogSessionAsAsync` are different side effects even though both "log").
+
+**PROC-COUNT VERIFICATION:** After enumeration, list all distinct stored procedure names found. Count them. This count MUST equal the number of `datastore:*` side_effect_candidates. If it does not, you missed a proc — find it and add it.
+
+#### 3b.2 — State-Transition Candidate Enumeration
+
+<CRITICAL-INSTRUCTION>
+ONE TRANSITION PER STATE-MUTATING PROC: Every stored procedure that WRITES state (creates, updates, deletes, extends, validates-and-confirms) produces EXACTLY ONE state_transition candidate. This is a mechanical 1:1 rule, not a judgment call.
+
+The mapping:
+- A proc that CREATES a record → state_transition (from: no-record, to: record-exists)
+- A proc that UPDATES/TERMINATES a record → state_transition (from: prior-state, to: new-state)
+- A proc that EXTENDS expiration → state_transition (from: current-expiry, to: extended-expiry)
+- A proc that VALIDATES and returns current state → state_transition (from: unconfirmed, to: confirmed/validated) — YES, validation IS a state transition because it confirms the token is still active and may trigger side effects like sliding expiration
+
+Count your datastore side_effect candidates from 3b.1. If any of them mutate state (most do), the state_transition candidate count should be close to that number. If you have 5 datastore procs and only 3 state_transitions, ask: what do the other 2 procs do to state?
+</CRITICAL-INSTRUCTION>
+
+For every stored-procedure / database-write call found in 3b.1, record a state_transition candidate. Read the surrounding context to determine what state changes.
+
+Also scan for in-memory state mutations that are observable downstream:
+- `HttpContext.Items[...] =`, `Request.Properties[...] =` (context propagation)
+- Session/token creation, validation (confirms state), termination, expiration extension
+
+Each distinct state-mutating operation is ONE candidate. A stored proc called at multiple sites is still ONE state_transition.
+
+#### 3b.3 — Error-Path Candidate Enumeration
+
+<CRITICAL-INSTRUCTION>
+PER-FILE EXHAUSTIVE WALK: You MUST scan EVERY in-scope file for error paths, not just controllers and repositories. Middleware files, Program.cs global handlers, service classes, and data-access layers ALL may contain error paths. Walk them ALL.
+
+For each file, grep for: `catch`, `throw`, null/empty checks that produce error responses (e.g., `if (result is null)` followed by an error return), and response-writing code with non-success status codes.
+
+NULL-RESULT BRANCHES: In data-access layers, every `if (result is null)` or `if (result == null)` branch that returns an error result is its own error_path candidate. If a file has 3 methods each with a null check that returns a different error code, that is 3 error_path candidates — not 1.
+</CRITICAL-INSTRUCTION>
+
+Grep ALL in-scope files for:
+- `catch (` — every catch block
+- `throw` — every throw statement
+- Error-response construction: `CreateResponse.*BadRequest`, `CreateResponse.*Unauthorized`, `CreateErrorResponse`, `StatusCode(4`, `StatusCode(5`, `BadRequest(`, `Problem(`
+- Null/empty result checks: `if.*null`, `if.*is null`, `is null` followed within 5 lines by a return/assignment of an error result
+- Middleware error writes: `WriteErrorResponse`, `WriteAsync.*error`, `Response.StatusCode =`
+
+For each catch block, null branch, or error-producing path, determine:
+1. Does it produce a DISTINCT caller-observable outcome? (Different result_code, HTTP status, or response body from other error paths)
+2. Is the outcome observable to the external caller? (A swallowed exception inside a fire-and-forget is NOT observable — the caller already got their response)
+
+Record each DISTINCT caller-observable error outcome as an `error_path_candidate`.
+
+<CRITICAL-INSTRUCTION>
+ANTI-MERGE RULE: Two error branches that produce DIFFERENT caller-observable outcomes (different result_code, different HTTP status, different body) are DIFFERENT error_path candidates. Do NOT merge them just because they share a common parent or pattern. Each distinct observable outcome = its own candidate = its own behavior in the final spec.
+
+The test: if a caller could distinguish the two outcomes by inspecting the response, they are separate error_paths.
+
+COMMON MISS PATTERN: Middleware auth files often have 3-5 distinct error responses (missing header → W0001, invalid format → E0001, empty value → E0001, not in cache → E0001). Even though multiple paths produce the SAME code (E0001), if they have different TRIGGERS, they may still be grouped as one error_path with multiple citations. But if the triggers are distinct enough that a future migration might handle them differently, keep them separate. When in doubt, split rather than merge — over-enumeration is safe, under-enumeration causes false negatives.
+</CRITICAL-INSTRUCTION>
+
+#### 3b.4 — Candidate Accounting (in completeness_check)
+
+The output `completeness_check` object is extended with:
+
+```json
+{
+  "pattern": "[EWS]\\d{4}",
+  "scanned_files": [...],
+  "matches_found": [...],
+  "matches_in_spec": [...],
+  "missing": [],
+  "side_effect_candidates": [
+    {"file": "...", "line": 77, "pattern": "WebClient.UploadString", "accounted_as": "side_effect:token-manager:post"},
+    {"file": "...", "line": 478, "pattern": "CustomerInfoCollection", "accounted_as": "side_effect:customer-info:log"}
+  ],
+  "state_transition_candidates": [
+    {"file": "...", "line": 25, "operation": "cpsl_set_cc_token_v2 (creates token)", "accounted_as": "state_transition:token-created"}
+  ],
+  "error_path_candidates": [
+    {"file": "...", "line": 126, "trigger": "inner Exception reading WebException stream", "observable": "400 + E1000", "accounted_as": "error_path:webexception-response-unreadable"}
+  ]
+}
+```
+
+Every candidate MUST have an `accounted_as` field pointing to the behavior ID it maps to, OR `"accounted_as": "EXCLUDED"` with a `"reason"` field (e.g., "swallowed exception, not observable to caller"). A candidate with no `accounted_as` is an extraction failure — the behavior was enumerated but not captured. This triggers DONE_INCOMPLETE status.
+
+#### 3b.5 — Final Reconciliation (Self-Check Before Phase 4)
+
+After completing enumeration, STOP and reconcile:
+
+1. **Proc count check:** List every distinct stored-procedure name found across all files. Count = N. Verify you have N `datastore:*` candidates. If not, find the missing proc.
+2. **State transition count check:** For each datastore proc that mutates state, verify a corresponding state_transition candidate exists.
+3. **Error path file coverage:** For each in-scope file, verify you searched it for error paths. List any file with 0 error_path candidates found — is that really true, or did you skip it?
+4. **Middleware/global handler check:** Explicitly confirm you enumerated error paths from middleware files AND global exception handlers (Program.cs UseExceptionHandler or equivalent). These are the most commonly skipped.
+
+Only proceed to Phase 4 after reconciliation passes. If reconciliation reveals a gap, go back and enumerate the missing items BEFORE extracting.
+
 ### Phase 4 — Behavioral Extraction
 
 For each comparison surface, read the mapped files and extract behaviors:
 
-**For each candidate from Phase 3:**
+**For each result-code candidate from Phase 3:**
 1. Read the surrounding code context (at least 10 lines before and after).
 2. Determine: is this candidate actually EMITTED as an observable outcome?
    - Assigned to a response/result field → YES (confidence: high)
@@ -83,13 +216,17 @@ For each comparison surface, read the mapped files and extract behaviors:
    - Implied by control flow but not literally assigned → YES (confidence: inferred)
 3. If YES: create a behavior entry.
 
-**Beyond pattern-matched candidates**, also extract:
-- Wire contract behaviors (request/response field names and types)
-- Side effects (downstream HTTP calls, database writes)
-- State transitions (session creation, token invalidation)
-- Error paths (exception handling that produces observable outcomes)
+**For each side_effect candidate from Phase 3b.1:**
+Create a behavior entry for each logical side_effect (grouped by target+operation). Populate the observable with required keys (`target`, `method`). Multiple call sites for the same logical operation become multiple citations on ONE behavior.
 
-These won't match the recognition pattern but are still observable behaviors.
+**For each state_transition candidate from Phase 3b.2:**
+Create a behavior entry. Populate the observable with required keys (`from`, `to`).
+
+**For each error_path candidate from Phase 3b.3:**
+Create a behavior entry for each DISTINCT caller-observable outcome. Populate the observable with required keys (`trigger`, plus `result_code` OR `http_status`). Remember: different observable = different behavior. Do NOT merge.
+
+**Additionally extract:**
+- Wire contract behaviors (request/response field names and types) — these come from class/interface declarations, not from the enumeration above.
 
 ### Result-Determination Classification (pass-through vs local)
 
@@ -283,7 +420,16 @@ Write to `.preflight/<service>/behavior-spec.json` in the target repo:
     "scanned_files": ["<file1>", "<file2>"],
     "matches_found": ["E0001", "E0002", "W0003"],
     "matches_in_spec": ["E0001", "E0002", "W0003"],
-    "missing": []
+    "missing": [],
+    "side_effect_candidates": [
+      {"file": "path/to/File.cs", "line": 77, "pattern": "WebClient.UploadString", "accounted_as": "side_effect:token-manager:post"}
+    ],
+    "state_transition_candidates": [
+      {"file": "path/to/File.cs", "line": 25, "operation": "cpsl_set_cc_token_v2 (creates token)", "accounted_as": "state_transition:token-created"}
+    ],
+    "error_path_candidates": [
+      {"file": "path/to/File.cs", "line": 126, "trigger": "inner Exception reading response", "observable": "400 + E1000", "accounted_as": "error_path:webexception-response-unreadable"}
+    ]
   }
 }
 ```
@@ -292,12 +438,14 @@ Write to `.preflight/<service>/behavior-spec.json` in the target repo:
 
 Before reporting DONE, re-read the JSON you just wrote and verify:
 1. Top-level keys are exactly: `service`, `extracted_at`, `extracted_from`, `comparison_surfaces`, `category_vocabulary`, `behaviors`, `completeness_check` — no more, no less, in this order.
-2. `completeness_check` keys are exactly: `pattern`, `scanned_files`, `matches_found`, `matches_in_spec`, `missing`.
+2. `completeness_check` contains at minimum: `pattern`, `scanned_files`, `matches_found`, `matches_in_spec`, `missing`, `side_effect_candidates`, `state_transition_candidates`, `error_path_candidates`.
 3. Every behavior has an `id` matching the canonical formula `<category>:<canonical-key>`.
 4. Every behavior's `observable` contains all required keys for its category.
 5. `matches_found` and `matches_in_spec` are arrays of strings (the matched codes/patterns), not objects.
+6. Every entry in `side_effect_candidates`, `state_transition_candidates`, and `error_path_candidates` has an `accounted_as` field pointing to a behavior ID that exists in the `behaviors` array, OR has `"accounted_as": "EXCLUDED"` with a `"reason"` field.
+7. No candidate is left without an `accounted_as` value — that would be a silent false negative.
 
-If any check fails, fix the JSON before reporting DONE.
+If any check fails, fix the JSON before reporting DONE. If check 6/7 reveals an unaccounted candidate, you MUST either extract it as a behavior or explicitly exclude it with a reason. Reporting DONE with unaccounted candidates is forbidden.
 
 ### Markdown Summary
 

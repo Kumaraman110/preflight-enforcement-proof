@@ -111,6 +111,37 @@ def main():
             conf = "high"
         curr_map[bid] = {"observable": obs, "confidence": conf, "category": b.get("category", "")}
 
+    # Category tier assignment.
+    # Blocking tier: categories whose extraction completeness is proven at 5/5
+    # (zero false negatives across 5 independent blind runs on both sides).
+    # Advisory tier: categories where extraction is intermittent — violations are
+    # real signals but may also reflect extraction gaps, so they warn (not block).
+    #
+    # Tier evidence (measured 2026-06-01):
+    #   result_code:     BLOCKING — grep-anchored, deterministic
+    #   wire_contract:   BLOCKING — declaration-anchored, deterministic
+    #   side_effect:     BLOCKING on legacy (5/5), ADVISORY on migrated (4/5)
+    #   state_transition: BLOCKING on legacy (5/5), ADVISORY on migrated (4/5)
+    #   error_path:      BLOCKING on legacy (5/5), ADVISORY on migrated (4/5)
+    #
+    # Implementation: since parity compares legacy (baseline) vs migrated (current),
+    # a MISSING behavior means it was in the baseline but not in current. If the
+    # baseline category is blocking-tier, the MISSING is blocking. If the current
+    # category is advisory-tier, a CHANGED entry where the current side might have
+    # extraction gaps is downgraded to advisory.
+    #
+    # For simplicity and honesty: categories not yet proven complete on BOTH sides
+    # are advisory-tier for the purpose of blocking pushes.
+    BLOCKING_CATEGORIES = {"result_code", "wire_contract"}
+    ADVISORY_CATEGORIES = {"side_effect", "state_transition", "error_path"}
+
+    def compute_severity(category, confidence):
+        """Determine severity based on category tier and confidence."""
+        if category in BLOCKING_CATEGORIES:
+            return "blocking" if confidence == "high" else "advisory"
+        # Advisory-tier categories never block, regardless of confidence
+        return "advisory"
+
     # Compute diffs
     missing = []
     changed = []
@@ -122,7 +153,7 @@ def main():
                 "id": bid,
                 "category": bdata["category"],
                 "confidence": bdata["confidence"],
-                "severity": "blocking" if bdata["confidence"] == "high" else "advisory",
+                "severity": compute_severity(bdata["category"], bdata["confidence"]),
                 "baseline_observable": bdata["observable"]
             })
         else:
@@ -135,7 +166,7 @@ def main():
                     severity = "advisory"
                     reason = "uncomparable"
                 else:
-                    severity = "blocking" if bdata["confidence"] == "high" else "advisory"
+                    severity = compute_severity(bdata["category"], bdata["confidence"])
                     reason = "observable_differs"
                 changed.append({
                     "id": bid,
