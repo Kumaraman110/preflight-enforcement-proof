@@ -282,7 +282,7 @@ After Phase 2 completes and before the first Stage 1 run, rebuild the dependency
 After Phase 2 completes and the dependency map is validated, verify behavioral preservation before handing off to the review pipeline. This step uses the SAME spec-analyst that produced the legacy baseline (step 2b) — now pointed at the migrated code — and the parity engine to detect drift.
 
 <CRITICAL-INSTRUCTION>
-Do NOT skip parity verification. Gate 4 will block the push if a behavior-spec baseline exists and no parity-clean evidence is present. Running parity here prevents hitting that block during fix-and-close (where the fix loop has no context for parity violations — only rubric findings).
+Do NOT skip parity verification. Check 6 will re-run parity-check.sh at the pre-handoff gate and block on exit 2. Running parity here surfaces blocking violations early — before the gate halts the run with no context for why.
 </CRITICAL-INSTRUCTION>
 
 ### Step 1 — Extract migrated behavior spec
@@ -327,24 +327,30 @@ Surface the parity report showing all MISSING and CHANGED blocking-tier entries.
 >
 > Options:
 > 1. **Fix** — address the violations (add missing behaviors, restore wire contract fields, etc.) and re-run parity
-> 2. **Accept** — these are intentional architectural changes (e.g., removing a legacy intermediary). Write parity-clean evidence with an override note and proceed.
+> 2. **Accept** — these are intentional architectural changes (e.g., removing a legacy intermediary). The agent writes rationale to `parity-override-requested` and STOPS; a human clears the gate.
 > 3. **Investigate** — review specific violations before deciding"
 
-If the user chooses **Fix**: apply the fixes (using the same coupled-group discipline — multiple violations in the same file/chain are coupled), re-run spec-analyst on the migrated code, re-run parity-check.sh. Loop until exit 0 or 1, or user chooses Accept.
+If the user chooses **Fix**: apply the fixes (using the same coupled-group discipline — multiple violations in the same file/chain are coupled), re-run spec-analyst on the migrated code, re-run parity-check.sh. Loop until exit 0 or 1.
 
-If the user chooses **Accept**: write parity-clean evidence (the user has reviewed and acknowledged the intentional drift). Proceed to handoff.
+If running unattended (no user in the loop): the agent writes its override rationale to `.preflight/gate/parity-override-requested` and STOPS. The agent does NOT proceed. A human reviews and decides.
 
-### Step 3 — Write parity evidence
+If a user is present and chooses **Accept**: the USER (not the agent) runs `bash "${FRAMEWORK_ROOT}/hooks/write-gate-evidence" parity-clean` to clear the gate. The agent does not execute this command on the user's behalf — it instructs the user to run it.
 
-On exit 0 or exit 1 (or user-accepted exit 2):
+### Step 3 — Record parity outcome
 
-```bash
-bash "${FRAMEWORK_ROOT}/hooks/write-gate-evidence" parity-clean
-```
+On exit 0 or exit 1: parity passed. No evidence file is written by the agent. Check 6 will re-run parity-check.sh at the gate and confirm the passing exit code directly. Write checkpoint: `phase: parity_verified`.
 
-This satisfies Gate 4. The push in fix-and-close will not be blocked by parity.
+On exit 2 (blocking violations): parity BLOCKED. The agent:
+1. Surfaces the full parity report to the user (or to its own output if running unattended).
+2. If the agent believes the violation is intentional (e.g., internal observability replaced by OTel), it writes a proposed override rationale to `.preflight/gate/parity-override-requested` explaining why the drift is deliberate and not caller-visible.
+3. STOPS. This is a correct terminal state. The agent does NOT write `.preflight/gate/parity-clean`. The agent does NOT proceed to handoff.
+4. A HUMAN reviews `parity-override-requested` and decides whether to clear the gate by running `bash "${FRAMEWORK_ROOT}/hooks/write-gate-evidence" parity-clean` manually.
 
-**Write checkpoint:** `phase: parity_verified`.
+<CRITICAL-INSTRUCTION>
+The agent NEVER writes `.preflight/gate/parity-clean`. Only a human (or parity-check.sh itself if it ever gains that capability) writes that file. The agent proposes overrides; it does not authorize them. Writing parity-clean yourself is the exact exploit this gate exists to prevent.
+</CRITICAL-INSTRUCTION>
+
+**Write checkpoint:** `phase: parity_verified` (on exit 0 or 1 only; on exit 2, checkpoint stays at `phase2_complete`).
 
 ## Pre-Handoff Mechanical Gate
 
@@ -509,30 +515,20 @@ fi
 
 ### Check 6 — Behavioral parity verification ran and passed
 
+<CRITICAL-INSTRUCTION>
+Check 6 RE-RUNS parity-check.sh and reads its EXIT CODE. It does NOT check for the existence of a file the agent can create. The agent CANNOT satisfy this gate by writing .preflight/gate/parity-clean — that file has no authority. The ONLY authority is the exit code of parity-check.sh executed HERE, NOW, against the two spec files.
+
+If the agent disagrees with a blocking violation and wants an override, it writes its rationale to `.preflight/gate/parity-override-requested` — a DIFFERENT file that does NOT satisfy Check 6 and does NOT unblock the run. An override is a HUMAN decision; the agent proposes, it does not authorize.
+
+Exit 2 from parity-check.sh is TERMINAL for the agent: STOP, report the violation + the proposed rationale, do not proceed to handoff. This is a correct terminal state, not a failure.
+</CRITICAL-INSTRUCTION>
+
 ```bash
-# Parity verification must have EXECUTED (not skipped) and PASSED (no blocking violations).
-# This catches the exact failure mode from the SessionToken v2 run: agent jumped from
-# phase2_complete straight to handoff, skipping the parity chain entirely.
+# Check 6 re-runs parity-check.sh against the spec files and reads exit code.
+# The agent does NOT control parity-check.sh. The gate trusts the script's verdict,
+# not any file the agent may have written.
 
-# 6a: Parity evidence file exists (written by write-gate-evidence parity-clean)
-if [ ! -f ".preflight/gate/parity-clean" ]; then
-  echo "CHECK 6 FAIL: .preflight/gate/parity-clean does not exist."
-  echo "Behavioral Parity Verification did not run or did not pass."
-  echo "The parity chain (spec-analyst → parity-check.sh → write-gate-evidence) must"
-  echo "execute between phase2_complete and handoff. Do NOT skip it."
-  exit 1
-fi
-
-# 6b: Checkpoint shows parity_verified phase was reached
-if [ -f ".preflight/migrate-checkpoint.json" ]; then
-  if ! grep -q "parity_verified" ".preflight/migrate-checkpoint.json"; then
-    echo "CHECK 6 FAIL: migrate-checkpoint.json exists but does not contain parity_verified."
-    echo "The parity chain ran incompletely — checkpoint was not updated."
-    exit 1
-  fi
-fi
-
-# 6c: Both behavior-spec files exist (legacy baseline + migrated current)
+# 6a: Both behavior-spec files must exist (legacy baseline + migrated current)
 if [ ! -f ".preflight/${SERVICE_NAME}/behavior-spec.json" ]; then
   echo "CHECK 6 FAIL: .preflight/${SERVICE_NAME}/behavior-spec.json (legacy baseline) missing."
   echo "Step 2b (legacy behavioral extraction) did not produce its output."
@@ -545,10 +541,51 @@ if [ ! -f ".preflight/${SERVICE_NAME}/behavior-spec-current.json" ]; then
   exit 1
 fi
 
-echo "CHECK 6 PASS: parity verification ran, evidence exists, checkpoint confirmed"
+# 6b: RE-RUN parity-check.sh and read exit code (the authoritative verdict)
+PARITY_OUTPUT=$(bash "${FRAMEWORK_ROOT}/lib/parity-check.sh" \
+  ".preflight/${SERVICE_NAME}/behavior-spec.json" \
+  ".preflight/${SERVICE_NAME}/behavior-spec-current.json" 2>&1)
+PARITY_EXIT=$?
+
+if [ $PARITY_EXIT -eq 0 ]; then
+  echo "CHECK 6 PASS: parity-check.sh exit 0 (CLEAN — no violations)"
+elif [ $PARITY_EXIT -eq 1 ]; then
+  echo "CHECK 6 PASS: parity-check.sh exit 1 (ADVISORY — non-blocking warnings only)"
+  echo "Advisory report:"
+  echo "$PARITY_OUTPUT"
+elif [ $PARITY_EXIT -eq 2 ]; then
+  echo "CHECK 6 BLOCKED: parity-check.sh exit 2 (BLOCKING violations exist)"
+  echo ""
+  echo "Parity report:"
+  echo "$PARITY_OUTPUT"
+  echo ""
+  echo "═══════════════════════════════════════════════════════════════════════"
+  echo "TERMINAL STATE: The migration CANNOT proceed to handoff."
+  echo ""
+  echo "Blocking parity violations mean the migrated code drops or changes"
+  echo "externally-observable behaviors that existed in legacy. This is drift."
+  echo ""
+  echo "The agent MAY propose an override by writing rationale to:"
+  echo "  .preflight/gate/parity-override-requested"
+  echo ""
+  echo "That file does NOT unblock the run. A HUMAN must review the rationale"
+  echo "and manually clear the gate. The agent does not authorize overrides."
+  echo "═══════════════════════════════════════════════════════════════════════"
+  exit 1
+else
+  echo "CHECK 6 FAIL: parity-check.sh exited with unexpected code $PARITY_EXIT"
+  echo "$PARITY_OUTPUT"
+  exit 1
+fi
 ```
 
-If FAIL: the Behavioral Parity Verification chain did not execute. Go back to the "Behavioral Parity Verification" section (after Phase 2, before handoff): run spec-analyst against the migrated code, run parity-check.sh, and only proceed when exit 0 or 1 (or user-accepted exit 2 with override noted). A blocking parity deviation (exit 2) stops the run — it does NOT proceed to handoff with known deviations.
+If BLOCKED (exit 2): the run is TERMINAL. The agent:
+1. Surfaces the blocking violations from the parity report.
+2. MAY write a proposed override rationale to `.preflight/gate/parity-override-requested` explaining why the drift is intentional.
+3. STOPS. Does NOT proceed to handoff. Does NOT write `.preflight/gate/parity-clean`. Does NOT treat this as fixable by the agent alone.
+4. Reports this as a correct stopping point: "Parity gate blocked — human override required."
+
+A human reviews the rationale in `parity-override-requested` and, if they agree, manually runs `bash "${FRAMEWORK_ROOT}/hooks/write-gate-evidence" parity-clean` themselves. Only then can the migration resume past this gate.
 
 ---
 
