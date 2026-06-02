@@ -143,6 +143,8 @@ This ordering is load-bearing:
 - Phase 2 code committed LATER (the migrated service)
 - CI detects if the baseline is MODIFIED after initial commit (tampering signal)
 
+Do NOT modify or regenerate `.preflight/<service>/behavior-spec.json` after this commit, for any reason, for the rest of the run. It is the immutable legacy baseline. If you believe the baseline is wrong or incomplete, STOP and report it — do not edit it. CI treats ANY modification to this file in the PR as a tampering signal and will block the PR, whether the edit was a forge or an innocent regeneration.
+
 If behavioral extraction returns BLOCKED (no Behavioral Contract in CLAUDE.md), skip this step — there is no baseline to commit.
 </CRITICAL-INSTRUCTION>
 
