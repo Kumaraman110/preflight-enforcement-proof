@@ -118,6 +118,18 @@ Phase 1 runs on every migration, even when the service "looks simple." The readi
 
    The behavior spec is the BASELINE for the future parity gate. After Phase 2, the same extraction runs against the migrated code and the two specs are diffed to detect behavioral drift.
 
+2c. **Legacy name-contract extraction** — if the service touches a database (stored procs, tables, queries visible in legacy source), produce the name-contract artifact NOW, during Phase 1, BEFORE any Phase 2 code is written. This makes the contract a ground-truth reference transcribed from legacy, not a post-hoc description of what you already wrote.
+
+   Scan the legacy source files identified by the dependency map. For each stored procedure call, record: proc name (exact string from the code), every parameter name (exact string, including `@` prefix if present), and the order/types as passed. For table/column references, record the exact strings. Write the output to `.preflight/<service>/legacy-db-name-contract.md`.
+
+   If no database access is found in the legacy source, write a minimal contract noting "No database operations identified in legacy source" — the artifact must exist regardless.
+
+   Verify the artifact exists:
+   ```bash
+   test -f ".preflight/<service>/legacy-db-name-contract.md" && echo "NAME-CONTRACT: EXISTS" || echo "NAME-CONTRACT: MISSING"
+   ```
+   If MISSING after your extraction attempt, something went wrong — re-examine and write it. Do NOT proceed to Phase 2 without this artifact.
+
 3. **Business architecture rules** — assess coupling to intermediary layers (shared gateways, dispatch proxies, etc.):
    - **Decouple from intermediary layers.** Remove the shared dispatch component (or equivalent gateway) dependency entirely.
    - **Move gateway logic into the target microservice.** Connect directly to downstream/backend services without going through intermediary dispatchers.
@@ -276,6 +288,88 @@ bash "${CLAUDE_PLUGIN_ROOT}/hooks/write-gate-evidence" parity-clean
 This satisfies Gate 4. The push in fix-and-close will not be blocked by parity.
 
 **Write checkpoint:** `phase: parity_verified`.
+
+## Pre-Handoff Mechanical Gate
+
+Before invoking fix-and-close, run the following checks. ALL must pass. If ANY fails, STOP and fix before proceeding — do not invoke fix-and-close, do not report done.
+
+Run each check as a literal shell command. A non-zero exit or "FAIL" output means the gate is not satisfied.
+
+### Check 1 — Name-contract artifact exists
+
+```bash
+SERVICE_DIR="<service-folder>"  # e.g. CTIAPI-DEV_Work/CTI.MicroService.IVR.SessionToken
+SERVICE_NAME="<service-name>"   # e.g. SessionToken
+
+test -f ".preflight/${SERVICE_NAME}/legacy-db-name-contract.md" \
+  && echo "CHECK 1 PASS: name-contract exists" \
+  || { echo "CHECK 1 FAIL: .preflight/${SERVICE_NAME}/legacy-db-name-contract.md missing"; exit 1; }
+```
+
+If FAIL: the name-contract was not produced during Phase 1. Go back and produce it from legacy source before continuing.
+
+### Check 2 — Repository/data-access classes NOT excluded from coverage
+
+```bash
+# Grep for ExcludeFromCodeCoverage in service source (excluding Program.cs, which is allowed to be excluded)
+EXCLUDED=$(grep -rl "ExcludeFromCodeCoverage" "${SERVICE_DIR}/" --include="*.cs" | grep -v "Program.cs" | grep -iv "infra/" || true)
+
+if [ -n "$EXCLUDED" ]; then
+  echo "CHECK 2 FAIL: ExcludeFromCodeCoverage found on non-Program files:"
+  echo "$EXCLUDED"
+  echo "The DB/data-access layer must be tested via mocked boundary, not excluded."
+  exit 1
+else
+  echo "CHECK 2 PASS: no non-Program classes excluded from coverage"
+fi
+```
+
+If FAIL: remove `[ExcludeFromCodeCoverage]` from the flagged files and add unit tests that mock the DB boundary instead.
+
+### Check 3 — Verbatim name fidelity: every identifier in the contract appears in migrated source
+
+```bash
+CONTRACT=".preflight/${SERVICE_NAME}/legacy-db-name-contract.md"
+FAILURES=0
+
+# Extract proc names (lines starting with | that contain a proc-like identifier)
+# and parameter names (lines containing @ParamName patterns)
+PROCS=$(grep -oP '(?<=\| )`?[a-zA-Z_][a-zA-Z0-9_]*`?' "$CONTRACT" | tr -d '`' | sort -u)
+PARAMS=$(grep -oP '@[a-zA-Z_][a-zA-Z0-9_]*' "$CONTRACT" | sort -u)
+
+echo "Checking proc names against migrated source..."
+for PROC in $PROCS; do
+  # Skip generic words (skip anything < 5 chars or common table header words)
+  [ ${#PROC} -lt 5 ] && continue
+  echo "$PROC" | grep -qiE "^(name|type|order|direction|parameter|procedure|table|column|notes)$" && continue
+  if ! grep -r --include="*.cs" -q "$PROC" "${SERVICE_DIR}/"; then
+    echo "  MISSING: '$PROC' not found in migrated source"
+    FAILURES=$((FAILURES + 1))
+  fi
+done
+
+echo "Checking parameter names against migrated source..."
+for PARAM in $PARAMS; do
+  if ! grep -r --include="*.cs" -q "$PARAM" "${SERVICE_DIR}/"; then
+    echo "  MISSING: '$PARAM' not found in migrated source"
+    FAILURES=$((FAILURES + 1))
+  fi
+done
+
+if [ $FAILURES -gt 0 ]; then
+  echo "CHECK 3 FAIL: $FAILURES identifier(s) from the legacy contract are missing in migrated source."
+  echo "The verbatim-name rule requires byte-for-byte fidelity. Fix the migrated code to use the exact legacy identifiers."
+  exit 1
+else
+  echo "CHECK 3 PASS: all contract identifiers found verbatim in migrated source"
+fi
+```
+
+If FAIL: the migrated repository uses renamed identifiers. Correct them to match the legacy contract exactly.
+
+---
+
+**All three checks must print PASS.** Only then proceed to the handoff below.
 
 ## Handoff to /preflight:fix-and-close
 
