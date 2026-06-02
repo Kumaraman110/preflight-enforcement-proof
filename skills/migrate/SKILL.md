@@ -131,6 +131,26 @@ Phase 1 runs on every migration, even when the service "looks simple." The readi
 
    The behavior spec is the BASELINE for the future parity gate. After Phase 2, the same extraction runs against the migrated code and the two specs are diffed to detect behavioral drift.
 
+2b-commit. **Commit the legacy baseline early (immutability anchor).**
+
+<CRITICAL-INSTRUCTION>
+Immediately after behavioral extraction produces `.preflight/<service>/behavior-spec.json`, commit it ALONE in its own commit BEFORE any Phase 2 code is written. This establishes the baseline as immutable — it was committed before the migrated code existed, so any modification to it in the same PR is detectable by CI (the baseline-immutability check in the generated CI workflow uses `git log --diff-filter=M` to flag changes to the baseline after its initial commit).
+
+The commit message: `chore(<service>): add legacy behavioral baseline for parity verification`
+
+This ordering is load-bearing:
+- Legacy baseline committed FIRST (from legacy code that exists independently)
+- Phase 2 code committed LATER (the migrated service)
+- CI detects if the baseline is MODIFIED after initial commit (tampering signal)
+
+If behavioral extraction returns BLOCKED (no Behavioral Contract in CLAUDE.md), skip this step — there is no baseline to commit.
+</CRITICAL-INSTRUCTION>
+
+   ```bash
+   git add ".preflight/${SERVICE_NAME}/behavior-spec.json"
+   git commit -m "chore(${SERVICE_NAME_LOWER}): add legacy behavioral baseline for parity verification"
+   ```
+
 2c. **Legacy name-contract extraction** — if the service touches a database (stored procs, tables, queries visible in legacy source), produce the name-contract artifact NOW, during Phase 1, BEFORE any Phase 2 code is written. This makes the contract a ground-truth reference transcribed from legacy, not a post-hoc description of what you already wrote.
 
    Scan the legacy source files identified by the dependency map. For each stored procedure call, record: proc name (exact string from the code), every parameter name (exact string, including `@` prefix if present), and the order/types as passed. For table/column references, record the exact strings. Write the output to `.preflight/<service>/legacy-db-name-contract.md`.
@@ -250,13 +270,159 @@ This gate exists because the prior SessionToken migration bypassed it — the ag
 
 5. **Container:** Secure container image — non-root user, fixed port, health check defined in orchestrator config (not in container image).
 
-6. **Build verification** — must be 0 errors, 0 warnings (treat warnings as errors). Fix anything that breaks.
+6. **CI workflow generation** — produce the per-service PR workflow and vendor parity scripts. See "CI Workflow Generation" section below.
 
-7. **Test verification** — all pass, coverage meets `test.coverageBaseline`. Fix anything that fails.
+7. **Build verification** — must be 0 errors, 0 warnings (treat warnings as errors). Fix anything that breaks.
+
+8. **Test verification** — all pass, coverage meets `test.coverageBaseline`. Fix anything that fails.
 
 The generation spec fills in the stack-specific details for each phase. The migrate skill orchestrates the sequence. The generation spec provides the patterns.
 
 **Write checkpoint** after each completed phase: update `phase: phase2_step_N_complete`.
+
+## CI Workflow Generation
+
+Every migrated service is born CI-wired. The migrate skill generates a per-service GitHub Actions caller workflow as a migration deliverable. This moves parity verification OUTSIDE the agent's reach — CI runs on committed files that the agent cannot modify post-push.
+
+### What to generate
+
+**File:** `.github/workflows/<service-kebab>-pull-request.yaml`
+
+Where `<service-kebab>` is the service name in lowercase-hyphenated form (e.g., `cpsltoken`, `sessiontoken`, `accountlookup`).
+
+**Template** (adapt placeholders marked with `{...}`):
+
+```yaml
+---
+name: {ServiceDisplayName} — Pull Request
+
+on:
+  pull_request:
+    branches:
+      - main
+      - AccountLookUp_POC
+    paths:
+      - "CTIAPI-DEV_Work/CTI.MicroService.IVR.{ServiceName}/**"
+      - "CTIAPI-DEV_Work/CTI.MicroService.IVR.{ServiceName}.Tests/**"
+      - ".github/workflows/{service-kebab}-pull-request.yaml"
+
+jobs:
+  pull-request:
+    uses: United-Airlines-Org/workflows.pipeline/.github/workflows/pull-request.yaml@v2
+    permissions:
+      actions: read
+      contents: read
+      deployments: write
+      id-token: write
+      issues: write
+      packages: read
+      pull-requests: write
+      statuses: write
+    with:
+      app-project-root: CTIAPI-DEV_Work/CTI.MicroService.IVR.{ServiceName}
+      iac-project-root: CTIAPI-DEV_Work/CTI.MicroService.IVR.{ServiceName}/infra
+      disable-linter: true
+      dockerfile-path: CTIAPI-DEV_Work/CTI.MicroService.IVR.{ServiceName}
+      project-name: cpsl-{service-kebab}
+      dotnet-csproj-path: >-
+        CTIAPI-DEV_Work/CTI.MicroService.IVR.{ServiceName}/CTI.MicroService.IVR.{ServiceName}.csproj
+      dotnet-veracode-include: >-
+        CTI.MicroService.IVR.{ServiceName}.dll,
+        CTI.MicroService.IVR.{ServiceName}.pdb
+      dotnet-version: 10.x
+      project-type: dotnet
+      veracode-app-name: CTI {ServiceDisplayName}
+      target-branch: AccountLookUp_POC
+      target-environment: dev
+    secrets: inherit
+
+  parity-check:
+    runs-on: ubuntu-latest
+    if: >-
+      ${{ github.actor != 'github-actions[bot]' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Baseline immutability check
+        run: |
+          BASELINE=".preflight/{ServiceName}/behavior-spec.json"
+          if [ ! -f "$BASELINE" ]; then
+            echo "No legacy baseline found — parity check skipped (new service without behavioral contract)"
+            exit 0
+          fi
+          # Check if the baseline was MODIFIED (not added) in this PR's commits
+          MODIFIED=$(git diff --diff-filter=M --name-only origin/${{ github.base_ref }}...HEAD -- "$BASELINE")
+          if [ -n "$MODIFIED" ]; then
+            echo "BLOCKED: Legacy behavioral baseline was MODIFIED in this PR."
+            echo "The baseline must be immutable once committed — it was extracted from"
+            echo "legacy source before the migration began. Modifying it in the same PR"
+            echo "that creates the migrated service is a tampering signal."
+            echo ""
+            echo "Modified file: $MODIFIED"
+            exit 1
+          fi
+          echo "Baseline immutability: PASS (not modified in this PR)"
+
+      - name: Spec integrity check (anchor consistency)
+        run: |
+          SPEC=".preflight/{ServiceName}/behavior-spec-current.json"
+          SOURCE="CTIAPI-DEV_Work/CTI.MicroService.IVR.{ServiceName}"
+          if [ ! -f "$SPEC" ]; then
+            echo "No migrated spec found — spec integrity check skipped"
+            exit 0
+          fi
+          bash .github/scripts/spec-integrity-check.sh "$SPEC" "$SOURCE"
+
+      - name: Parity check (behavioral drift detection)
+        run: |
+          BASELINE=".preflight/{ServiceName}/behavior-spec.json"
+          CURRENT=".preflight/{ServiceName}/behavior-spec-current.json"
+          if [ ! -f "$BASELINE" ] || [ ! -f "$CURRENT" ]; then
+            echo "Spec files missing — parity check skipped"
+            exit 0
+          fi
+          bash .github/scripts/parity-check.sh "$BASELINE" "$CURRENT"
+          PARITY_EXIT=$?
+          if [ $PARITY_EXIT -eq 2 ]; then
+            echo "BLOCKED: Blocking parity violations detected."
+            echo "The migrated service has behavioral drift from legacy."
+            exit 1
+          fi
+          exit $PARITY_EXIT
+```
+
+### Vendoring the parity scripts
+
+The generated workflow references `.github/scripts/parity-check.sh` and `.github/scripts/spec-integrity-check.sh`. These must exist in the target repo. During Phase 2, copy them from the framework:
+
+```bash
+mkdir -p .github/scripts
+cp "${FRAMEWORK_ROOT}/lib/parity-check.sh" .github/scripts/parity-check.sh
+cp "${FRAMEWORK_ROOT}/lib/spec-integrity-check.sh" .github/scripts/spec-integrity-check.sh
+chmod +x .github/scripts/parity-check.sh .github/scripts/spec-integrity-check.sh
+```
+
+Overwrite on every migration — this ensures the scripts are current as of the migration run. The vendored copies are committed with the service code.
+
+### Placeholder resolution
+
+| Placeholder | Value |
+|---|---|
+| `{ServiceName}` | PascalCase service name (e.g., `CPSLToken`, `SessionToken`, `AccountLookup`) |
+| `{ServiceDisplayName}` | Human-readable name for the workflow title (e.g., `CPSLToken`, `SessionToken`) |
+| `{service-kebab}` | Lowercase hyphenated (e.g., `cpsltoken`, `sessiontoken`, `accountlookup`) |
+
+Derive from the service name identified in Phase 1.
+
+### Why this works
+
+1. **Trigger fix:** Each service's workflow has `paths:` scoped to its own directories — CI fires on that service's PRs, not only on AccountLookup's.
+2. **Baseline immutability:** The legacy spec was committed in step 2b-commit BEFORE Phase 2 code exists. CI's `git diff --diff-filter=M` detects if it was subsequently modified in the same PR.
+3. **Spec integrity:** `spec-integrity-check.sh` verifies both directions — anchors in spec match source AND anchors in source match spec. An agent that strips a behavior from the spec to avoid a parity failure is caught.
+4. **Parity:** `parity-check.sh` runs on committed, immutable files. Exit 2 blocks the PR status check. The agent cannot iterate post-push.
 
 ## Post-Migration Dependency Map Refresh
 
