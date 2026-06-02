@@ -1,0 +1,274 @@
+#!/usr/bin/env bash
+# spec-integrity-check.sh — Mechanical anti-forgery check for behavior-spec.json
+#
+# Verifies that a behavior spec is CONSISTENT with its source code in both directions:
+#   spec→source: every anchor claimed in the spec actually exists in the source
+#   source→spec: every anchor emitted in the source is represented in the spec
+#
+# The second direction is the FORGE-CATCH: if an agent edits the spec to remove a
+# behavior (to make parity pass), the code still contains the anchor. This script
+# detects the inconsistency.
+#
+# Usage: spec-integrity-check.sh <behavior-spec.json> <source-directory>
+#
+# Exit codes:
+#   0 = consistent (all anchors match in both directions)
+#   1 = inconsistency found (details printed to stdout)
+#   2 = usage error (missing args, file not found)
+#
+# Anchor types checked (mechanical only — no semantic judgment):
+#   a. result_code: [EWS]\d{4} patterns
+#   b. wire_contract: property names on model classes
+#   c. proc names: stored procedure name literals
+#   d. routes: endpoint route attributes
+#
+# HEURISTIC FOR "EMITTED" RESULT CODES:
+#   A result code in source is considered "emitted" if it appears on a line that is NOT:
+#     - A pure comment line (starts with // or * after whitespace)
+#     - An XML doc comment (starts with ///)
+#     - A log-only call (line contains .Log, _logger, LogDebug, LogInformation, etc.)
+#   AND the line contains the code in a context suggesting assignment or definition:
+#     - ResultCode = "X0000"
+#     - case "X0000":
+#     - => "X0000" (switch expression)
+#     - new ... { ResultCode = "X0000" }
+#     - .Contains("X0000")
+#     - GetMessage("X0000") — defines the code in a helper
+#
+#   The heuristic errs toward inclusion for the forge-critical direction.
+
+set -uo pipefail
+
+SPEC="${1:-}"
+SOURCE_DIR="${2:-}"
+
+if [ -z "$SPEC" ] || [ -z "$SOURCE_DIR" ]; then
+  echo "Usage: spec-integrity-check.sh <behavior-spec.json> <source-directory>" >&2
+  exit 2
+fi
+
+if [ ! -f "$SPEC" ]; then
+  echo "ERROR: Spec file not found: $SPEC" >&2
+  exit 2
+fi
+
+if [ ! -d "$SOURCE_DIR" ]; then
+  echo "ERROR: Source directory not found: $SOURCE_DIR" >&2
+  exit 2
+fi
+
+FAILURES=0
+FAILURE_DETAILS=""
+
+fail() {
+  FAILURES=$((FAILURES + 1))
+  FAILURE_DETAILS="${FAILURE_DETAILS}FAIL: $1
+"
+}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# (a) RESULT CODES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Extract result codes from spec
+SPEC_CODES=$(grep -oE '[EWS][0-9]{4}' "$SPEC" | sort -u || true)
+
+# Find emitted result codes in source
+SOURCE_CODES=""
+if find "$SOURCE_DIR" -name '*.cs' -print -quit 2>/dev/null | grep -q .; then
+  # Get all lines with result-code pattern in .cs files
+  ALL_CODE_LINES=$(grep -rn --include="*.cs" -E '[EWS][0-9]{4}' "$SOURCE_DIR" 2>/dev/null || true)
+
+  # Filter: keep lines that are NOT pure comments and NOT pure log calls
+  # grep -rn output format is "filepath:linenum:content"
+  # We strip to content and test, but pass the whole line for code extraction
+  # Strategy: use awk to extract content portion and test it
+  EMITTED_LINES=$(echo "$ALL_CODE_LINES" | awk -F: '{
+    # Reconstruct content after file:linenum:
+    content = ""
+    for (i=3; i<=NF; i++) content = content (i>3 ? ":" : "") $i
+    # Strip leading whitespace for pattern matching
+    gsub(/^[[:space:]]+/, "", content)
+    # Skip pure comment lines
+    if (content ~ /^\/\//) next
+    if (content ~ /^\/\*/) next
+    if (content ~ /^\*/) next
+    # Skip log-only lines
+    if (content ~ /\.(Log|LogDebug|LogInformation|LogWarning|LogError)\(/) next
+    # Pass through
+    print $0
+  }' || true)
+
+  # Also include lines from result-message helpers (case/switch/GetMessage define codes)
+  HELPER_LINES=$(echo "$ALL_CODE_LINES" | grep -E '(GetMessage|case "|=> ")' || true)
+
+  COMBINED_LINES=$(printf '%s\n%s' "$EMITTED_LINES" "$HELPER_LINES" | sort -u)
+  SOURCE_CODES=$(echo "$COMBINED_LINES" | grep -oE '[EWS][0-9]{4}' | sort -u || true)
+fi
+
+# Direction 1: spec→source
+if [ -n "$SPEC_CODES" ]; then
+  while IFS= read -r code; do
+    [ -z "$code" ] && continue
+    if [ -n "$SOURCE_CODES" ]; then
+      if ! echo "$SOURCE_CODES" | grep -qx "$code"; then
+        fail "result_code spec→source: '$code' claimed in spec but NOT found emitted in source"
+      fi
+    fi
+  done <<< "$SPEC_CODES"
+fi
+
+# Direction 2: source→spec — THE FORGE-CATCH
+if [ -n "$SOURCE_CODES" ]; then
+  while IFS= read -r code; do
+    [ -z "$code" ] && continue
+    if [ -n "$SPEC_CODES" ]; then
+      if ! echo "$SPEC_CODES" | grep -qx "$code"; then
+        fail "result_code source→spec: '$code' emitted in source but MISSING from spec (possible forge)"
+      fi
+    fi
+  done <<< "$SOURCE_CODES"
+fi
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# (b) WIRE CONTRACT (property names)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Extract wire field names from spec ("field": "Name" patterns)
+SPEC_FIELDS=$(grep -oE '"field"[[:space:]]*:[[:space:]]*"[^"]+"' "$SPEC" 2>/dev/null | \
+  grep -oE '"[A-Z][a-zA-Z]*"$' | tr -d '"' | sort -u || true)
+# Fallback: also grab PascalCase keys from "fields" objects
+SPEC_FIELDS_ALT=$(grep -oE '"[A-Z][a-zA-Z]+"[[:space:]]*:[[:space:]]*"(string|int|bool|List)' "$SPEC" 2>/dev/null | \
+  grep -oE '^"[A-Z][a-zA-Z]+"' | tr -d '"' | sort -u || true)
+SPEC_FIELDS=$(printf '%s\n%s' "$SPEC_FIELDS" "$SPEC_FIELDS_ALT" | sort -u | grep -v '^$' || true)
+
+# Find public properties on model/response/request classes
+MODEL_FIELDS=""
+if find "$SOURCE_DIR" -name '*.cs' -print -quit 2>/dev/null | grep -q .; then
+  MODEL_FILES=$(find "$SOURCE_DIR" \( -name '*Response*.cs' -o -name '*Request*.cs' -o -name '*Model*.cs' \) 2>/dev/null | grep -v '/obj/' | grep -v '/bin/' || true)
+  if [ -n "$MODEL_FILES" ]; then
+    MODEL_FIELDS=$(echo "$MODEL_FILES" | xargs grep -hE 'public[[:space:]]+[A-Za-z<>?]+[[:space:]]+[A-Z][a-zA-Z]+[[:space:]]*\{' 2>/dev/null | \
+      sed -E 's/.*public[[:space:]]+[A-Za-z<>?]+[[:space:]]+([A-Z][a-zA-Z]+)[[:space:]]*\{.*/\1/' | \
+      sort -u || true)
+  fi
+fi
+
+# Direction 1: spec→source
+if [ -n "$SPEC_FIELDS" ] && [ -n "$MODEL_FIELDS" ]; then
+  while IFS= read -r field; do
+    [ -z "$field" ] && continue
+    if ! echo "$MODEL_FIELDS" | grep -qx "$field"; then
+      fail "wire_contract spec→source: field '$field' claimed in spec but no matching property in source models"
+    fi
+  done <<< "$SPEC_FIELDS"
+fi
+
+# Direction 2: source→spec — THE FORGE-CATCH
+if [ -n "$MODEL_FIELDS" ] && [ -n "$SPEC_FIELDS" ]; then
+  while IFS= read -r field; do
+    [ -z "$field" ] && continue
+    if ! echo "$SPEC_FIELDS" | grep -qx "$field"; then
+      fail "wire_contract source→spec: property '$field' on model/response class but MISSING from spec (possible forge)"
+    fi
+  done <<< "$MODEL_FIELDS"
+fi
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# (c) STORED PROCEDURE NAMES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Extract proc names from spec
+SPEC_PROCS=$(grep -oE '"(cpsl_|sp_|fn_)[a-zA-Z0-9_]+"' "$SPEC" 2>/dev/null | tr -d '"' | sort -u || true)
+
+# Find proc names in source
+SOURCE_PROCS=""
+if find "$SOURCE_DIR" -name '*.cs' -print -quit 2>/dev/null | grep -q .; then
+  SOURCE_PROCS=$(grep -rhE '"(cpsl_|sp_|fn_)[a-zA-Z0-9_]+"' "$SOURCE_DIR" --include="*.cs" 2>/dev/null | \
+    grep -oE '(cpsl_|sp_|fn_)[a-zA-Z0-9_]+' | sort -u || true)
+fi
+
+# Direction 1: spec→source
+if [ -n "$SPEC_PROCS" ] && [ -n "$SOURCE_PROCS" ]; then
+  while IFS= read -r proc; do
+    [ -z "$proc" ] && continue
+    if ! echo "$SOURCE_PROCS" | grep -qix "$proc"; then
+      fail "proc_name spec→source: '$proc' claimed in spec but NOT found in source"
+    fi
+  done <<< "$SPEC_PROCS"
+fi
+
+# Direction 2: source→spec — THE FORGE-CATCH
+if [ -n "$SOURCE_PROCS" ] && [ -n "$SPEC_PROCS" ]; then
+  while IFS= read -r proc; do
+    [ -z "$proc" ] && continue
+    if ! echo "$SPEC_PROCS" | grep -qix "$proc"; then
+      fail "proc_name source→spec: '$proc' invoked in source but MISSING from spec (possible forge)"
+    fi
+  done <<< "$SOURCE_PROCS"
+fi
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# (d) ENDPOINT ROUTES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Extract routes from spec
+SPEC_ROUTES=$(grep -oE '"path"[[:space:]]*:[[:space:]]*"[^"]+"' "$SPEC" 2>/dev/null | \
+  grep -oE '"[a-z/][^"]*"$' | tr -d '"' | sort -u || true)
+
+# Find route segments from source attributes: [Route("x")], [HttpPost("x")], etc.
+SOURCE_ROUTES=""
+if find "$SOURCE_DIR" -name '*.cs' -print -quit 2>/dev/null | grep -q .; then
+  SOURCE_ROUTES=$(grep -rhE '\[(Route|HttpPost|HttpGet|HttpPut|HttpDelete|HttpPatch)\("[^"]+"\)' "$SOURCE_DIR" --include="*.cs" 2>/dev/null | \
+    grep -oE '"[^"]+"' | tr -d '"' | sort -u || true)
+fi
+
+# Direction 1: spec→source (spec route segments must appear in source attributes)
+if [ -n "$SPEC_ROUTES" ] && [ -n "$SOURCE_ROUTES" ]; then
+  while IFS= read -r route; do
+    [ -z "$route" ] && continue
+    # Check if any source route segment is contained in this spec route
+    FOUND=false
+    while IFS= read -r src_seg; do
+      [ -z "$src_seg" ] && continue
+      if echo "$route" | grep -qF "$src_seg"; then
+        FOUND=true
+        break
+      fi
+    done <<< "$SOURCE_ROUTES"
+    if [ "$FOUND" = false ]; then
+      fail "route spec→source: '$route' claimed in spec but no matching route attribute in source"
+    fi
+  done <<< "$SPEC_ROUTES"
+fi
+
+# Direction 2: source→spec (source route segments must appear in some spec route)
+if [ -n "$SOURCE_ROUTES" ] && [ -n "$SPEC_ROUTES" ]; then
+  while IFS= read -r seg; do
+    [ -z "$seg" ] && continue
+    FOUND=false
+    while IFS= read -r spec_route; do
+      [ -z "$spec_route" ] && continue
+      if echo "$spec_route" | grep -qF "$seg"; then
+        FOUND=true
+        break
+      fi
+    done <<< "$SPEC_ROUTES"
+    if [ "$FOUND" = false ]; then
+      fail "route source→spec: route attribute '$seg' in source but MISSING from spec (possible forge)"
+    fi
+  done <<< "$SOURCE_ROUTES"
+fi
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# VERDICT
+# ═══════════════════════════════════════════════════════════════════════════════
+
+if [ $FAILURES -gt 0 ]; then
+  echo "SPEC INTEGRITY CHECK: FAILED ($FAILURES inconsistencies)"
+  echo ""
+  printf '%s' "$FAILURE_DETAILS"
+  exit 1
+else
+  echo "SPEC INTEGRITY CHECK: PASSED (all mechanical anchors consistent)"
+  exit 0
+fi
