@@ -377,6 +377,64 @@ This checkpoint is local-only — `.preflight/migrate-checkpoint.json` is in `.g
 - Confuse sub-agent roles — code-reviewer reads/reports, external-review-handler orchestrates/captures, discovery-analyst maps dependencies, implementer fixes coupled groups, this skill orchestrates the overall flow
 - Auto-bump the rubric cadence — `loop.rubricEditCadence` is read from config (default 5); the rubric-edit PR is a separate batched effort
 
+## Coverage discipline — no behavior changes for metrics
+
+<CRITICAL-INSTRUCTION>
+The coverage floor (from `test.coverageBaseline` in config, default 85%) is reached by ADDING TESTS ONLY. Production/service code MUST NOT be modified, weakened, or restructured to raise coverage. Specifically:
+
+- Do not remove validation attributes, guards, or checks to avoid uncovered branches.
+- Do not change method visibility, add parameters, or refactor production logic solely to make it testable.
+- Do not remove `[ExcludeFromCodeCoverage]` from genuinely untestable code (DI wiring, top-level statements) to force coverage elsewhere.
+- Excluding a genuinely DB-dependent class (e.g., a repository that opens real connections) from coverage measurement is allowed.
+- Paths that are uncoverable without changing production behavior are left uncovered with a `// uncovered: <reason>` comment in the test file, not in production code.
+
+If the floor cannot be reached by adding tests alone, report the gap and the reason. Do not mutate the service to close it.
+</CRITICAL-INSTRUCTION>
+
+## Verbatim database identifier rule
+
+<CRITICAL-INSTRUCTION>
+Every database identifier in the migrated data-access layer — stored-procedure names, parameter names, table names, column names — MUST be byte-for-byte identical to what the legacy code uses. NO renaming, NO casing changes, NO pluralization, NO target-database-idiom "improvement."
+
+If legacy calls `cpsl_setCCToken_v2`, the migrated call is `cpsl_setCCToken_v2` — never `cpsl_set_cc_token_v2`. If legacy passes `@ReturnTokenCode`, the migrated parameter is `@ReturnTokenCode`. This is the parity spine that lets a separate legacy → target-DB data export tie out: the migration owns NAME FIDELITY; schema/datatype reconciliation happens at the export step.
+
+This rule applies regardless of target database engine (PostgreSQL, Aurora, CosmosDB). The function/proc/table is created with the legacy-exact name, even if it violates the target engine's conventions.
+</CRITICAL-INSTRUCTION>
+
+## Data-access layer — implemented in full, not deferred
+
+<CRITICAL-INSTRUCTION>
+The migration produces the full data-access layer (repository, proc/query calls, parameter mapping) wired and unit-tested with a mocked DB boundary. "Requires a real DB" is NOT grounds to skip implementing or testing the layer's logic.
+
+- The repository class is implemented with real connection-open, command-build, parameter-map, and result-map logic.
+- Unit tests mock at the connection/command boundary (e.g., mock `IDbConnection` or use an in-memory fake) and verify parameter names, types, directions, and result mapping.
+- The repository is NOT marked `[ExcludeFromCodeCoverage]` — it is tested via mocked boundary.
+- Integration tests (requiring a live DB) are a separate concern and may be skipped if no DB is available, but the unit-testable logic (mapping, branching, null-handling) is always covered.
+
+Nothing is "pending from the service side." The layer is present and tested at completion.
+</CRITICAL-INSTRUCTION>
+
+## Legacy name-contract artifact (required completion deliverable)
+
+The migration emits a **legacy-db-name-contract** artifact at `.preflight/<service>/legacy-db-name-contract.md`. This artifact is TRANSCRIBED from the legacy source code (not invented, not inferred from documentation). It lists:
+
+- Every stored procedure the service calls: name + parameter names + parameter order/types as the C# code passes them.
+- Every table and column name referenced (if visible in the legacy source).
+- The exact string values used in the legacy code (no normalization).
+
+The artifact states clearly that schema and datatype authority lives in the legacy database; this document fixes the NAMES only. A separate legacy → target-DB data export uses this artifact to verify name alignment.
+
+If the spec-analyst or discovery-analyst is unavailable (dispatch failure, cap hit), the migration implementer produces the artifact manually by reading the legacy source. The artifact's existence is REQUIRED regardless of whether a sub-agent extracted it.
+
+## Stop semantics — completion or genuine blocker
+
+The migration runs until it **completes** (all phases done, PR opened) or hits a **genuine blocker**:
+- Repeated sub-agent dispatch failure (3+ consecutive failures on the same step)
+- Unrecoverable build error after 3 fix attempts
+- User-requested stop
+
+There is NO wall-clock cap, no time limit, no "4 hour" ceiling. The existing iteration caps (`maxStage1Iterations`, `maxStage2Iterations`) and oscillation detection (`stopOnSameFiles`, `stopOnSameLineModified`) are the anti-spin guards — they remain. But the migration does not stop merely because time has passed.
+
 ## Reminders
 
 - The rubric is wisdom, not law. Findings that seem wrong should still be surfaced — disagreements get captured into `false-positives` via the external-review-handler, not silently dropped.
