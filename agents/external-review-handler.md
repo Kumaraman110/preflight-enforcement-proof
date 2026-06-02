@@ -56,22 +56,37 @@ Create them with a header line if they don't exist.
 ### Step 2 — Request Copilot review
 `gh pr edit <PR> --add-reviewer <copilotReviewerLogin>`.
 
-### Step 3 — Wait, then poll
-Wait `initialWaitSeconds`. Poll every `pollIntervalSeconds`:
+### Step 3 — Wait, then poll for review comments
+
+Wait `initialWaitSeconds`. Poll every `pollIntervalSeconds`.
+
+**Primary detection: inline review comments (authoritative source).**
+Copilot often posts inline review comments WITHOUT finalizing a top-level review object. The `pulls/<PR>/reviews` endpoint may stay empty even when Copilot has posted findings. The authoritative source is `pulls/<PR>/comments` filtered by the configured reviewer login:
+
+```bash
+gh api "repos/{owner}/{repo}/pulls/<PR>/comments" \
+  --jq "[.[] | select(.user.login==\"${COPILOT_LOGIN}\") | {id, node_id, path, line, body, created_at}]"
+```
+Where `COPILOT_LOGIN` is `config.review.copilotReviewerLogin` (default: `copilot-pull-request-reviewer[bot]`). Note: the login may appear as either `copilot-pull-request-reviewer[bot]` or `Copilot` — match on either.
+
+**Secondary check: top-level review object (belt-and-suspenders).**
+Also check for a submitted review (covers the case where Copilot submits a top-level APPROVED/CHANGES_REQUESTED):
 ```bash
 gh api "repos/{owner}/{repo}/pulls/<PR>/reviews" \
   --jq '[.[] | select(.user.type=="Bot")] | last'
 ```
-Complete when `state` is `COMMENTED`, `CHANGES_REQUESTED`, or `APPROVED` and `submitted_at` > last push time.
+
+**Complete when:** Comments from the Copilot login exist with `created_at` > last push time, OR a top-level review exists with `submitted_at` > last push time. The presence of ANY review comments from the Copilot login is sufficient — do not require a top-level review object.
 
 ### Step 4 — Fetch line-level comments
+
 ```bash
 gh api "repos/{owner}/{repo}/pulls/<PR>/comments" \
-  --jq '[.[] | select(.user.type=="Bot") | {id, path, line, original_line, body, created_at}]'
+  --jq "[.[] | select(.user.login==\"${COPILOT_LOGIN}\" or .user.login==\"Copilot\") | {id, node_id, path, line, original_line, body, created_at}]"
 ```
 
 ### Step 5 — Check SUCCESS
-If `APPROVED` OR zero unresolved bot comments newer than last push → SUCCESS.
+If top-level review is `APPROVED`, OR zero Copilot comments newer than last push → SUCCESS.
 
 ### Step 6 — Check termination conditions
 

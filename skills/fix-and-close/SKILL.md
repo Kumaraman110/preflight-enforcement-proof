@@ -179,6 +179,8 @@ These values come from config (`review.*`). If config is absent, use these defau
 | `review.initialWaitSeconds` | 90 | Seconds to wait before the first poll (Copilot needs time to analyze) |
 | Heartbeat interval | 30 minutes | If Copilot has been silent for 30+ minutes, emit a status update so the user reading the chat later knows polling continued and approximately how long it has been waiting |
 
+**Polling endpoint:** The external-review-handler polls `pulls/{n}/comments` filtered by `user.login == config.review.copilotReviewerLogin` (the inline review comments), NOT `pulls/{n}/reviews`. Copilot posts inline comments without always finalizing a top-level review object — if the loop only checks the reviews endpoint, it will hang indefinitely. The comments-by-author endpoint is the authoritative source for detecting that Copilot has reviewed.
+
 11.5. **Resolve threads for findings fixed this round (Copilot fix rounds only).**
 
     On the SECOND and subsequent pushes (i.e., after Stage 2 has returned NEEDS_PARENT_FIXES at least once and you've fixed + pushed), invoke thread resolution for the findings you just fixed:
@@ -207,7 +209,22 @@ These values come from config (`review.*`). If config is absent, use these defau
     
     - `NEEDS_PARENT_FIXES` → **Apply the same Coupled-Group Fix Protocol (step 6 above).** Group Copilot's findings by coupling. Fix coupled groups as single coherent changes. Then: run tests → invoke Stage 1 → when clean → commit + push → re-invoke Stage 2. **Track Stage 2 iteration count separately. Cap at 3.**
     
-      **Handle stability categories:**
+      **Context-before-fix — parity defends (MANDATORY for behavioral findings):**
+      
+      Copilot reviewing the code is not authority that the code is wrong. Copilot does not know legacy behavior. The migration's correctness standard is legacy parity, not Copilot's approval. Do NOT change correct, intentional, or legacy-faithful behavior to satisfy a Copilot comment.
+      
+      For EACH finding that touches BEHAVIOR (result codes, status mappings, validation logic, error handling, conditional operations), BEFORE applying any fix:
+      
+      1. **Gather legacy context.** What does the legacy service actually do in this case? Check the legacy source, the behavior spec, the ground-truth inventory, or the name-contract. This is a 30-second grep, not a research project.
+      2. **Classify the finding as one of:**
+         - **REAL BUG** → the migrated code's behavior is wrong vs legacy, or it's a genuine non-behavioral defect (misleading log message, doc out of sync, security gap that also existed in legacy but should be fixed). Fix it.
+         - **INTENTIONAL / LEGACY-FAITHFUL** → the migrated code matches legacy behavior, or the behavior is a deliberate design decision documented in MIGRATION_PATTERNS.md. Do NOT fix. Reply on the PR thread explaining WHY it's intentional (cite the legacy behavior or the design decision). Defending is a valid outcome.
+         - **HUMAN-JUDGMENT** → the finding identifies a real tension (Copilot's suggestion IS better practice but WOULD break parity). Escalate to the user with both sides: "Copilot suggests X (better practice), but legacy does Y (current behavior). Change or defend?" Do not unilaterally fix.
+      3. **Only REAL BUG findings proceed to the Coupled-Group Fix Protocol.** INTENTIONAL findings get a PR reply and are done. HUMAN-JUDGMENT findings wait for user direction.
+      
+      **Why this rule exists:** PR #12's failure mode was fixing every Copilot finding reflexively. Several findings flagged intentional legacy behavior as "bad practice." Fixing them introduced wire-format deviations and status-code changes that broke callers. The rule: when a finding touches behavior, check legacy FIRST, then decide fix vs defend vs escalate.
+    
+      **Handle stability categories (applies only to REAL BUG findings after context-before-fix):**
       - STABLE / TRIVIAL-STABLE → fix automatically via Coupled-Group Protocol
       - UNSTABLE → surface to user, do NOT auto-fix. Present the finding and ask for direction.
       - CONTRADICTS_RUBRIC → surface to user with BOTH the Copilot suggestion AND the rubric section it violates. Default: rubric wins. If user overrides, implement Copilot's suggestion and note the override in `calibration-log.md` for the next batched rubric PR to evaluate.
