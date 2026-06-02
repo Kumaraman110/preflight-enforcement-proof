@@ -30,6 +30,19 @@ The user passed `$ARGUMENTS` as input. Parse generously:
 
 This skill uses CRITICAL-INSTRUCTION blocks to mark behavioral requirements. These are prose-level instructions — the model is expected to comply, but no mechanical hook prevents the model from proceeding if it doesn't. Mechanical enforcement (hook-level blocks) is provided separately by the pre-push-gate and coupled-edit-gate hooks. Treat CRITICAL-INSTRUCTION blocks as "you must follow this" guidance, not as a system-level block.
 
+## Framework Root Resolution
+
+This skill is installed as a junction: `~/.claude/skills/migrate/` → `code-forge/skills/migrate/`. References to framework assets (generation specs, rubrics, validators) resolve relative to the framework root (`code-forge/`). Resolve it once at the start of every run:
+
+```bash
+FRAMEWORK_ROOT=$(realpath "$(dirname "$(readlink -f ~/.claude/skills/migrate/SKILL.md)")/../../" 2>/dev/null)
+echo "Framework root: ${FRAMEWORK_ROOT:-UNRESOLVED}"
+```
+
+If `FRAMEWORK_ROOT` is empty or the directory doesn't exist, warn: "Framework root resolution failed — junction from ~/.claude/skills/migrate/ may be broken." Continue with project-local config only (`.preflight/` paths); framework-relative fallbacks will be unavailable.
+
+All `${FRAMEWORK_ROOT}` references in this file use the junction-resolved path above. The env var `CLAUDE_PLUGIN_ROOT` is NOT reliably set in all environments — do not depend on it; always use the junction-resolution mechanism.
+
 ## The Architectural Commitment
 
 **Every issue caught by external review on ServiceN should be caught by local review on ServiceN+1.** Your job, beyond migrating the code, is to make this real on this migration. The Stage 2 orchestrator + learning agent does the capture; you ensure it runs and that its output gets committed.
@@ -44,7 +57,7 @@ If session context is empty or this skill was invoked cold (no hook ran):
 2. If found: extract `mode`, `rubric`, `branch.base`, `branch.remote`, `branch.migrationPrefix`, `test.*`, `loop.*`, `capture.*`, `migration.*`.
 3. If not found: use defaults — mode `generic`, base branch `main`, test command auto-detected.
 4. Check for `CLAUDE.md` at project root for supplementary conventions.
-5. Confirm the rubric file exists at the resolved path. If missing, warn and fall back to `${CLAUDE_PLUGIN_ROOT}/examples/rubrics/rubric-migration-dotnet.md` (example rubric — teams should configure their own).
+5. Confirm the rubric file exists at the resolved path. If missing, warn and fall back to `${FRAMEWORK_ROOT}/examples/rubrics/rubric-migration-dotnet.md` (example rubric — teams should configure their own).
 
 ## Pre-requisites
 
@@ -54,7 +67,7 @@ This skill requires project config with `"mode": "migration"`. If the config is 
 
 Verify from config:
 - `migration.legacyRepoPath` exists and points to a directory that exists on disk
-- `rubric` path exists (or the example migration rubric is available at `${CLAUDE_PLUGIN_ROOT}/examples/rubrics/rubric-migration-dotnet.md`)
+- `rubric` path exists (or the example migration rubric is available at `${FRAMEWORK_ROOT}/examples/rubrics/rubric-migration-dotnet.md`)
 - `branch.base` is set (default from config; no hardcoded branch name)
 - `branch.remote` is set (default from config; no hardcoded remote name)
 
@@ -158,11 +171,13 @@ Phase 1 runs on every migration, even when the service "looks simple." The readi
 ## Phase 2 — Execution
 
 <CRITICAL-INSTRUCTION>
-Before writing ANY code, read the generation spec. Resolve the path from project config (`generation-spec` field) or fall back to `${CLAUDE_PLUGIN_ROOT}/examples/generation-specs/` and select the spec matching the detected stack. If the config specifies a path but the file doesn't exist, warn and attempt the stack-detection fallback. If no spec resolves at all, STOP — inform the user that a generation spec is required for Phase 2. For every pattern that applies to this service, PASTE the code block verbatim into the target file as a literal text copy — character for character, preserving whitespace, ordering, and structure. Then modify ONLY at marked `/* ADAPT */` points. Do not "use" patterns (interpretation + reconstruction degrades at high context). Do not "apply" patterns. PASTE them, then adapt at marked points only. The generation spec is pre-validated against the detection spec — verbatim paste means Stage 1 will never flag those patterns. Reconstruction from memory WILL produce drift that gets flagged.
+Before writing ANY code, read the generation spec. Resolve it using the loading procedure below. If no spec file resolves at all, STOP — do NOT proceed, do NOT substitute the reference service as a spec, do NOT use CLAUDE.md architecture descriptions as a replacement. The reference service is NOT a generation spec. If resolution fails, inform the user: "Generation spec resolution failed. Paths tried: [list them]. Configure `generation-spec` in `.preflight/config.json` or verify the skill junction resolves correctly."
+
+Once the spec is loaded: for every pattern that applies to this service, PASTE the code block verbatim into the target file as a literal text copy — character for character, preserving whitespace, ordering, and structure. Then modify ONLY at marked `/* ADAPT */` points. Do not "use" patterns (interpretation + reconstruction degrades at high context). Do not "apply" patterns. PASTE them, then adapt at marked points only. The generation spec is pre-validated against the detection spec — verbatim paste means Stage 1 will never flag those patterns. Reconstruction from memory WILL produce drift that gets flagged.
 </CRITICAL-INSTRUCTION>
 
 Read ALL of:
-- Generation spec (resolved via project config or stack-detection fallback — mandatory, one must resolve)
+- Generation spec (resolved via the loading procedure below — mandatory, one must resolve)
 - Project's `CLAUDE.md` (if exists — team conventions)
 - `MIGRATION_PATTERNS.md` from the configured reference service (if `migration.referenceService` exists in config). If `migration.referenceService` is not configured, skip this — proceed without reference patterns.
 
@@ -173,9 +188,27 @@ Apply generation spec patterns FIRST (deterministic, pre-validated). Then write 
 The migration phases are defined by the generation spec. The generation spec is the authoritative source for what patterns to apply, in what order, using what tools.
 
 **Loading the generation spec:**
-1. Check project config (`generation-spec` field in `.preflight/config.json`) for an explicit path.
-2. If not configured, fall back to `${CLAUDE_PLUGIN_ROOT}/examples/generation-specs/` and look for a spec matching the detected stack.
-3. If no spec resolves, STOP — cannot proceed with Phase 2 without a generation spec. Surface this to the user: "No generation spec found. Configure one in `.preflight/config.json` or place one at `examples/generation-specs/<stack>.md`."
+
+Resolve the spec file using this ordered fallback. Try each step; use the first that resolves to an existing file.
+
+1. **Explicit config path:** Check `generation-spec` field in `.preflight/config.json`. If set and the file exists, use it.
+2. **Framework-relative path (junction resolution):** The skill file lives in a junction from `~/.claude/skills/migrate/` → `code-forge/skills/migrate/`. Resolve the framework root by running:
+   ```bash
+   FRAMEWORK_ROOT=$(realpath "$(dirname "$(readlink -f ~/.claude/skills/migrate/SKILL.md)")/../../" 2>/dev/null)
+   SPEC_PATH="${FRAMEWORK_ROOT}/examples/generation-specs/dotnet-service.md"
+   test -f "$SPEC_PATH" && echo "SPEC FOUND: $SPEC_PATH" || echo "SPEC NOT FOUND at: $SPEC_PATH"
+   ```
+   If the file exists at the resolved path, use it. Read it with the resolved absolute path.
+3. **Project-local fallback:** Check `.preflight/generation-spec.md` in the project root. If it exists, use it.
+
+If NONE of the above resolves to an existing file:
+
+**STOP.** Do NOT proceed with Phase 2. Do NOT substitute the reference service patterns, CLAUDE.md architecture descriptions, or your own knowledge of the codebase. Report to the user:
+- Which paths were tried (all three)
+- What each resolved to (or failed to resolve to)
+- That a generation spec is required and must be made available via one of the three paths above
+
+This gate exists because the prior SessionToken migration bypassed it — the agent found no spec and substituted the reference service, producing code that drifted from validated patterns. Do not repeat this.
 
 **Execution discipline:**
 - Do not run build commands between every micro-step — that wastes cycles. Build at the end of each logical phase.
@@ -214,7 +247,7 @@ After Phase 2 completes and before the first Stage 1 run, rebuild the dependency
 
 3. **Place the output** at `<service-folder>/dependency-map.json`.
 
-4. **Run mechanical validation** from `${CLAUDE_PLUGIN_ROOT}/lib/dependency-map-validator.md`. This catches missed DI-graph coupling, false independence claims, and unverifiable group edges. Apply any corrections to the map before proceeding. Never consume an unvalidated map.
+4. **Run mechanical validation** from `${FRAMEWORK_ROOT}/lib/dependency-map-validator.md`. This catches missed DI-graph coupling, false independence claims, and unverifiable group edges. Apply any corrections to the map before proceeding. Never consume an unvalidated map.
 
 5. **If the discovery-analyst is unavailable** (e.g., cap hit, error): fall back to CONSERVATIVE coupling — treat ALL findings as one coupled group. Slow but safe.
 
@@ -247,7 +280,7 @@ The output path is `.preflight/<service>/behavior-spec-current.json` — distinc
 Run the parity engine:
 
 ```bash
-bash "${CLAUDE_PLUGIN_ROOT}/lib/parity-check.sh" \
+bash "${FRAMEWORK_ROOT}/lib/parity-check.sh" \
   ".preflight/<service>/behavior-spec.json" \
   ".preflight/<service>/behavior-spec-current.json"
 ```
@@ -282,7 +315,7 @@ If the user chooses **Accept**: write parity-clean evidence (the user has review
 On exit 0 or exit 1 (or user-accepted exit 2):
 
 ```bash
-bash "${CLAUDE_PLUGIN_ROOT}/hooks/write-gate-evidence" parity-clean
+bash "${FRAMEWORK_ROOT}/hooks/write-gate-evidence" parity-clean
 ```
 
 This satisfies Gate 4. The push in fix-and-close will not be blocked by parity.
