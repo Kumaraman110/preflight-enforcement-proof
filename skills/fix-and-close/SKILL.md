@@ -219,8 +219,8 @@ These values come from config (`review.*`). If config is absent, use these defau
       2. **Classify the finding as one of:**
          - **REAL BUG** → the migrated code's behavior is wrong vs legacy, or it's a genuine non-behavioral defect (misleading log message, doc out of sync, security gap that also existed in legacy but should be fixed). Fix it.
          - **INTENTIONAL / LEGACY-FAITHFUL** → the migrated code matches legacy behavior, or the behavior is a deliberate design decision documented in MIGRATION_PATTERNS.md. Do NOT fix. Reply on the PR thread explaining WHY it's intentional (cite the legacy behavior or the design decision). Defending is a valid outcome.
-         - **HUMAN-JUDGMENT** → the finding identifies a real tension (Copilot's suggestion IS better practice but WOULD break parity). Escalate to the user with both sides: "Copilot suggests X (better practice), but legacy does Y (current behavior). Change or defend?" Do not unilaterally fix.
-      3. **Only REAL BUG findings proceed to the Coupled-Group Fix Protocol.** INTENTIONAL findings get a PR reply and are done. HUMAN-JUDGMENT findings wait for user direction.
+         - **AMBIGUOUS / UNCERTAIN** → legacy evidence is inconclusive or the finding identifies a genuine tension. Make an evidence-based decision (fix or defend), RECORD the rationale including what evidence was found and what doubt remains, and post the rationale on the PR thread. The supervisor audits these after the fact. Do not hang waiting for input — the loop owns the decision.
+      3. **Only REAL BUG findings proceed to the Coupled-Group Fix Protocol.** INTENTIONAL findings get a PR reply and are terminal. AMBIGUOUS findings get a documented decision (fix-with-rationale or defend-with-rationale) and are terminal.
       
       **Why this rule exists:** PR #12's failure mode was fixing every Copilot finding reflexively. Several findings flagged intentional legacy behavior as "bad practice." Fixing them introduced wire-format deviations and status-code changes that broke callers. The rule: when a finding touches behavior, check legacy FIRST, then decide fix vs defend vs escalate.
     
@@ -229,7 +229,7 @@ These values come from config (`review.*`). If config is absent, use these defau
       - UNSTABLE → surface to user, do NOT auto-fix. Present the finding and ask for direction.
       - CONTRADICTS_RUBRIC → surface to user with BOTH the Copilot suggestion AND the rubric section it violates. Default: rubric wins. If user overrides, implement Copilot's suggestion and note the override in `calibration-log.md` for the next batched rubric PR to evaluate.
     
-    - `STUCK` / `DIVERGING` → surface to user with oscillation evidence: name the specific file(s), line number(s), and rule(s) that keep churning. Do NOT push more. This is the one place the pipeline pauses and waits for human judgment.
+    - `STUCK` / `DIVERGING` → the iteration cap has been reached or oscillation detected. Do NOT push more rounds. But the resolution requirement still applies: any finding not yet FIXED must be DEFENDED-WITH-RATIONALE before the run can complete. The cap limits ROUNDS (cannot hang chasing churn), not OUTCOMES (cannot leave findings undecided). For each remaining finding: apply context-before-fix, decide fix-vs-defend, and record the terminal state. If a finding was DEFENDED in a prior round but the same file churned (causing STUCK), the defense stands — the finding is already terminal.
     
     - `FAILED` → surface error verbatim. Do not retry blindly.
     
@@ -256,9 +256,41 @@ If ANY verification fails, DO NOT declare success. Surface the gap with the actu
 
     Create the `.preflight/` directory if it doesn't exist. Do NOT skip metrics because the run failed — failed runs are the most valuable data points (they reveal where the system breaks).
 
+### Stage 2 Resolution Gate (MANDATORY — checked before completion)
+
+<CRITICAL-INSTRUCTION>
+The run is NOT complete while ANY Copilot finding is neither FIXED nor DEFENDED-WITH-REPLY. Stopping at "PR opened" is NOT complete (that was the PR-85 failure). Opening a PR and walking away with findings unprocessed is the known failure mode this gate exists to prevent.
+
+Before declaring DONE, verify: every finding from the Copilot review has reached a TERMINAL STATE, which is one of exactly two:
+- **FIXED** — a real bug vs legacy (or genuine non-behavioral defect); code was changed, tests pass, Stage 1 is clean.
+- **DEFENDED-WITH-REPLY** — legacy-faithful or intentional; a rationale was posted on the PR thread explaining WHY (citing the legacy behavior or design intent). "Defended" means a POSTED RATIONALE, NOT "Copilot marked it resolved." A correctly-defended legacy-faithful finding is TERMINAL even if Copilot never clears the comment. The loop's standard is legacy parity, NOT Copilot's approval.
+
+If any finding is not in a terminal state, the run cannot complete. Go back and resolve it.
+</CRITICAL-INSTRUCTION>
+
+**The uncertainty corner** — when legacy behavior is ambiguous:
+
+With no human exit, a finding the loop can't confidently classify (legacy ambiguous, can't determine from disk, no clear evidence either way) STILL must reach FIXED or DEFENDED. It must NOT:
+- Fix-to-clear (cave — change maybe-correct behavior on a guess to make the comment go away)
+- Defend-to-clear (falsely assert "intentional" when the evidence is inconclusive)
+
+It MUST make an EVIDENCE-BASED decision and RECORD the rationale INCLUDING:
+- The legacy evidence found (or "no evidence found — legacy source does not cover this path")
+- The reasoning for the decision taken
+- Any residual uncertainty ("this may be wrong if legacy actually does X, but on-disk evidence supports Y")
+
+Terminal state = "fixed-with-rationale OR defended-with-rationale" — where the rationale exposes the reasoning and any doubt for the supervisor's after-the-fact review. The loop decides; the rationale makes thin reasoning auditable. A hard finding produces a documented decision, never a silent guess.
+
+**Cap-vs-resolution interaction:**
+
+The iteration cap (`maxStage2Iterations`, oscillation detection) bounds CHURN — repeated fix-and-re-review rounds. It does NOT permit leaving findings undecided. If the cap is reached with findings not yet in a terminal state, those findings must be DEFENDED-WITH-RATIONALE (decided + documented), not left open. The cap limits ROUNDS (cannot hang); the resolution requirement limits OUTCOMES (cannot silently drop). They do not conflict:
+- Bounded rounds: can't hang chasing Copilot feedback indefinitely
+- Every finding terminal: can't silently drop findings by hitting a cap and walking away
+- After cap hit: remaining unresolved findings are decided (context-before-fix → fix or defend) and documented without further push/poll rounds
+
 ### Final Summary
 
-15. PR URL, total Stage 1 iterations, total Stage 2 iterations, capture entries by bucket, coverage achieved.
+15. PR URL, total Stage 1 iterations, total Stage 2 iterations, capture entries by bucket, coverage achieved, findings resolved (N fixed + M defended).
 16. Tell user PR is ready for human review. Do NOT merge.
 
 ## Capture Files and the Rubric
@@ -272,11 +304,11 @@ This trades "learnings take effect next invocation" for conflict-free parallel e
 ## Structured Status
 
 At any point, if you cannot proceed:
-- **DONE** — PR clean, human can merge
-- **CAPPED** — hit iteration limit. Remaining findings listed. Needs human direction.
+- **DONE** — all findings in terminal state (fixed or defended-with-reply), PR ready for human merge
+- **CAPPED-RESOLVING** — hit iteration limit; remaining findings being decided (context-before-fix → fix or defend) without further push/poll rounds. NOT a resting state — resolution continues until all findings are terminal.
 - **BLOCKED** — external dependency (Copilot timeout, auth expired, rate limit)
-- **DIVERGING** — findings not converging. Structural rethink needed.
-- **STUCK** — oscillation detected (same file/line churning)
+- **DIVERGING** — findings not converging; cap triggered. Remaining findings still must reach terminal state via defend-with-rationale.
+- **STUCK** — oscillation detected (same file/line churning); cap triggered. Remaining findings still must reach terminal state via defend-with-rationale.
 
 ## What This Does NOT Do
 
