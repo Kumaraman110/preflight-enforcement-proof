@@ -1,6 +1,16 @@
 ---
 name: migrate
-description: Orchestrates legacy-to-modern service migration. Delegates Phase 1 discovery to discovery-analyst, drives Phase 2 execution from configured generation spec, hands off post-migration cleanup to fix-and-close. Only activates when project config mode is "migration".
+description: >-
+  Orchestrates legacy-to-modern service migration. Delegates Phase 1 discovery
+  to discovery-analyst, drives Phase 2 execution from configured generation spec,
+  hands off post-migration cleanup to fix-and-close.
+  TRIGGER when: user asks to migrate a service; user asks to port/move/modernize
+  a legacy service to a new framework (e.g. .NET 10, Spring Boot 3); user names
+  a specific service to migrate; project config mode is "migration" and the user's
+  intent is service migration; user says "run the migration" or equivalent.
+  SKIP: net-new API development (use scaffold-api); single-file edits or bug fixes;
+  non-migration tasks (refactoring, docs, CI); user explicitly asks to follow steps
+  manually without the skill.
 argument-hint: <ServiceName>
 allowed-tools: Read, Glob, Grep, Bash, Edit, Write, Agent
 ---
