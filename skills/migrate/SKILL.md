@@ -279,6 +279,14 @@ This satisfies Gate 4. The push in fix-and-close will not be blocked by parity.
 
 ## Handoff to /preflight:fix-and-close
 
+<CRITICAL-INSTRUCTION>
+Phase 2 code-complete is NOT migration-complete. After build+test pass, you MUST invoke `/preflight:fix-and-close`. Do NOT report the migration as done, do NOT emit a summary, and do NOT stop until fix-and-close has run Stage 1, pushed, and opened the PR. A commit without a push is not a deliverable; a push without Stage 1 is not allowed.
+
+Treating the commit as terminal is the known failure mode — the prior SessionToken run stopped here, declared success, and left Stage 1 unrun, the PR unopened, and infrastructure unproduced. Do not repeat it.
+
+If fix-and-close cannot be invoked (skill unavailable, dispatch failure), surface this as a BLOCKER to the user — do not silently treat the migration as complete.
+</CRITICAL-INSTRUCTION>
+
 Once Phase 2 is complete, the dependency map is validated, parity is verified (or user-accepted), and code compiles + tests pass, invoke `/preflight:fix-and-close` to run the full Stage 1 → push → Stage 2 pipeline.
 
 Pass the commit-message hint derived from Phase 1 (e.g. `feat(<service>): migrate to <target-platform>`).
