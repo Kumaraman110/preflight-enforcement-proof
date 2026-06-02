@@ -507,9 +507,52 @@ fi
 
 **Reaching this floor is done by ADDING TESTS ONLY.** If line coverage is below the floor, the response is to write more tests against the uncovered lines (via the mocked DB boundary for repository code), NOT to modify, remove, or restructure production code. If the floor genuinely cannot be reached by adding tests without changing behavior, STOP and report the specific uncovered lines and why — do NOT mutate the service, and do NOT exclude code to raise the percentage (Check 2 already forbids excluding the repository). An unreachable floor is a finding to surface, not a number to game.
 
+### Check 6 — Behavioral parity verification ran and passed
+
+```bash
+# Parity verification must have EXECUTED (not skipped) and PASSED (no blocking violations).
+# This catches the exact failure mode from the SessionToken v2 run: agent jumped from
+# phase2_complete straight to handoff, skipping the parity chain entirely.
+
+# 6a: Parity evidence file exists (written by write-gate-evidence parity-clean)
+if [ ! -f ".preflight/gate/parity-clean" ]; then
+  echo "CHECK 6 FAIL: .preflight/gate/parity-clean does not exist."
+  echo "Behavioral Parity Verification did not run or did not pass."
+  echo "The parity chain (spec-analyst → parity-check.sh → write-gate-evidence) must"
+  echo "execute between phase2_complete and handoff. Do NOT skip it."
+  exit 1
+fi
+
+# 6b: Checkpoint shows parity_verified phase was reached
+if [ -f ".preflight/migrate-checkpoint.json" ]; then
+  if ! grep -q "parity_verified" ".preflight/migrate-checkpoint.json"; then
+    echo "CHECK 6 FAIL: migrate-checkpoint.json exists but does not contain parity_verified."
+    echo "The parity chain ran incompletely — checkpoint was not updated."
+    exit 1
+  fi
+fi
+
+# 6c: Both behavior-spec files exist (legacy baseline + migrated current)
+if [ ! -f ".preflight/${SERVICE_NAME}/behavior-spec.json" ]; then
+  echo "CHECK 6 FAIL: .preflight/${SERVICE_NAME}/behavior-spec.json (legacy baseline) missing."
+  echo "Step 2b (legacy behavioral extraction) did not produce its output."
+  exit 1
+fi
+
+if [ ! -f ".preflight/${SERVICE_NAME}/behavior-spec-current.json" ]; then
+  echo "CHECK 6 FAIL: .preflight/${SERVICE_NAME}/behavior-spec-current.json (migrated) missing."
+  echo "Behavioral Parity Verification Step 1 (migrated extraction) did not produce its output."
+  exit 1
+fi
+
+echo "CHECK 6 PASS: parity verification ran, evidence exists, checkpoint confirmed"
+```
+
+If FAIL: the Behavioral Parity Verification chain did not execute. Go back to the "Behavioral Parity Verification" section (after Phase 2, before handoff): run spec-analyst against the migrated code, run parity-check.sh, and only proceed when exit 0 or 1 (or user-accepted exit 2 with override noted). A blocking parity deviation (exit 2) stops the run — it does NOT proceed to handoff with known deviations.
+
 ---
 
-**All five checks must print PASS.** Only then proceed to the handoff below.
+**All six checks must print PASS.** Only then proceed to the handoff below.
 
 ## Handoff to /preflight:fix-and-close
 
