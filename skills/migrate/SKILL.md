@@ -453,9 +453,63 @@ fi
 
 If FAIL: the extraction scripts were not produced during Phase 1. Go back and generate targeted read-only SQL scripts for the procs/tables listed in the name-contract.
 
+### Check 5 — LINE coverage meets floor
+
+```bash
+# Run tests with coverlet and extract the LINE coverage percentage.
+# The floor comes from .preflight/config.json (test.coverageBaseline), not a hardcoded number.
+COVERAGE_FLOOR=$(python3 -c "import json; print(json.load(open('.preflight/config.json'))['test']['coverageBaseline'])" 2>/dev/null || echo "85.0")
+
+# Run coverage collection — coverlet msbuild produces a summary line with line coverage.
+COVERAGE_OUTPUT=$(dotnet test "${SERVICE_DIR}/../$(basename ${SERVICE_DIR}).Tests/$(basename ${SERVICE_DIR}).Tests.csproj" \
+  -p:CollectCoverage=true \
+  -p:CoverletOutputFormat=opencover \
+  "-p:Exclude=[*]Program" \
+  --no-build 2>&1)
+
+# Parse LINE coverage specifically (the "Line" column from coverlet's table output).
+# Coverlet outputs: "| <module> | <line>% | <branch>% | <method>% |"
+# The Total line has the aggregate. Extract the LINE percentage from it.
+LINE_COVERAGE=$(echo "$COVERAGE_OUTPUT" | grep -E "^\| Total" | grep -oP '\d+\.?\d*' | head -1)
+
+if [ -z "$LINE_COVERAGE" ]; then
+  # Fallback: try parsing from the module line if no Total row
+  LINE_COVERAGE=$(echo "$COVERAGE_OUTPUT" | grep -E "^\|.*\|.*%.*\|.*%.*\|.*%.*\|" | grep -v "Module" | grep -oP '\d+\.?\d*' | head -1)
+fi
+
+if [ -z "$LINE_COVERAGE" ]; then
+  echo "CHECK 5 FAIL: could not parse LINE coverage from test output."
+  echo "Expected coverlet table output with Line/Branch/Method columns."
+  exit 1
+fi
+
+# Compare: LINE_COVERAGE must be >= COVERAGE_FLOOR
+PASSES=$(python3 -c "print('yes' if float('${LINE_COVERAGE}') >= float('${COVERAGE_FLOOR}') else 'no')")
+
+if [ "$PASSES" = "yes" ]; then
+  echo "CHECK 5 PASS: LINE coverage ${LINE_COVERAGE}% >= floor ${COVERAGE_FLOOR}%"
+else
+  echo "CHECK 5 FAIL: LINE coverage ${LINE_COVERAGE}% is BELOW floor ${COVERAGE_FLOOR}%"
+  echo ""
+  echo "The migration is INCOMPLETE. LINE coverage must reach ${COVERAGE_FLOOR}% before handoff."
+  echo ""
+  echo "REQUIRED RESPONSE: Write more tests against the uncovered lines (via the"
+  echo "mocked DB boundary for repository code). Do NOT modify, remove, or restructure"
+  echo "production code to raise coverage. Do NOT exclude classes from coverage to"
+  echo "raise the percentage (Check 2 already forbids excluding the repository)."
+  echo ""
+  echo "If the floor genuinely cannot be reached by adding tests without changing"
+  echo "behavior, STOP and report the specific uncovered lines and why — do NOT"
+  echo "mutate the service, and do NOT game the number."
+  exit 1
+fi
+```
+
+**Reaching this floor is done by ADDING TESTS ONLY.** If line coverage is below the floor, the response is to write more tests against the uncovered lines (via the mocked DB boundary for repository code), NOT to modify, remove, or restructure production code. If the floor genuinely cannot be reached by adding tests without changing behavior, STOP and report the specific uncovered lines and why — do NOT mutate the service, and do NOT exclude code to raise the percentage (Check 2 already forbids excluding the repository). An unreachable floor is a finding to surface, not a number to game.
+
 ---
 
-**All four checks must print PASS.** Only then proceed to the handoff below.
+**All five checks must print PASS.** Only then proceed to the handoff below.
 
 ## Handoff to /preflight:fix-and-close
 
@@ -573,10 +627,10 @@ The coverage floor (from `test.coverageBaseline` in config, default 85%) is reac
 - Do not remove validation attributes, guards, or checks to avoid uncovered branches.
 - Do not change method visibility, add parameters, or refactor production logic solely to make it testable.
 - Do not remove `[ExcludeFromCodeCoverage]` from genuinely untestable code (DI wiring, top-level statements) to force coverage elsewhere.
-- Excluding a genuinely DB-dependent class (e.g., a repository that opens real connections) from coverage measurement is allowed.
+- Do NOT exclude repository/data-access classes from coverage — they are tested via a mocked DB boundary (Check 2 enforces this). "Requires a real database" is not grounds for exclusion.
 - Paths that are uncoverable without changing production behavior are left uncovered with a `// uncovered: <reason>` comment in the test file, not in production code.
 
-If the floor cannot be reached by adding tests alone, report the gap and the reason. Do not mutate the service to close it.
+If the floor cannot be reached by adding tests alone, STOP and report the specific uncovered lines and the reason. Do not mutate the service to close it. An unreachable floor is a finding to surface, not a number to game. The only legitimate responses to a failed Check 5 are: (a) write more tests, or (b) stop-and-report.
 </CRITICAL-INSTRUCTION>
 
 ## Verbatim database identifier rule
