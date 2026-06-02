@@ -143,6 +143,30 @@ Phase 1 runs on every migration, even when the service "looks simple." The readi
    ```
    If MISSING after your extraction attempt, something went wrong — re-examine and write it. Do NOT proceed to Phase 2 without this artifact.
 
+2d. **Legacy DB extraction scripts** — produce TARGETED, read-only SQL Server extraction scripts scoped to exactly the stored procedures and tables this service touches (identified by the name-contract and dependency map). These scripts let the developer execute against the legacy SQL Server to obtain the authoritative schema (datatypes, proc definitions, column metadata) that the name-contract's CODE-transcribed names reference. Names come from code (the name-contract). Schema comes from the DB (these scripts' output). The framework NEVER invents schema or datatypes.
+
+   Split into multiple independently-runnable files by extraction concern. The skill decides the actual split based on what discovery found — more files if more objects warrant it. Standard split:
+
+   - `.preflight/<service>/legacy-db-extraction-procs.sql` — Proc definitions for each stored procedure (via `OBJECT_DEFINITION()` or `sp_helptext`), targeted by exact proc name from the name-contract. Not a whole-DB dump.
+   - `.preflight/<service>/legacy-db-extraction-params.sql` — Parameter metadata (name, datatype, direction, max_length, precision, scale) for those procs via `sys.parameters` / `INFORMATION_SCHEMA.PARAMETERS`, filtered to the named procs.
+   - `.preflight/<service>/legacy-db-extraction-tables.sql` — Column names, datatypes, nullability, defaults, PK/FK constraints, and indexes for the named tables via `INFORMATION_SCHEMA.COLUMNS` / `sys.columns` / `sys.indexes`, filtered to the named tables.
+
+   **Rules for the scripts:**
+   - **TARGETED** to this service's exact procs/tables — use the names from the name-contract. Never a generic whole-database dump.
+   - Each file starts with a **header comment** stating: what it extracts, that it runs against LEGACY SQL SERVER (name the catalog/DB if discovery identified it), and what the developer does with the output (build Postgres DDL + tie against the name-contract).
+   - **Read-only queries only** — no DDL, no INSERT/UPDATE/DELETE, nothing that mutates the legacy database.
+   - **No invented Postgres DDL and no invented datatypes anywhere.** These scripts REVEAL the schema from the authoritative source; they do not assert it. The contract: names from code (the name-contract), schema from the DB (these scripts' output).
+   - Produced in Phase 1, BEFORE Phase 2 code generation (same timing as the name-contract — derived from the known legacy proc/table names).
+
+   Verify the artifacts exist:
+   ```bash
+   test -f ".preflight/<service>/legacy-db-extraction-procs.sql" && echo "EXTRACTION-PROCS: EXISTS" || echo "EXTRACTION-PROCS: MISSING"
+   test -f ".preflight/<service>/legacy-db-extraction-params.sql" && echo "EXTRACTION-PARAMS: EXISTS" || echo "EXTRACTION-PARAMS: MISSING"
+   ```
+   If any are MISSING after generation, re-examine and write them. Do NOT proceed to Phase 2 without these artifacts.
+
+   If no database access was found in the legacy source (the name-contract says "No database operations identified"), skip this step — no extraction scripts are needed.
+
 3. **Business architecture rules** — assess coupling to intermediary layers (shared gateways, dispatch proxies, etc.):
    - **Decouple from intermediary layers.** Remove the shared dispatch component (or equivalent gateway) dependency entirely.
    - **Move gateway logic into the target microservice.** Connect directly to downstream/backend services without going through intermediary dispatchers.
@@ -400,9 +424,38 @@ fi
 
 If FAIL: the migrated repository uses renamed identifiers. Correct them to match the legacy contract exactly.
 
+### Check 4 — Legacy DB extraction scripts exist
+
+```bash
+# Only applies when the name-contract indicates database operations exist
+if grep -q "No database operations identified" ".preflight/${SERVICE_NAME}/legacy-db-name-contract.md" 2>/dev/null; then
+  echo "CHECK 4 SKIP: no database operations — extraction scripts not required"
+else
+  MISSING_SCRIPTS=0
+  for SCRIPT in ".preflight/${SERVICE_NAME}/legacy-db-extraction-procs.sql" \
+                ".preflight/${SERVICE_NAME}/legacy-db-extraction-params.sql" \
+                ".preflight/${SERVICE_NAME}/legacy-db-extraction-tables.sql"; do
+    if [ ! -f "$SCRIPT" ]; then
+      echo "CHECK 4 FAIL: $SCRIPT missing"
+      MISSING_SCRIPTS=$((MISSING_SCRIPTS + 1))
+    fi
+  done
+
+  if [ $MISSING_SCRIPTS -gt 0 ]; then
+    echo "CHECK 4 FAIL: $MISSING_SCRIPTS extraction script(s) missing."
+    echo "DB extraction scripts are a required Phase 1 deliverable. Generate them from the name-contract proc/table names."
+    exit 1
+  else
+    echo "CHECK 4 PASS: all legacy DB extraction scripts exist"
+  fi
+fi
+```
+
+If FAIL: the extraction scripts were not produced during Phase 1. Go back and generate targeted read-only SQL scripts for the procs/tables listed in the name-contract.
+
 ---
 
-**All three checks must print PASS.** Only then proceed to the handoff below.
+**All four checks must print PASS.** Only then proceed to the handoff below.
 
 ## Handoff to /preflight:fix-and-close
 
