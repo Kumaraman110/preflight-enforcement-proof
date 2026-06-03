@@ -150,7 +150,15 @@ From config (or defaults):
 
 ### Commit and Push
 
-9. Stage files explicitly (never `git add .`). Exclude: `bin/`, `obj/`, `*.user`, `coverage.opencover.xml`.
+9. **Stage files using EXPLICIT file paths only** — never `git add .`, never `git add <dir>/`.
+
+   **Artifact rejection gate (pre-commit):** Before running `git commit`, verify no build/test artifacts are staged. Run:
+   ```bash
+   git diff --cached --name-only | grep -E '(coverage\.|\.opencover\.xml|/bin/|/obj/|/TestResults/|\.db$|\.mdf$|\.user$)' && echo "BLOCKED: artifact staged" && exit 1
+   ```
+   If ANY match is found, the commit is BLOCKED. Unstage the offending file(s) with `git reset HEAD <path>` and report which file was caught. Do NOT commit and warn after the fact — the gate fires BEFORE the commit.
+
+   **Reject list:** `coverage.*`, `*.opencover.xml`, `bin/`, `obj/`, `TestResults/`, `*.db`, `*.mdf`, `*.user`, and anything matching `.gitignore` artifact patterns. If staged paths include any of these, the commit does not proceed.
 10. Compose conventional-commit message (biased by user's hint if given). For Copilot-fix-round commits (after Stage 2 returns NEEDS_PARENT_FIXES), use this format:
 
     ```
