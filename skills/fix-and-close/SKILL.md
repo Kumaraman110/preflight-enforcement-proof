@@ -222,7 +222,17 @@ These values come from config (`review.*`). If config is absent, use these defau
          - **REAL BUG** → the migrated code's behavior is wrong vs legacy, or it's a genuine non-behavioral defect (misleading log message, doc out of sync, security gap that also existed in legacy but should be fixed). Fix it.
          - **INTENTIONAL / LEGACY-FAITHFUL** → the migrated code matches legacy behavior, or the behavior is a deliberate design decision documented in MIGRATION_PATTERNS.md. Do NOT fix. Reply on the PR thread explaining WHY it's intentional (cite the legacy behavior or the design decision). Defending is a valid outcome.
          - **AMBIGUOUS / UNCERTAIN** → legacy evidence is inconclusive or the finding identifies a genuine tension. Make an evidence-based decision (fix or defend), RECORD the rationale including what evidence was found and what doubt remains, and post the rationale on the PR thread. The supervisor audits these after the fact. Do not hang waiting for input — the loop owns the decision.
-      3. **Only REAL BUG findings proceed to the Coupled-Group Fix Protocol.** INTENTIONAL findings get a PR reply and are terminal. AMBIGUOUS findings get a documented decision (fix-with-rationale or defend-with-rationale) and are terminal.
+
+      **Evidence requirement for DEFENDED classification:**
+      A finding may be classified DEFENDED only with CITED EVIDENCE: a specific legacy file:line showing the legacy behavior matches, OR a rubric section that explicitly sanctions it. A bare assertion ("intentional", "matches CLAUDE.md", "legacy-faithful") without a specific citation is NOT sufficient. The PR thread reply MUST include the citation (e.g., "Legacy CPSLTokenRepository.cs:47 does the same — returns true when profiles are null").
+
+      **SECURITY-shaped findings NEVER auto-defend:**
+      Findings touching auth, authz, fail-open behavior, SSRF, injection, secrets exposure, or privilege escalation can NEVER be silently defended by the loop. If a security finding is to be defended, it requires:
+      (a) Specific legacy file:line evidence showing the same behavior in production, AND
+      (b) Explicit escalation to the human for sign-off — it is never auto-resolved.
+      Fail-open auth (validation bypassed when config is missing/empty) is specifically a must-fix-or-escalate pattern, never a routine defend. The loop may propose a defense rationale, but the human decides.
+
+      3. **Only REAL BUG findings proceed to the Coupled-Group Fix Protocol.** INTENTIONAL findings get a PR reply (with cited evidence) and are terminal. AMBIGUOUS findings get a documented decision (fix-with-rationale or defend-with-rationale) and are terminal. SECURITY findings classified as INTENTIONAL are escalated to the human with the proposed rationale — the loop does not auto-resolve them.
       
       **Why this rule exists:** PR #12's failure mode was fixing every Copilot finding reflexively. Several findings flagged intentional legacy behavior as "bad practice." Fixing them introduced wire-format deviations and status-code changes that broke callers. The rule: when a finding touches behavior, check legacy FIRST, then decide fix vs defend vs escalate.
     
