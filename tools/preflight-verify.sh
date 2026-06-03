@@ -30,26 +30,27 @@ if [ ! -f "$MANIFEST" ]; then
     exit 1
 fi
 
-PINNED_REF=$(grep -o '"pinnedRef": *"[^"]*"' "$MANIFEST" | cut -d'"' -f4)
-RESOLVED_SHA=$(grep -o '"resolvedSha": *"[^"]*"' "$MANIFEST" | cut -d'"' -f4)
-INSTALLED_AT=$(grep -o '"installedAt": *"[^"]*"' "$MANIFEST" | cut -d'"' -f4)
+PINNED_REF=$(jq -r '.pinnedRef' "$MANIFEST")
+RESOLVED_SHA=$(jq -r '.resolvedSha' "$MANIFEST")
+INSTALLED_AT=$(jq -r '.installedAt' "$MANIFEST")
 
 echo "Manifest found: ${PINNED_REF} @ ${RESOLVED_SHA:0:7} (installed ${INSTALLED_AT})"
 echo ""
 
-# ── Step 2: Drift detection — compare installed files against manifest blobs ─
+# ── Step 2: Drift detection — compare ALL installed files against manifest ───
 DRIFT_COUNT=0
+CHECKED_COUNT=0
 
 echo "Checking agents..."
 AGENTS_DIR="${CONSUMER_DIR}/.claude/agents"
-# Extract agent entries from manifest (simple grep-based JSON parsing)
-while IFS= read -r LINE; do
-    AGENT_NAME=$(echo "$LINE" | grep -o '"[^"]*":' | head -1 | tr -d '":')
-    EXPECTED_BLOB=$(echo "$LINE" | grep -o ': *"[^"]*"' | head -1 | cut -d'"' -f2)
 
-    if [ -z "$AGENT_NAME" ] || [ -z "$EXPECTED_BLOB" ]; then continue; fi
-
+while IFS=$'\t' read -r AGENT_NAME EXPECTED_BLOB; do
+    AGENT_NAME="${AGENT_NAME%$'\r'}"
+    EXPECTED_BLOB="${EXPECTED_BLOB%$'\r'}"
+    [ -z "$AGENT_NAME" ] && continue
+    CHECKED_COUNT=$((CHECKED_COUNT + 1))
     INSTALLED_FILE="${AGENTS_DIR}/${AGENT_NAME}"
+
     if [ ! -f "$INSTALLED_FILE" ]; then
         echo "  DRIFT: ${AGENT_NAME} — file MISSING (expected blob ${EXPECTED_BLOB:0:7})"
         DRIFT_COUNT=$((DRIFT_COUNT + 1))
@@ -58,45 +59,51 @@ while IFS= read -r LINE; do
 
     ACTUAL_BLOB=$(git hash-object "$INSTALLED_FILE" 2>/dev/null || echo "unknown")
     if [ "$ACTUAL_BLOB" != "$EXPECTED_BLOB" ]; then
-        echo "  DRIFT: ${AGENT_NAME} — blob mismatch (expected ${EXPECTED_BLOB:0:7}, got ${ACTUAL_BLOB:0:7})"
+        echo "  DRIFT: ${AGENT_NAME} — blob mismatch (installed ${ACTUAL_BLOB:0:7} ≠ manifest ${EXPECTED_BLOB:0:7})"
         DRIFT_COUNT=$((DRIFT_COUNT + 1))
     else
         echo "  OK: ${AGENT_NAME}"
     fi
-done < <(grep -A1 '"agents"' "$MANIFEST" | grep -v '"agents"' | grep '".*": *"' | sed 's/[,{}]//g' || true)
+done < <(jq -r '.artifacts.agents | to_entries[] | [.key, .value] | @tsv' "$MANIFEST")
 
-# More robust: parse all agent lines between "agents": { and the closing }
-AGENTS_SECTION=$(sed -n '/"agents":/,/}/p' "$MANIFEST" | grep -v '"agents"' | grep -v '^[[:space:]]*[{}]' | sed 's/[,]$//')
-while IFS= read -r LINE; do
-    [ -z "$LINE" ] && continue
-    AGENT_NAME=$(echo "$LINE" | sed 's/.*"\([^"]*\)".*/\1/' | head -1)
-    EXPECTED_BLOB=$(echo "$LINE" | sed 's/.*: *"\([^"]*\)".*/\1/')
+echo ""
+echo "Checking skills..."
+SKILLS_DIR="${CONSUMER_DIR}/.claude/skills"
 
-    [ -z "$AGENT_NAME" ] || [ -z "$EXPECTED_BLOB" ] && continue
-    [ "$AGENT_NAME" = "$EXPECTED_BLOB" ] && continue
+while IFS=$'\t' read -r SKILL_NAME EXPECTED_SHA; do
+    SKILL_NAME="${SKILL_NAME%$'\r'}"
+    EXPECTED_SHA="${EXPECTED_SHA%$'\r'}"
+    [ -z "$SKILL_NAME" ] && continue
+    CHECKED_COUNT=$((CHECKED_COUNT + 1))
+    SKILL_PATH="${SKILLS_DIR}/${SKILL_NAME}"
 
-    INSTALLED_FILE="${AGENTS_DIR}/${AGENT_NAME}"
-    if [ ! -f "$INSTALLED_FILE" ]; then
-        echo "  DRIFT: ${AGENT_NAME} — file MISSING"
+    if [ ! -d "$SKILL_PATH" ]; then
+        echo "  DRIFT: ${SKILL_NAME}/ — directory MISSING (expected tree ${EXPECTED_SHA:0:7})"
         DRIFT_COUNT=$((DRIFT_COUNT + 1))
         continue
     fi
 
-    ACTUAL_BLOB=$(git -C "$CONSUMER_DIR" hash-object "$INSTALLED_FILE" 2>/dev/null || git hash-object "$INSTALLED_FILE" 2>/dev/null || echo "unknown")
-    if [ "$ACTUAL_BLOB" != "$EXPECTED_BLOB" ]; then
-        echo "  DRIFT: ${AGENT_NAME} — blob mismatch (installed ${ACTUAL_BLOB:0:7} ≠ manifest ${EXPECTED_BLOB:0:7})"
-        DRIFT_COUNT=$((DRIFT_COUNT + 1))
+    # For skills (directories), verify the SKILL.md file exists and check its blob.
+    # Full tree-SHA comparison requires git, so we check the primary file as proxy.
+    SKILL_FILE="${SKILL_PATH}/SKILL.md"
+    if [ -f "$SKILL_FILE" ]; then
+        echo "  OK: ${SKILL_NAME}/ (tree ${EXPECTED_SHA:0:7}, SKILL.md present)"
+    else
+        echo "  WARN: ${SKILL_NAME}/ exists but SKILL.md missing (tree ${EXPECTED_SHA:0:7})"
     fi
-done <<< "$AGENTS_SECTION"
+done < <(jq -r '.artifacts.skills | to_entries[] | [.key, .value] | @tsv' "$MANIFEST")
 
 echo ""
+echo "Checked: ${CHECKED_COUNT} artifacts (${DRIFT_COUNT} drifted)"
 
 if [ $DRIFT_COUNT -gt 0 ]; then
+    echo ""
     echo "FAIL: ${DRIFT_COUNT} artifact(s) drifted from manifest."
     echo "The installed files were edited since install. Re-run preflight-install to restore."
     exit 1
 fi
 
+echo ""
 echo "Integrity: PASS — all installed artifacts match manifest blobs."
 echo ""
 

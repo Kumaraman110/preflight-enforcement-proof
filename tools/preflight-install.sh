@@ -55,8 +55,8 @@ AGENT_COUNT=0
 
 for AGENT_PATH in $(git ls-tree --name-only "$RESOLVED_SHA" -- agents/ | grep '\.md$'); do
     AGENT_NAME=$(basename "$AGENT_PATH")
-    BLOB_SHA=$(git rev-parse "${RESOLVED_SHA}:${AGENT_PATH}")
     git show "${RESOLVED_SHA}:${AGENT_PATH}" > "${AGENTS_DIR}/${AGENT_NAME}"
+    BLOB_SHA=$(git hash-object "${AGENTS_DIR}/${AGENT_NAME}")
     AGENT_BLOBS["$AGENT_NAME"]="$BLOB_SHA"
     AGENT_COUNT=$((AGENT_COUNT + 1))
     echo "  agent: ${AGENT_NAME} (${BLOB_SHA:0:7})"
