@@ -66,6 +66,28 @@ The request payload uses the bot slug `copilot-pull-request-reviewer[bot]`. The 
 
 **RULE: a failed reviewer request is NEVER swallowed as success.** If the API call returns a non-2xx status, a GraphQL error, or the response does not contain a `requested_reviewers` array with the Copilot user, the status is `REVIEW_REQUEST_FAILED` — surfaced immediately and loudly, the run stops. Do NOT use `|| echo "SENT"` or any error-swallowing fallback. Do NOT begin polling. A failed request means Copilot was never asked; polling an unasked reviewer is wasted time (run 6 polled for 30 minutes after a swallowed failure).
 
+### Step 2.5 — Verify request landed (no polling without confirmed request)
+
+Immediately after the POST in Step 2, read back the requested reviewers and confirm Copilot is listed:
+
+```bash
+gh api "repos/{owner}/{repo}/pulls/<PR>/requested_reviewers" \
+  --jq '.users[] | select(.login=="Copilot" or .id==175728472)'
+```
+
+A **non-empty result** means the request landed — proceed to Step 3.
+
+An **empty result** means the request did NOT take (run 6's evidence: `{"users":[],"teams":[]}` after the failed `--add-reviewer` call). This is the abort signal:
+- Status: `REVIEW_REQUEST_FAILED`
+- Surface immediately: "Copilot reviewer request did not land. Requested reviewers list is empty."
+- Do NOT enter the poll loop. Polling an empty reviewer queue wastes the full poll window and produces a misleading `RE_REVIEW_NOT_RECEIVED` when the real problem is the request never succeeded.
+
+**Gate: no polling without a confirmed pending Copilot review request.** Step 3 may only execute after Step 2.5 confirms Copilot is present in the requested_reviewers list.
+
+**Status vocabulary distinction:**
+- `REVIEW_REQUEST_FAILED` — Copilot was never successfully asked to review (request errored or read-back is empty). Terminal. The fix is to resolve the request mechanism, not to poll longer.
+- `RE_REVIEW_NOT_RECEIVED` — Copilot WAS successfully asked (confirmed via read-back), but did not respond within the poll window. This is a legitimate timeout after a confirmed request — distinct from a request that never landed.
+
 ### Step 3 — Wait, then poll for review comments
 
 Wait `initialWaitSeconds`. Poll every `pollIntervalSeconds`.
@@ -509,7 +531,7 @@ A human can then refine the BAD/GOOD patterns (making detection mechanical → u
 ```
 ## Stage 2 Result — Iteration N
 
-**Status:** SUCCESS | NEEDS_PARENT_FIXES | RE_REVIEW_NOT_RECEIVED | CAPPED | STUCK | DIVERGING | FAILED | ERROR
+**Status:** SUCCESS | NEEDS_PARENT_FIXES | RE_REVIEW_NOT_RECEIVED | REVIEW_REQUEST_FAILED | CAPPED | STUCK | DIVERGING | FAILED | ERROR
 
 **PR:** <url> · **Iteration:** N · **Comments this round:** M
 
