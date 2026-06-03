@@ -181,8 +181,26 @@ For every finding classified as STABLE or TRIVIAL-STABLE, run this check:
 - Not expensive. The rubric has ~20 explicit BAD code blocks. String-matching 20 patterns against the suggested code is mechanical.
 - Not a veto of Copilot. If the user overrides ("implement this anyway"), the calibration-log entry records it and the rubric may be updated in the next batch.
 
-### Step 8 — Classify and capture
+### Step 8 — Classify and capture (MANDATORY — no finding passes without a capture entry)
+
 For every Copilot comment (all stability categories including contradicts-rubric), classify into one bucket and append to the matching file. Do this BEFORE returning to parent.
+
+<CRITICAL-INSTRUCTION>
+**Every DEFENDED finding writes a capture entry.** A finding classified as INTENTIONAL/LEGACY-FAITHFUL
+by the parent is exactly the data the self-improvement loop exists to record — external reviewer
+flagged something that is by-design. This goes to `false-positives.md` (Bucket 3) or
+`calibration-log.md` (Bucket 1) depending on whether Stage 1 also flagged it. The entry MUST
+include: the finding, the cited evidence for the defense, and the rubric section it relates to.
+No defended finding may pass without a capture entry.
+
+**Every finding that required a FIX which the rubric didn't already catch** writes a
+`calibration-log.md` entry (Bucket 1). This is the "caught externally on N, should be caught
+locally on N+1" mechanism — the core contract of the self-improvement loop.
+
+**Boundary: the rubric is NOT auto-edited by the autonomous run.** Capture entries are PROPOSALS
+for the next batched rubric-edit PR — they are reviewed and promoted by a human. The loop writes
+captures; it never writes rubric sections directly. The rubric stays human-supervised.
+</CRITICAL-INSTRUCTION>
 
 ### Step 9 — Return to parent
 Return findings with status code. Mark each finding's stability:
