@@ -209,7 +209,28 @@ These values come from config (`review.*`). If config is absent, use these defau
 
     **Why here and not in external-review-handler:** The handler classifies and captures. Resolution happens AFTER the parent fixes and pushes — because only after the push does the fix SHA exist. The handler provides the thread node IDs in its JSON output; this step consumes them.
 
-12. **Invoke `external-review-handler` sub-agent.**
+12. **Dispatch the `external-review-handler` sub-agent.**
+
+    <CRITICAL-INSTRUCTION>
+    **The parent session MUST NOT poll for Copilot comments, fetch review threads, classify findings into buckets, or write to capture files.** Those are the handler's exclusive responsibilities. A run where the parent performed any of these inline is an INVALID framework execution — the self-improvement loop did not fire. The handler MUST be dispatched as a real sub-agent via the Agent tool; "I'll poll/classify myself" is the exact failure mode this block exists to prevent (run-7's root cause: session absorbed polling inline, capture never wrote).
+
+    If the handler dispatch fails (agent type not found, dispatch error), the run STOPS with status FAILED and surfaces the dispatch failure to the user. The parent does NOT fall back to performing the handler's work itself.
+    </CRITICAL-INSTRUCTION>
+
+    Use the Agent tool with `subagent_type: "external-review-handler"`. Pass it a brief containing:
+    - **PR number and repo:** e.g. "PR #91 on United-Airlines-Org/cyf.cpsl_core"
+    - **Remote name:** the remote used for this PR (from `branch.remote` in config)
+    - **HEAD commit SHA:** the commit Copilot should be reviewing (from `git rev-parse HEAD`)
+    - **Config path:** `.preflight/config.json` (so it resolves `capture.*` paths and `review.*` settings)
+    - **Copilot reviewer login:** from `review.copilotReviewerLogin` in config (default: `copilot-pull-request-reviewer[bot]`)
+    - **Iteration context:** which Stage 2 iteration this is (1, 2, or 3) and findings from prior iterations if any
+
+    **Expected return:** The handler returns a structured result containing:
+    - `status`: one of `SUCCESS | NEEDS_PARENT_FIXES | RE_REVIEW_NOT_RECEIVED | REVIEW_REQUEST_FAILED | CAPPED | STUCK | DIVERGING | FAILED | ERROR`
+    - `findings`: array of classified Copilot comments with stability category and thread node IDs
+    - `captureFilesWritten`: list of capture files the handler appended to (for the commit message `Capture:` line)
+
+    **Post-return:** The parent consumes `findings` (routes to Coupled-Group Fix Protocol) and `thread node IDs` (for Step 11.5 resolution on the next push). The parent NEVER re-does classification or capture — that work is complete inside the handler's execution.
 
 13. **Handle status codes:**
 
