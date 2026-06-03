@@ -229,6 +229,60 @@ When the parent reports DONE for a set of findings and has pushed the fix commit
 **Why resolve only REAL (STABLE/TRIVIAL-STABLE) findings:**
 Resolving a thread signals "this is handled, no further attention needed." CONTRADICTS_RUBRIC threads need human arbitration. UNSTABLE threads need human judgment. Resolving them would hide decisions that haven't been made. The reply without resolution keeps the thread visible while communicating the system's assessment.
 
+### Step 10 — Full-Resolution Gate (MANDATORY before reporting DONE)
+
+<CRITICAL-INSTRUCTION>
+Before reporting SUCCESS or any terminal state, verify the PR artifact: ZERO unresolved
+review threads may remain without a posted reply. This is a hard gate — the loop does
+NOT report done while threads lack visible resolution on the PR.
+
+For each Copilot review thread on the PR:
+1. Query review threads: `gh api graphql` with pullRequest.reviewThreads to get all
+   threads and their isResolved status.
+2. Every thread must be in one of these states:
+   - **Resolved** (isResolved=true) — finding was fixed and thread was resolved via
+     `resolveReviewThread` mutation.
+   - **Replied-with-defense** — thread has a reply from the automation explaining WHY
+     the finding was defended (legacy-faithful, intentional, etc.). Thread may still
+     be open (CONTRADICTS_RUBRIC and UNSTABLE threads stay open for human review)
+     but MUST have a visible reply.
+3. If ANY thread has neither a resolution NOR a reply: the gate FAILS. Go back and
+   post the missing reply/resolution before reporting done.
+</CRITICAL-INSTRUCTION>
+
+**GraphQL query shape for thread state audit:**
+```graphql
+query($owner: String!, $repo: String!, $pr: Int!) {
+  repository(owner: $owner, name: $repo) {
+    pullRequest(number: $pr) {
+      reviewThreads(first: 100) {
+        nodes {
+          id
+          isResolved
+          comments(first: 1) {
+            nodes { body author { login } }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+**GraphQL mutation to resolve a thread:**
+```graphql
+mutation($threadId: ID!) {
+  resolveReviewThread(input: { threadId: $threadId }) {
+    thread { isResolved }
+  }
+}
+```
+
+**For DEFENDED findings specifically:** A defended finding with no reply posted on the PR
+thread is NOT terminal. The reasoning MUST be visible on the artifact (the PR), not only
+in a commit message. Post a reply citing the legacy evidence, THEN (for STABLE/TRIVIAL-STABLE)
+resolve the thread, or (for UNSTABLE/CONTRADICTS_RUBRIC) leave open for human review.
+
 ---
 
 ## The Four Buckets

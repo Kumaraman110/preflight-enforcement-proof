@@ -264,8 +264,10 @@ If ANY verification fails, DO NOT declare success. Surface the gap with the actu
 The run is NOT complete while ANY Copilot finding is neither FIXED nor DEFENDED-WITH-REPLY. Stopping at "PR opened" is NOT complete (that was the PR-85 failure). Opening a PR and walking away with findings unprocessed is the known failure mode this gate exists to prevent.
 
 Before declaring DONE, verify: every finding from the Copilot review has reached a TERMINAL STATE, which is one of exactly two:
-- **FIXED** — a real bug vs legacy (or genuine non-behavioral defect); code was changed, tests pass, Stage 1 is clean.
-- **DEFENDED-WITH-REPLY** — legacy-faithful or intentional; a rationale was posted on the PR thread explaining WHY (citing the legacy behavior or design intent). "Defended" means a POSTED RATIONALE, NOT "Copilot marked it resolved." A correctly-defended legacy-faithful finding is TERMINAL even if Copilot never clears the comment. The loop's standard is legacy parity, NOT Copilot's approval.
+- **FIXED** — a real bug vs legacy (or genuine non-behavioral defect); code was changed, tests pass, Stage 1 is clean. The review thread is RESOLVED via `resolveReviewThread` mutation.
+- **DEFENDED-WITH-REPLY** — legacy-faithful or intentional; a rationale was posted ON THE PR THREAD (not only in a commit message) explaining WHY (citing the legacy behavior or design intent). "Defended" means a POSTED RATIONALE ON THE PR, NOT "Copilot marked it resolved." A correctly-defended legacy-faithful finding is TERMINAL even if Copilot never clears the comment. The loop's standard is legacy parity, NOT Copilot's approval.
+
+**Full-resolution artifact gate:** Query the PR's review threads via GraphQL (`pullRequest.reviewThreads`). Every thread must either be resolved (isResolved=true) OR have a visible reply from the automation. Zero threads may be left without a posted reply — reasoning that exists only in commit prose is invisible on the PR artifact and does not satisfy this gate.
 
 If any finding is not in a terminal state, the run cannot complete. Go back and resolve it.
 </CRITICAL-INSTRUCTION>
