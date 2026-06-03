@@ -812,13 +812,45 @@ The fix-and-close skill handles:
 
 **Write checkpoint:** `phase: handoff_complete`.
 
-## Final Step — Summary
+## Final Step — Summary and Reconstruction
 
-Once /fix-and-close reports DONE:
+Once /fix-and-close reports DONE (or a terminal state like CAPPED/STUCK/RE_REVIEW_NOT_RECEIVED/REVIEW_REQUEST_FAILED):
 
 - Surface the summary: PR URL, Stage 1 iterations, Stage 2 iterations, capture entries written by classification bucket, coverage achieved, any STUCK or FAILED states encountered.
 - Tell the user the PR is ready for human review and merge. **Do not merge** — humans merge.
 - Delete the checkpoint file (`.preflight/migrate-checkpoint.json`).
+
+### Reconstruction discipline (when a post-run reconstruction sub-agent is dispatched)
+
+If the user requests a reconstruction sub-agent to audit what actually happened, OR if the run ends in a non-SUCCESS terminal state, the reconstruction MUST follow these rules:
+
+**Rule 1 — Report CAUSE, not symptom, for Stage 2 outcomes:**
+
+| Terminal state | Reconstruction reports | NOT this |
+|---|---|---|
+| `REVIEW_REQUEST_FAILED` | "Copilot was never successfully asked to review — the reviewer request failed (mechanism error). Stage 2 never executed." Priority: HIGH (mechanism failure). | "Copilot hasn't reviewed — may need manual re-request" (MEDIUM) |
+| `RE_REVIEW_NOT_RECEIVED` | "Copilot was successfully requested (confirmed via read-back), but did not respond within the poll window. Stage 2 started but got no signal." Priority: MEDIUM (timeout). | same vague "hasn't reviewed" phrasing |
+
+These are different findings with different fixes. `REVIEW_REQUEST_FAILED` means the request mechanism is broken (fix the mechanism). `RE_REVIEW_NOT_RECEIVED` means the request worked but Copilot was slow or unavailable (re-request or wait). The reconstruction must name WHICH occurred from the on-disk evidence (git log, PR state, requested_reviewers list) and not collapse them into a vague "Copilot hasn't reviewed."
+
+Run 6's error: it reported "Copilot hasn't reviewed — MEDIUM — may need manual re-request." The CAUSE was the request failed (`gh pr edit --add-reviewer` returned an error that was swallowed). MEDIUM underplayed a HIGH mechanism failure.
+
+**Rule 2 — Trace reachability before flagging a contract/implementation mismatch:**
+
+When the reconstruction finds an item in the name-contract (stored procedure, endpoint, model field) that is NOT implemented in the migrated service, it MUST NOT default to "missing implementation = gap." It must TRACE REACHABILITY from the migrated entry point before assigning severity:
+
+1. Identify the entry point being migrated (e.g., CPSLTokenController).
+2. Trace the call chain from that entry point through downstream services.
+3. Determine: can the entry point's request path REACH the unimplemented item? Or is the item gated behind a flag/condition that only a DIFFERENT entry point sets?
+
+| Reachability | Reconstruction reports |
+|---|---|
+| Reachable from the migrated entry point AND unimplemented | REAL GAP — "item X is reachable from <entry point> via <call chain> but not implemented." Priority: HIGH. |
+| Unreachable — gated behind a flag only a different caller sets | CORRECTLY OMITTED — "item X is in the name-contract but unreachable from <entry point>; only reachable via <other caller> which sets <flag>. The name-contract over-listed a proc not reachable from this migration's entry point. Not a gap." Priority: INFORMATIONAL (no action needed). |
+
+**Worked example (run 6 false positive):** `cpsl_setMPToken_v1` was in the name-contract and not in the migrated code. The reconstruction flagged it as "HIGH — missing implementation." But tracing reachability: the Token Manager branches to `CreateMPToken` only when `tokRequest.IsMPToken == true`. The CPSLToken controller's request model (`CPSLTokenRequest`) has no `IsMPToken` field — it defaults to `false` when deserialized. Only `SharedServicesController` (a DIFFERENT controller at route `api/partner/getmptoken`) sets `IsMPToken = true`. Therefore `cpsl_setMPToken_v1` is correctly omitted from the SessionToken migration — it's unreachable from the CPSLToken entry point.
+
+The name-contract documents what exists in the shared DB layer, not what's reachable from a specific entry point. The reconstruction must distinguish these.
 
 ## Communication
 
