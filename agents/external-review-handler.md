@@ -76,7 +76,9 @@ gh api "repos/{owner}/{repo}/pulls/<PR>/reviews" \
   --jq '[.[] | select(.user.type=="Bot")] | last'
 ```
 
-**Complete when:** Comments from the Copilot login exist with `created_at` > last push time, OR a top-level review exists with `submitted_at` > last push time. The presence of ANY review comments from the Copilot login is sufficient — do not require a top-level review object.
+**Complete when:** A POSITIVE review signal exists with a timestamp AFTER the HEAD commit's committer date. Specifically: comments from the Copilot login with `created_at` > HEAD commit timestamp, OR a top-level review with `submitted_at` > HEAD commit timestamp. The presence of ANY review activity from the Copilot login dated after the fix commit is sufficient — do not require a top-level review object.
+
+**CRITICAL — silence is NOT approval:** If the polling window expires with NO Copilot review event dated after the HEAD commit, the status is `RE_REVIEW_NOT_RECEIVED` — NOT `SUCCESS`. The absence of new comments does NOT mean "clean." It means Copilot has not re-reviewed. Report this state honestly and stop; do not claim success.
 
 ### Step 4 — Fetch line-level comments
 
@@ -85,8 +87,27 @@ gh api "repos/{owner}/{repo}/pulls/<PR>/comments" \
   --jq "[.[] | select(.user.login==\"${COPILOT_LOGIN}\" or .user.login==\"Copilot\") | {id, node_id, path, line, original_line, body, created_at}]"
 ```
 
-### Step 5 — Check SUCCESS
-If top-level review is `APPROVED`, OR zero Copilot comments newer than last push → SUCCESS.
+### Step 5 — Check SUCCESS (positive confirmation required)
+
+<CRITICAL-INSTRUCTION>
+A Stage 2 iteration may only be declared resolved when BOTH conditions are met:
+(a) Every prior thread is addressed (fixed or defended-with-reply), AND
+(b) A Copilot review event dated AFTER the fix commit has been received and shows no new blocking findings.
+
+Absent condition (b), the status is "RE_REVIEW_NOT_RECEIVED" (unconfirmed), NOT "clean."
+"No new comments" is NEVER sufficient for clean — it may mean Copilot hasn't reviewed yet.
+</CRITICAL-INSTRUCTION>
+
+**SUCCESS** requires one of:
+- Top-level review is `APPROVED` with `submitted_at` > HEAD commit timestamp, OR
+- A Copilot review event (top-level or inline comments) exists with timestamp > HEAD commit timestamp AND that event contains zero new findings.
+
+**RE_REVIEW_NOT_RECEIVED** (new status):
+- Polling window expired AND no Copilot review activity has a timestamp > HEAD commit timestamp.
+- Report honestly: "Copilot has not re-reviewed the latest push. Cannot confirm clean."
+- The loop stops and surfaces this state. It does NOT claim success.
+
+Compare timestamps: get HEAD commit date via `git log -1 --format=%cI HEAD`. Any review event's `submitted_at` or comment's `created_at` must be strictly later than this value.
 
 ### Step 6 — Check termination conditions
 
@@ -406,7 +427,7 @@ A human can then refine the BAD/GOOD patterns (making detection mechanical → u
 ```
 ## Stage 2 Result — Iteration N
 
-**Status:** SUCCESS | NEEDS_PARENT_FIXES | CAPPED | STUCK | DIVERGING | FAILED | ERROR
+**Status:** SUCCESS | NEEDS_PARENT_FIXES | RE_REVIEW_NOT_RECEIVED | CAPPED | STUCK | DIVERGING | FAILED | ERROR
 
 **PR:** <url> · **Iteration:** N · **Comments this round:** M
 

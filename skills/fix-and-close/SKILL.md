@@ -205,6 +205,8 @@ These values come from config (`review.*`). If config is absent, use these defau
 
 13. **Handle status codes:**
 
+    - `RE_REVIEW_NOT_RECEIVED` → Copilot did not re-review after the fix push. The polling window expired with no review event dated after the HEAD commit. This is NOT success — it means confirmation is absent. Surface to user: "Copilot has not re-reviewed. Re-request review or wait longer." Do NOT declare done.
+
     - `SUCCESS` → final summary, exit.
     
     - `NEEDS_PARENT_FIXES` → **Apply the same Coupled-Group Fix Protocol (step 6 above).** Group Copilot's findings by coupling. Fix coupled groups as single coherent changes. Then: run tests → invoke Stage 1 → when clean → commit + push → re-invoke Stage 2. **Track Stage 2 iteration count separately. Cap at 3.**
