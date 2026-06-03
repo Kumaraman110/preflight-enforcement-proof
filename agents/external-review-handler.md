@@ -90,7 +90,11 @@ An **empty result** means the request did NOT take (run 6's evidence: `{"users":
 
 ### Step 3 — Wait, then poll for review comments
 
-Wait `initialWaitSeconds`. Poll every `pollIntervalSeconds`.
+Wait `initialWaitSeconds`. Then poll every `pollIntervalSeconds` until either:
+- A Copilot review event is detected (proceed to Step 4), OR
+- The **total poll budget** is exhausted (proceed to the final-fetch rule below).
+
+**Total poll budget:** `review.maxPollSeconds` from config (default: **1800** — 30 minutes). This accommodates Copilot's real-world latency (observed: 19 minutes in run 7, up to 25 minutes on large diffs). The budget is wall-clock time from the first poll, NOT a fixed cycle count — the number of polls varies with `pollIntervalSeconds`.
 
 **Primary detection: inline review comments (authoritative source).**
 Copilot often posts inline review comments WITHOUT finalizing a top-level review object. The `pulls/<PR>/reviews` endpoint may stay empty even when Copilot has posted findings. The authoritative source is `pulls/<PR>/comments` filtered by the configured reviewer login:
@@ -110,7 +114,27 @@ gh api "repos/{owner}/{repo}/pulls/<PR>/reviews" \
 
 **Complete when:** A POSITIVE review signal exists with a timestamp AFTER the HEAD commit's committer date. Specifically: comments from the Copilot login with `created_at` > HEAD commit timestamp, OR a top-level review with `submitted_at` > HEAD commit timestamp. The presence of ANY review activity from the Copilot login dated after the fix commit is sufficient — do not require a top-level review object.
 
-**CRITICAL — silence is NOT approval:** If the polling window expires with NO Copilot review event dated after the HEAD commit, the status is `RE_REVIEW_NOT_RECEIVED` — NOT `SUCCESS`. The absence of new comments does NOT mean "clean." It means Copilot has not re-reviewed. Report this state honestly and stop; do not claim success.
+**FINAL AUTHORITATIVE FETCH (mandatory before declaring RE_REVIEW_NOT_RECEIVED):**
+
+When the poll budget is exhausted without detecting a review event, do ONE FINAL authoritative fetch of BOTH endpoints (comments + reviews) before declaring the timeout. This is not another poll cycle — it is the definitive read that determines the terminal state.
+
+```bash
+# Final authoritative fetch — both endpoints, filtered to post-HEAD activity
+HEAD_DATE=$(git log -1 --format=%cI HEAD)
+
+FINAL_COMMENTS=$(gh api "repos/{owner}/{repo}/pulls/<PR>/comments" \
+  --jq "[.[] | select((.user.login==\"${COPILOT_LOGIN}\" or .user.login==\"Copilot\") and .created_at > \"${HEAD_DATE}\")]")
+
+FINAL_REVIEWS=$(gh api "repos/{owner}/{repo}/pulls/<PR>/reviews" \
+  --jq "[.[] | select((.user.login==\"${COPILOT_LOGIN}\" or .user.login==\"Copilot\") and .submitted_at > \"${HEAD_DATE}\")]")
+```
+
+- If EITHER returns non-empty results: the review EXISTS. Proceed to Step 4 with those results. Do NOT declare RE_REVIEW_NOT_RECEIVED.
+- If BOTH are empty: NOW declare RE_REVIEW_NOT_RECEIVED. This is the only path to that status — a final authoritative read that confirmed nothing exists after HEAD.
+
+**Rule: "not-received" means a final authoritative read confirmed nothing after HEAD — not "my last poll cycle was empty."** A re-review that exists on the PR MUST NOT be missed because the last regular poll cycle happened to fire before Copilot finished. Run 7's false negative: re-review landed at ~19 min, regular polls gave up at ~13 min, no final fetch was performed.
+
+**CRITICAL — silence is NOT approval:** After the final authoritative fetch confirms no activity, the status is `RE_REVIEW_NOT_RECEIVED` — NOT `SUCCESS`. The absence of new comments does NOT mean "clean." It means Copilot has not re-reviewed. Report this state honestly and proceed to terminal-state cleanup (Step 9.5/10).
 
 ### Step 4 — Fetch line-level comments
 
