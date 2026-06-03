@@ -54,7 +54,17 @@ Create them with a header line if they don't exist.
 `gh pr view --json number,url,headRefName,state`. If no PR, run `gh pr create --fill --base <branch.base>`.
 
 ### Step 2 — Request Copilot review
-`gh pr edit <PR> --add-reviewer <copilotReviewerLogin>`.
+
+Request Copilot via the `requested_reviewers` REST endpoint (proven in run 4 — `gh pr edit --add-reviewer` fails to resolve the bot login):
+
+```bash
+gh api "repos/{owner}/{repo}/pulls/<PR>/requested_reviewers" --method POST \
+  -f 'reviewers[]=copilot-pull-request-reviewer[bot]'
+```
+
+The request payload uses the bot slug `copilot-pull-request-reviewer[bot]`. The API resolves this to login `"Copilot"` (user ID 175728472) in the response — the poll step (Step 3) matches on either login.
+
+**RULE: a failed reviewer request is NEVER swallowed as success.** If the API call returns a non-2xx status, a GraphQL error, or the response does not contain a `requested_reviewers` array with the Copilot user, the status is `REVIEW_REQUEST_FAILED` — surfaced immediately and loudly, the run stops. Do NOT use `|| echo "SENT"` or any error-swallowing fallback. Do NOT begin polling. A failed request means Copilot was never asked; polling an unasked reviewer is wasted time (run 6 polled for 30 minutes after a swallowed failure).
 
 ### Step 3 — Wait, then poll for review comments
 
