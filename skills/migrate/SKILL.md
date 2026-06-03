@@ -170,6 +170,20 @@ If behavioral extraction returns BLOCKED (no Behavioral Contract in CLAUDE.md), 
 
    Scan the legacy source files identified by the dependency map. For each stored procedure call, record: proc name (exact string from the code), every parameter name (exact string, including `@` prefix if present), and the order/types as passed. For table/column references, record the exact strings. Write the output to `.preflight/<service>/legacy-db-name-contract.md`.
 
+   **Reachability annotation (per entry point):** For EACH item in the contract, annotate whether it is REACHABLE from the migrated entry point. The contract maps the migrated entry point's reachable surface, using the shared DB/service layer as REFERENCE — not as the scope boundary. An item that exists in the DB layer but is unreachable from the entry point is annotated as such, not listed as a plain to-migrate item.
+
+   For each stored procedure or table, trace the call chain from the controller being migrated through downstream services. Record one of:
+   - `REACHABLE` — the entry point's request path can reach this item (state the path: "controller → service → client → downstream → proc")
+   - `NOT REACHABLE` — this item exists in the shared DB/service layer but is gated behind a condition the migrated entry point never satisfies. State the gate: "only reachable via <other caller> which sets <flag>=true; the migrated controller's request model has no <flag> field"
+
+   Format example:
+   ```
+   | cpsl_setCCToken_v2 | REACHABLE | CPSLToken controller → Token Manager → CreateSessionToken → proc |
+   | cpsl_setMPToken_v1 | NOT REACHABLE | Only via SharedServicesController (gated IsMPToken=true; CPSLToken never sets this). Exists in shared DB layer. |
+   ```
+
+   **Why this matters:** Run 6's false positive — `cpsl_setMPToken_v1` was listed in the contract without reachability, the reconstruction flagged "in contract but not implemented = HIGH gap," but it was correctly omitted because it's unreachable from the CPSLToken entry point. Reachability annotation prevents this class of phantom gap.
+
    If no database access is found in the legacy source, write a minimal contract noting "No database operations identified in legacy source" — the artifact must exist regardless.
 
    Verify the artifact exists:
