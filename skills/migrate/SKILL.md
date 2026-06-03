@@ -599,22 +599,57 @@ fi
 
 If FAIL: remove `[ExcludeFromCodeCoverage]` from the flagged files and add unit tests that mock the DB boundary instead.
 
-### Check 3 — Verbatim name fidelity: every identifier in the contract appears in migrated source
+### Check 3 — Spec-vs-implementation reconciliation: every contracted item resolves
+
+Every item in the name-contract must resolve to exactly one of:
+- **IMPLEMENTED** — present in the migrated service (identifier appears verbatim in source), OR
+- **EXPLICITLY-UNREACHABLE** — annotated `NOT REACHABLE` in the contract (per Fix 13), therefore correctly omitted from the migrated service.
+
+A contracted item that is neither implemented NOR marked `NOT REACHABLE` cannot pass silently — it is a gap that forces a recorded decision (implement it, or correct the contract with a reachability annotation).
+
+**Worked example (cpsl_setMPToken_v1):** This proc was in the contract but not in the migrated code. Without reachability annotation, Check 3 would fail and demand implementation. With the annotation `NOT REACHABLE | Only via SharedServicesController (gated IsMPToken=true; CPSLToken never sets this)`, Check 3 skips it — correctly omitted. Without this gate, the reconstruction flagged a phantom HIGH gap that required a human to trace reachability by hand.
 
 ```bash
 CONTRACT=".preflight/${SERVICE_NAME}/legacy-db-name-contract.md"
 FAILURES=0
+UNREACHABLE_SKIPPED=0
 
-# Extract proc names (lines starting with | that contain a proc-like identifier)
-# and parameter names (lines containing @ParamName patterns)
+# Extract REACHABLE proc names and their parameters only.
+# Items marked "NOT REACHABLE" are explicitly excluded from the fidelity check.
+# They are correctly omitted from the migrated service.
+REACHABLE_LINES=$(grep -i "REACHABLE" "$CONTRACT" | grep -iv "NOT REACHABLE" || true)
+UNREACHABLE_LINES=$(grep -i "NOT REACHABLE" "$CONTRACT" || true)
+
+if [ -n "$UNREACHABLE_LINES" ]; then
+  UNREACHABLE_SKIPPED=$(echo "$UNREACHABLE_LINES" | wc -l)
+  echo "Skipping $UNREACHABLE_SKIPPED NOT REACHABLE items (correctly omitted from migration):"
+  echo "$UNREACHABLE_LINES" | head -5
+  echo ""
+fi
+
+# Extract proc names from REACHABLE items and all parameter names
+# (parameters without a reachability marker inherit from their parent proc's reachability)
 PROCS=$(grep -oP '(?<=\| )`?[a-zA-Z_][a-zA-Z0-9_]*`?' "$CONTRACT" | tr -d '`' | sort -u)
+NOT_REACHABLE_PROCS=$(echo "$UNREACHABLE_LINES" | grep -oP '(?<=\| )`?[a-zA-Z_][a-zA-Z0-9_]*`?' | tr -d '`' | sort -u)
 PARAMS=$(grep -oP '@[a-zA-Z_][a-zA-Z0-9_]*' "$CONTRACT" | sort -u)
 
-echo "Checking proc names against migrated source..."
+# Filter out params that belong to NOT REACHABLE procs
+# (params listed under a NOT REACHABLE proc section inherit that status)
+NOT_REACHABLE_PARAMS=""
+for NR_PROC in $NOT_REACHABLE_PROCS; do
+  # Extract params from the section following this proc until the next proc header
+  SECTION_PARAMS=$(sed -n "/### \`${NR_PROC}\`/,/### \`/p" "$CONTRACT" | grep -oP '@[a-zA-Z_][a-zA-Z0-9_]*' || true)
+  NOT_REACHABLE_PARAMS="$NOT_REACHABLE_PARAMS $SECTION_PARAMS"
+done
+
+echo "Checking REACHABLE proc names against migrated source..."
 for PROC in $PROCS; do
-  # Skip generic words (skip anything < 5 chars or common table header words)
   [ ${#PROC} -lt 5 ] && continue
-  echo "$PROC" | grep -qiE "^(name|type|order|direction|parameter|procedure|table|column|notes)$" && continue
+  echo "$PROC" | grep -qiE "^(name|type|order|direction|parameter|procedure|table|column|notes|reachable)$" && continue
+  # Skip if this proc is marked NOT REACHABLE
+  if echo "$NOT_REACHABLE_PROCS" | grep -qw "$PROC" 2>/dev/null; then
+    continue
+  fi
   if ! grep -r --include="*.cs" -q "$PROC" "${SERVICE_DIR}/"; then
     echo "  MISSING: '$PROC' not found in migrated source"
     FAILURES=$((FAILURES + 1))
@@ -623,6 +658,10 @@ done
 
 echo "Checking parameter names against migrated source..."
 for PARAM in $PARAMS; do
+  # Skip if this param belongs to a NOT REACHABLE proc
+  if echo "$NOT_REACHABLE_PARAMS" | grep -qw "$PARAM" 2>/dev/null; then
+    continue
+  fi
   if ! grep -r --include="*.cs" -q "$PARAM" "${SERVICE_DIR}/"; then
     echo "  MISSING: '$PARAM' not found in migrated source"
     FAILURES=$((FAILURES + 1))
@@ -630,15 +669,17 @@ for PARAM in $PARAMS; do
 done
 
 if [ $FAILURES -gt 0 ]; then
-  echo "CHECK 3 FAIL: $FAILURES identifier(s) from the legacy contract are missing in migrated source."
-  echo "The verbatim-name rule requires byte-for-byte fidelity. Fix the migrated code to use the exact legacy identifiers."
+  echo "CHECK 3 FAIL: $FAILURES REACHABLE identifier(s) from the legacy contract are missing in migrated source."
+  echo "The verbatim-name rule requires byte-for-byte fidelity for REACHABLE items."
+  echo "For each missing item, either: (a) implement it with the exact legacy name, or"
+  echo "(b) if it's actually unreachable from this entry point, add a NOT REACHABLE annotation to the contract."
   exit 1
 else
-  echo "CHECK 3 PASS: all contract identifiers found verbatim in migrated source"
+  echo "CHECK 3 PASS: all REACHABLE contract identifiers found verbatim in migrated source ($UNREACHABLE_SKIPPED items correctly skipped as NOT REACHABLE)"
 fi
 ```
 
-If FAIL: the migrated repository uses renamed identifiers. Correct them to match the legacy contract exactly.
+If FAIL: For each missing identifier, determine whether it is a real gap (reachable but not implemented — fix the migrated code) or a contract over-listing (unreachable from the entry point — add a `NOT REACHABLE` annotation to the contract). No item may remain listed-but-unimplemented without an explicit reachability decision.
 
 ### Check 4 — Legacy DB extraction scripts exist
 
