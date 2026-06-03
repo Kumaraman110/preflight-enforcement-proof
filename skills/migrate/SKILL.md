@@ -284,6 +284,21 @@ The generation spec fills in the stack-specific details for each phase. The migr
 
 ## CI Workflow Generation
 
+<CRITICAL-INSTRUCTION>
+CI workflow generation, parity script vendoring, and the early-baseline commit are REQUIRED
+steps with NO skip path. The migration is NOT complete until the CI workflow file exists and
+is committed. A step that doesn't fire is a RECORDED COMPLETION-BUG finding (explicit, named,
+surfaced to the human) — never summarize it as a future/optional gap or "next step for
+production." The end-of-run reconstruction MUST check for the CI workflow file's existence
+and flag its ABSENCE as a failure, not a gap.
+
+If for a specific environmental reason a step genuinely cannot run (e.g., framework root
+unresolvable, parity scripts not found at expected path), the skill MUST:
+1. Log a COMPLETION-BUG finding with the exact reason and the path that failed.
+2. Surface it to the user as a blocker, not an informational note.
+3. NOT proceed to handoff without human acknowledgment of the gap.
+</CRITICAL-INSTRUCTION>
+
 Every migrated service is born CI-wired. The migrate skill generates a per-service GitHub Actions caller workflow as a migration deliverable. This moves parity verification OUTSIDE the agent's reach — CI runs on committed files that the agent cannot modify post-push.
 
 ### What to generate
