@@ -109,13 +109,26 @@ Phase 1 runs on every migration, even when the service "looks simple." The readi
 
 2. **Technical debt scan** — use the Agent tool with `subagent_type: discovery-analyst` to spawn the analyst as a separate sub-agent against the legacy service directory. This is required — do not role-play the analyst within this skill's context. The analyst MUST run in its own agent context to honor its READ-ONLY tool constraints (Read, Glob, Grep, Bash only). If you find yourself reading code and producing analyst-style output from within this skill, STOP and use the Agent tool instead.
 
+   <CRITICAL-INSTRUCTION>
+   **Failed sub-agent dispatch STOPS the migration and records a COMPLETION-BUG. The main session NEVER self-runs a failed dispatch.**
+
+   If a sub-agent dispatch fails (agent type not found, dispatch error, or the sub-agent returns ERROR), the skill:
+   1. STOPS at that step immediately.
+   2. Records the failure as a COMPLETION-BUG finding — a dispatch that can't fire is a named, surfaced bug, not a step to silently substitute with inline work.
+   3. Reports to the user: "Sub-agent dispatch failed: <agent-type> — <error>. This is a COMPLETION-BUG (the framework architecture didn't execute). The migration cannot proceed at this step."
+
+   The main session is the ORCHESTRATOR, never the fallback executor. "I'll do it myself" is **forbidden** — it discards the isolated-context guarantee the sub-agent exists to provide and hides a real registration/dispatch failure behind apparently-successful output. A migration that proceeds by self-running a failed-to-dispatch sub-agent is NOT a valid framework run — the architecture didn't actually execute.
+
+   Run 5's failure mode: discovery-analyst dispatch returned "Agent type not found," and the main session absorbed the work. That produced output that LOOKED correct but violated the isolation contract, hid the registration bug, and shipped a migration that never ran through the framework's quality gates. This rule prevents that.
+   </CRITICAL-INSTRUCTION>
+
    The analyst loads the appropriate scan profile for this project's stack (configured in `.preflight/config.json`, or auto-detected from project files). It produces:
    - Technical debt inventory with category IDs, severity levels, counts, and file:line locations
    - Architecture assessment (coupling to intermediary layers, consolidation candidates)
    - Readiness score (1-10 per category)
    - Dependency map (`dependency-map.json`)
 
-   If the analyst returns BLOCKED or ERROR, surface the reason and ask the user how to proceed. Do not attempt to run the scan yourself — the analyst has the profile-loading logic and pattern expertise.
+   If the analyst returns BLOCKED or ERROR, surface the reason and ask the user how to proceed. Do not attempt to run the scan yourself — the analyst has the profile-loading logic and pattern expertise. A dispatch failure (agent type not found) is distinct from BLOCKED (agent ran but can't proceed) — dispatch failure is a COMPLETION-BUG that stops the run; BLOCKED is an expected state that surfaces to the user for direction.
 
    After the analyst returns DONE, verify dependency-map.json exists at the path specified in the analyst's status block. Run: `test -f <service-folder>/dependency-map.json && echo EXISTS || echo MISSING`. If MISSING, the analyst failed to persist the dependency map to disk despite returning DONE. Re-invoke the analyst with explicit instruction: "Write the dependency-map.json file to disk before returning DONE. The file is required for downstream coupling analysis." If the second attempt also fails, STOP and report to the user — do not proceed to Phase 2 without a valid dependency map.
 
@@ -929,7 +942,7 @@ The migration emits a **legacy-db-name-contract** artifact at `.preflight/<servi
 
 The artifact states clearly that schema and datatype authority lives in the legacy database; this document fixes the NAMES only. A separate legacy → target-DB data export uses this artifact to verify name alignment.
 
-If the spec-analyst or discovery-analyst is unavailable (dispatch failure, cap hit), the migration implementer produces the artifact manually by reading the legacy source. The artifact's existence is REQUIRED regardless of whether a sub-agent extracted it.
+If the spec-analyst or discovery-analyst dispatch fails (agent type not found, dispatch error), the migration STOPS and records a COMPLETION-BUG — the main session does NOT self-run the extraction. If the sub-agent is available but returns BLOCKED or ERROR after running, surface the reason to the user and ask for direction. The artifact's existence is REQUIRED, but it must be produced by the sub-agent, not by the orchestrator absorbing the sub-agent's role.
 
 ## Stop semantics — completion or genuine blocker
 
