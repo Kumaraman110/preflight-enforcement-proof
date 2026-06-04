@@ -18,7 +18,11 @@ You are in TDD mode. Every piece of new functionality follows the cycle:
 Resolve the test command through the three-layer config system. This is the single source of truth for which command TDD runs.
 
 ```bash
-source "${CLAUDE_PLUGIN_ROOT}/lib/resolve-config.sh"
+# Framework assets install under the consumer's .claude/ root. Resolve it without
+# CLAUDE_PLUGIN_ROOT (empty off-plugin / in sub-agents); the git/pwd fallback resolves
+# everywhere since cwd is the project root in every context.
+FRAMEWORK_ROOT="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/.claude"
+source "${FRAMEWORK_ROOT}/lib/resolve-config.sh"
 RESULT=$(resolve_field_with_source "testCommand")
 TEST_CMD="${RESULT%%|*}"
 TEST_SOURCE="${RESULT##*|}"

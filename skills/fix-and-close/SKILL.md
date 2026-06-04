@@ -56,6 +56,17 @@ If you hit a cap, DO NOT:
 
 Instead: report the cap hit, list remaining findings, and ask the user for direction.
 
+## Framework Root Resolution
+
+Framework assets (lib scripts, hooks, example rubrics) install into the consumer's `.claude/` tree alongside the skills and agents (skills/agents are platform-locked to `.claude/`; hooks/lib/examples join them there). Resolve the root once at the start of every run, then use `${FRAMEWORK_ROOT}` for every framework-relative path below:
+
+```bash
+FRAMEWORK_ROOT="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/.claude"
+echo "Framework root: ${FRAMEWORK_ROOT}"
+```
+
+Do NOT depend on `CLAUDE_PLUGIN_ROOT` — it is empty off-plugin and never reaches sub-agents. `CLAUDE_PROJECT_DIR` is also unset in some contexts (including sub-agents), so the git/pwd fallback is what resolves there. The cwd is the project root in every context, so the fallback is reliable. If a dispatched sub-agent (e.g. `implementer`, `discovery-analyst`) runs a framework-relative command, it resolves `FRAMEWORK_ROOT` the same way in its own shell.
+
 ## Step 0 — Environment Detection
 
 If session context already contains `preflight active | mode=...` with config path and rubric path, trust it — the session-start hook already parsed the config. Skip to step 5 (rubric existence check only).
@@ -66,7 +77,7 @@ If session context is empty or this skill was invoked cold (no hook ran):
 2. If found: extract all fields below.
 3. If not found: use defaults below.
 4. Check for `CLAUDE.md` at project root for supplementary conventions.
-5. Confirm the rubric file exists at the resolved path. If missing, warn and fall back to `${CLAUDE_PLUGIN_ROOT}/examples/rubrics/rubric-generic-dotnet.md`.
+5. Confirm the rubric file exists at the resolved path. If missing, warn and fall back to `${FRAMEWORK_ROOT}/examples/rubrics/rubric-generic-dotnet.md`.
 
 ## Configuration
 
@@ -89,7 +100,7 @@ From config (or defaults):
 
 ### Stage 1 Gate
 
-4. **Run tests.** Must pass. If they fail, fix compilation/test errors FIRST (these are not rubric findings — they're broken code). **On pass:** write gate evidence: `bash "${CLAUDE_PLUGIN_ROOT}/hooks/write-gate-evidence" tests-pass`
+4. **Run tests.** Must pass. If they fail, fix compilation/test errors FIRST (these are not rubric findings — they're broken code). **On pass:** write gate evidence: `bash "${FRAMEWORK_ROOT}/hooks/write-gate-evidence" tests-pass`
 
 5. **Invoke `code-reviewer` sub-agent.** Always. Even for one-line changes.
 
@@ -99,9 +110,9 @@ From config (or defaults):
    
    b. **Group by coupling.** Use the dependency map (if one exists at `<service-folder>/dependency-map.json`) as the primary source.
    
-      **Freshness check (before every consumption):** Run `bash "${CLAUDE_PLUGIN_ROOT}/hooks/dependency-map-validator"` before reading the map. If exit 0: map is fresh (or was re-stamped). Proceed. If exit 1: map is stale — dispatch the `discovery-analyst` sub-agent with brief: "dependency-map-only refresh — produce updated dependency-map.json for the current code state without re-running Phase 1 technical debt scan." When the analyst returns DONE, re-run the validator to confirm freshness, then proceed.
+      **Freshness check (before every consumption):** Run `bash "${FRAMEWORK_ROOT}/hooks/dependency-map-validator"` before reading the map. If exit 0: map is fresh (or was re-stamped). Proceed. If exit 1: map is stale — dispatch the `discovery-analyst` sub-agent with brief: "dependency-map-only refresh — produce updated dependency-map.json for the current code state without re-running Phase 1 technical debt scan." When the analyst returns DONE, re-run the validator to confirm freshness, then proceed.
       
-      **Structural validation (first use per session):** Run the mechanical validation from `${CLAUDE_PLUGIN_ROOT}/lib/dependency-map-validator.md` — never consume the map without validation. If validation passes (with or without corrections applied), write gate evidence: `bash "${CLAUDE_PLUGIN_ROOT}/hooks/write-gate-evidence" map-validated`. If validation produces warnings, apply the corrections (merge groups, move files from independent) before grouping.
+      **Structural validation (first use per session):** Run the mechanical validation from `${FRAMEWORK_ROOT}/lib/dependency-map-validator.md` — never consume the map without validation. If validation passes (with or without corrections applied), write gate evidence: `bash "${FRAMEWORK_ROOT}/hooks/write-gate-evidence" map-validated`. If validation produces warnings, apply the corrections (merge groups, move files from independent) before grouping.
    
       If no dependency map exists, findings are coupled if they share ANY of:
       - Same file
@@ -112,7 +123,7 @@ From config (or defaults):
    
    b2. **Write active groups to the mechanical gate.** After grouping is complete:
       ```bash
-      bash "${CLAUDE_PLUGIN_ROOT}/hooks/write-active-groups" '<json>'
+      bash "${FRAMEWORK_ROOT}/hooks/write-active-groups" '<json>'
       ```
       Where `<json>` is the array of groups with files, findings summary, and `"acknowledged": false`. This activates the coupled-edit-gate — any Edit to a file in an unacknowledged group will be BLOCKED by the PreToolUse hook. This is the mechanical enforcement of "read ALL before fixing ANY."
    
@@ -120,7 +131,7 @@ From config (or defaults):
    
    d. **For each coupled group, acknowledge before editing:**
       ```bash
-      bash "${CLAUDE_PLUGIN_ROOT}/hooks/write-group-ack" "<group-index>"
+      bash "${FRAMEWORK_ROOT}/hooks/write-group-ack" "<group-index>"
       ```
       This signals you've read all findings in the group and designed a coherent fix. Only AFTER acknowledgment will edits to files in that group be allowed by the mechanical gate.
    
@@ -136,7 +147,7 @@ From config (or defaults):
       - DONE: **Do NOT trust the report.** Run the build and test commands YOURSELF after accepting the implementer's changes. If build/test fails, the implementer's DONE was wrong — re-dispatch with the failure output as "what was tried previously." Only after YOUR verification passes: if the group required 2+ iterations OR the pattern recurred across multiple files, flag it for **pattern-capture** (bucket 5) when reporting back to Stage 2.
       - BLOCKED: either re-scope the group (split differently, provide more context) or escalate to user.
    
-   f. **After all groups fixed:** clear the active groups: `bash "${CLAUDE_PLUGIN_ROOT}/hooks/write-active-groups" '[]'`". Re-run tests. Re-invoke Stage 1.
+   f. **After all groups fixed:** clear the active groups: `bash "${FRAMEWORK_ROOT}/hooks/write-active-groups" '[]'`". Re-run tests. Re-invoke Stage 1.
    
    **Why dispatch to implementer instead of fixing yourself:** Your context accumulates Phase 1 output, fix histories, previous diffs, and orchestration state. After 3 rounds, you're at 70%+ context utilization. The implementer starts fresh at ~5% with exactly the files and findings it needs. It can't be confused by stale context from previous rounds. This is how we avoid the 70-round pattern where late-round fixes degraded because the session was saturated.
 
@@ -146,7 +157,7 @@ From config (or defaults):
    - If still not converging → STUCK. Hit the cap early.
    - If iteration count reaches 5 → HARD STOP regardless of convergence.
 
-8. **If CLEAN** → write gate evidence: `bash "${CLAUDE_PLUGIN_ROOT}/hooks/write-gate-evidence" stage1-clean` → proceed to commit/push.
+8. **If CLEAN** → write gate evidence: `bash "${FRAMEWORK_ROOT}/hooks/write-gate-evidence" stage1-clean` → proceed to commit/push.
 
 ### Commit and Push
 
@@ -194,7 +205,7 @@ These values come from config (`review.*`). If config is absent, use these defau
     On the SECOND and subsequent pushes (i.e., after Stage 2 has returned NEEDS_PARENT_FIXES at least once and you've fixed + pushed), invoke thread resolution for the findings you just fixed:
 
     ```bash
-    source "${CLAUDE_PLUGIN_ROOT}/lib/resolve-review-thread.sh"
+    source "${FRAMEWORK_ROOT}/lib/resolve-review-thread.sh"
     resolve_review_check_auth
     ```
 
@@ -278,7 +289,7 @@ These values come from config (`review.*`). If config is absent, use these defau
 
 ### Structural Verification (Before Declaring Success)
 
-**Verification Discipline applies here.** (See `${CLAUDE_PLUGIN_ROOT}/lib/verification-discipline.md`.) Stage 2 returning SUCCESS is a CLAIM, not evidence. Verify independently:
+**Verification Discipline applies here.** (See `${FRAMEWORK_ROOT}/lib/verification-discipline.md`.) Stage 2 returning SUCCESS is a CLAIM, not evidence. Verify independently:
 
 - **Test command** — run the configured `test.command` (or auto-detected command). Fresh run, not cached. Read the output. Count failures. 0 = pass.
 - **Build command** — run the configured `build.command` (or auto-detected command). Fresh run. Read warnings count. 0 = pass.
@@ -289,7 +300,7 @@ If ANY verification fails, DO NOT declare success. Surface the gap with the actu
 
 ### Metrics Collection (MANDATORY)
 
-14. After outcome is determined (SUCCESS, CAPPED, STUCK, DIVERGING, ERROR), write a run entry to `<project-root>/.preflight/metrics.json` following the schema in `${CLAUDE_PLUGIN_ROOT}/lib/metrics.md`. Record:
+14. After outcome is determined (SUCCESS, CAPPED, STUCK, DIVERGING, ERROR), write a run entry to `<project-root>/.preflight/metrics.json` following the schema in `${FRAMEWORK_ROOT}/lib/metrics.md`. Record:
     - Stage 1: iterations, findingsPerIteration, capHit, couplingGroupsIdentified, validatorWarnings, durationSeconds
     - Stage 2: iterations, findingsPerIteration, capHit, stableFindings, trivialStableFindings, unstableFindings, durationSeconds
     - Capture: counts per bucket

@@ -50,7 +50,10 @@ These are the constraints your output must satisfy. They are not suggestions.
 
 Run the detector module first:
 ```bash
-bash "${CLAUDE_PLUGIN_ROOT}/lib/detector.sh"
+# Framework assets install under the consumer's .claude/ root. Resolve without
+# CLAUDE_PLUGIN_ROOT (empty off-plugin / in sub-agents); git/pwd fallback resolves everywhere.
+FRAMEWORK_ROOT="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/.claude"
+bash "${FRAMEWORK_ROOT}/lib/detector.sh"
 ```
 
 If derived state exists at `.preflight/derived/state.json`, read it. Otherwise run the detector to produce it. If the detector fails or is unavailable, fall back to manual detection: identify the stack yourself from project files (.csproj, pom.xml, package.json, go.mod, Cargo.toml, requirements.txt/pyproject.toml), surface your finding, and proceed. Detector failure must not block bootstrap.

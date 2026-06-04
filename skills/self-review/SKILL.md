@@ -19,7 +19,7 @@ If session context is empty or this skill was invoked cold (no hook ran):
 
 1. Search for config: `.preflight/config.json` > `.cpsl/config.json` > `.forge.json` (in working directory, then up to 5 parent levels).
 2. If found: extract `mode`, `rubric`, `branch.base`, `test.command`, `loop.*`, `capture.*`.
-3. If not found: use defaults — mode `generic`, rubric from `${CLAUDE_PLUGIN_ROOT}/examples/rubrics/rubric-generic-dotnet.md`, base branch `main`, test command auto-detected.
+3. If not found: use defaults — mode `generic`, rubric from `${FRAMEWORK_ROOT}/examples/rubrics/rubric-generic-dotnet.md` (resolve `FRAMEWORK_ROOT="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/.claude"` — never the empty `CLAUDE_PLUGIN_ROOT`), base branch `main`, test command auto-detected.
 4. Check for `CLAUDE.md` at project root for supplementary conventions.
 5. Confirm the rubric file exists at the resolved path. If missing, warn and fall back to the generic default.
 
@@ -91,7 +91,7 @@ Always invoke the code-reviewer sub-agent. Do not skip invocation because the di
 
 ## Proactive Triggering
 
-This skill self-activates (see `${CLAUDE_PLUGIN_ROOT}/lib/proactive-triggering.md`) when:
+This skill self-activates (see `${FRAMEWORK_ROOT}/lib/proactive-triggering.md`) when:
 - The session is about to run `git push` and gate evidence is stale or missing
 - The parent agent has just finished writing code and is about to claim "done"
 

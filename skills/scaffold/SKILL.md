@@ -26,19 +26,25 @@ The review loop catches both. The rubric is different (API design rules vs migra
 
 If session context already contains `preflight active | mode=...` with config path and rubric path, trust it — the session-start hook already parsed the config. Skip to step 5 (rubric existence check only).
 
+**Framework root:** framework assets (example rubrics, generation specs) install under the consumer's `.claude/` tree. Resolve it once and use `${FRAMEWORK_ROOT}` for every framework-relative path below — never the empty `CLAUDE_PLUGIN_ROOT`:
+```bash
+FRAMEWORK_ROOT="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/.claude"
+```
+The git/pwd fallback resolves in every context (main session, sub-agent) since cwd is the project root.
+
 If session context is empty or this skill was invoked cold (no hook ran):
 
 1. Search for config: `.preflight/config.json` > `.cpsl/config.json` > `.forge.json` (in working directory, then up to 5 parent levels).
 2. If found: extract `mode`, `rubric`, `branch.base`, `branch.remote`, `test.*`, `loop.*`, `capture.*`.
-3. If not found: use defaults — mode `generic`, rubric from `${CLAUDE_PLUGIN_ROOT}/examples/rubrics/rubric-api-design.md`, base branch `main`.
+3. If not found: use defaults — mode `generic`, rubric from `${FRAMEWORK_ROOT}/examples/rubrics/rubric-api-design.md`, base branch `main`.
 4. Check for `CLAUDE.md` at project root for supplementary conventions.
-5. Confirm the rubric file exists at the resolved path. If missing, fall back to `${CLAUDE_PLUGIN_ROOT}/examples/rubrics/rubric-api-design.md`.
+5. Confirm the rubric file exists at the resolved path. If missing, fall back to `${FRAMEWORK_ROOT}/examples/rubrics/rubric-api-design.md`.
 
 ## Pre-requisites
 
 If `mode` is `migration`, warn: "This project is configured for migration. Use `/preflight:migrate` instead, or update config to `mode: api-new`."
 
-If no config exists, that's fine — use example API rubric from `${CLAUDE_PLUGIN_ROOT}/examples/rubrics/rubric-api-design.md`.
+If no config exists, that's fine — use example API rubric from `${FRAMEWORK_ROOT}/examples/rubrics/rubric-api-design.md`.
 
 ## Phase 1 — Design
 
@@ -62,11 +68,11 @@ If no config exists, that's fine — use example API rubric from `${CLAUDE_PLUGI
 ## Phase 2 — Generation
 
 <CRITICAL-INSTRUCTION>
-Before writing ANY code, read the generation spec. Resolve the path from project config (`generation-spec` field) or fall back to `${CLAUDE_PLUGIN_ROOT}/examples/generation-specs/dotnet-service.md`. For every pattern that applies, PASTE the code block verbatim into the target file — character for character. Then modify ONLY at marked `/* ADAPT */` points. Do not reconstruct from memory. Do not "use" or "apply" patterns. PASTE them. Reconstruction drifts at high context (a `SemaphoreSlim(1, 1)` becomes `SemaphoreSlim(1)`, an `EnsureSuccessStatusCode()` moves above the await). Verbatim paste eliminates this class of error entirely.
+Before writing ANY code, read the generation spec. Resolve the path from project config (`generation-spec` field) or fall back to `${FRAMEWORK_ROOT}/examples/generation-specs/dotnet-service.md`. For every pattern that applies, PASTE the code block verbatim into the target file — character for character. Then modify ONLY at marked `/* ADAPT */` points. Do not reconstruct from memory. Do not "use" or "apply" patterns. PASTE them. Reconstruction drifts at high context (a `SemaphoreSlim(1, 1)` becomes `SemaphoreSlim(1)`, an `EnsureSuccessStatusCode()` moves above the await). Verbatim paste eliminates this class of error entirely.
 </CRITICAL-INSTRUCTION>
 
 Generate the service skeleton reading patterns from (in priority order):
-1. Generation spec from project config (`generation-spec` field), or `${CLAUDE_PLUGIN_ROOT}/examples/generation-specs/dotnet-service.md` (mandatory — pre-validated patterns)
+1. Generation spec from project config (`generation-spec` field), or `${FRAMEWORK_ROOT}/examples/generation-specs/dotnet-service.md` (mandatory — pre-validated patterns)
 2. Reference services in the same repo (if they exist)
 3. The project's CLAUDE.md (if it exists)
 4. The plugin's default API design rubric (for rules not covered by generation spec)

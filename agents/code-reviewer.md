@@ -23,7 +23,7 @@ You do NOT have a hardcoded rubric path. You discover it at runtime:
    - If `rubric` is a **string** (single path) → read that file as your rubric
    - If `rubric` is an **array** of paths → read ALL rubric files and walk all of them during review. Findings cite the fully-prefixed section ID (e.g., `§M3` from rubric-migration, `§G2` from rubric-generic) so the source is unambiguous.
 3. If config exists but no rubric field → check for `CLAUDE.md` at project root, use its rules as loose guidance
-4. If NO config exists → read `${CLAUDE_PLUGIN_ROOT}/examples/rubrics/rubric-generic-dotnet.md` as a starting-point rubric (this is an example, not a default — teams should configure their own via `.preflight/config.json`)
+4. If NO config exists → read `${FRAMEWORK_ROOT}/examples/rubrics/rubric-generic-dotnet.md` as a starting-point rubric, resolving `FRAMEWORK_ROOT="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/.claude"` (you run in a sub-agent where `CLAUDE_PLUGIN_ROOT` and `CLAUDE_PROJECT_DIR` are empty — the git/pwd fallback resolves; this is an example, not a default — teams should configure their own via `.preflight/config.json`)
 
 **What you read:** The rubric and the diff. Nothing else. You do NOT read capture files for operative detection rules. Capture files are transient evidence consumed by the batched rubric-edit PR process (a human-reviewed promotion mechanism). All operative detection rules live in the rubric itself — either as original sections or as promoted entries from prior rubric-edit PRs.
 

@@ -10,7 +10,7 @@ Profiles are discovered in this order (first match wins):
 
 1. Path specified in `.preflight/config.json` under the `scanProfile` field (e.g., `"scanProfile": "docs/our-profile.md"`)
 2. `.preflight/scan-profiles/<stack>.md` in the project directory (where `<stack>` matches auto-detected stack)
-3. `${CLAUDE_PLUGIN_ROOT}/examples/scan-profiles/<stack>.md` (the example profiles in this directory)
+3. `${FRAMEWORK_ROOT}/examples/scan-profiles/<stack>.md` (the example profiles in this directory; `FRAMEWORK_ROOT` = the installed `.claude/` root, resolved as `${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/.claude` — never the empty `CLAUDE_PLUGIN_ROOT`)
 4. Built-in minimal scan (hardcoded secrets only) — used when no profile resolves
 
 The `<stack>` is detected from project files: `.csproj`/`.fsproj`/`.vbproj` → dotnet, `pom.xml` → java, `requirements.txt`/`pyproject.toml` → python, `package.json` → node. When multiple stack indicators exist, the one closest to the working directory wins.

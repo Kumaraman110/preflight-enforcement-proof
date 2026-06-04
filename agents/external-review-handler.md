@@ -33,7 +33,11 @@ Read project config (search order: `.preflight/config.json` > `.cpsl/config.json
 
 **Thread resolution preflight (early — before the loop starts):**
 ```bash
-source "${CLAUDE_PLUGIN_ROOT}/lib/resolve-review-thread.sh"
+# Resolve the installed framework root (.claude/). This runs in a SUB-AGENT context
+# where CLAUDE_PLUGIN_ROOT and CLAUDE_PROJECT_DIR are both empty — the git/pwd fallback
+# is what resolves here. Resolve inline (this block is a fresh shell).
+FRAMEWORK_ROOT="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/.claude"
+source "${FRAMEWORK_ROOT}/lib/resolve-review-thread.sh"
 resolve_review_check_auth
 ```
 If auth check fails, log a warning and continue — `_RRT_RESOLUTION_AVAILABLE` will be `false` and Step 9.5 will skip gracefully. If `review.resolveThreads` is `false`, skip the auth check and set `_RRT_RESOLUTION_AVAILABLE=false` directly.
@@ -293,7 +297,7 @@ Resolve review threads for findings that have been addressed. This fires in TWO 
 In context (2), resolve/reply threads for ALL findings addressed across all iterations of this run, not just the latest round. A thread whose finding was fixed two iterations ago but never resolved (because the loop was still running) gets resolved now.
 
 **Prerequisites:**
-1. Source `${CLAUDE_PLUGIN_ROOT}/lib/resolve-review-thread.sh`
+1. Source `${FRAMEWORK_ROOT}/lib/resolve-review-thread.sh` (where `FRAMEWORK_ROOT` is resolved as in the Configuration Discovery preflight above — `${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/.claude`; never the empty `CLAUDE_PLUGIN_ROOT`)
 2. Run `resolve_review_check_auth`. If it returns non-zero, skip all resolution silently (graceful degradation — the rest of the loop still works, threads just stay open for manual resolution).
 
 **For each finding the parent reports as fixed:**

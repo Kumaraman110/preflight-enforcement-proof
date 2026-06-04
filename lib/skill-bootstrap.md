@@ -20,7 +20,7 @@ Every skill MUST self-detect its environment as its first action. Do NOT depend 
 
 3. If no config found:
    - Mode: `generic`
-   - Rubric: `${CLAUDE_PLUGIN_ROOT}/examples/rubrics/rubric-generic-dotnet.md`
+   - Rubric: `${FRAMEWORK_ROOT}/examples/rubrics/rubric-generic-dotnet.md` (resolve `FRAMEWORK_ROOT="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/.claude"`)
    - Branch base: `main`
    - Branch remote: `origin`
    - Test command: auto-detect (`dotnet test` if `.csproj`/`.sln`, `npm test` if `package.json`, skip otherwise)
@@ -35,7 +35,10 @@ Skills MAY read derived state through `lib/resolve-config.sh` if the three-layer
 If `.preflight/derived/state.json` exists, it contains pre-computed values with confidence levels produced by the detector module (`lib/detector.sh`).
 
 ```bash
-source "${CLAUDE_PLUGIN_ROOT}/lib/derived-state-reader.sh"
+# .claude/ is the installed framework root; resolve without CLAUDE_PLUGIN_ROOT
+# (empty off-plugin / in sub-agents) — git/pwd fallback resolves in every context.
+FRAMEWORK_ROOT="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/.claude"
+source "${FRAMEWORK_ROOT}/lib/derived-state-reader.sh"
 TEST_CMD=$(read_derived "testCommand")
 BUILD_CMD=$(read_derived "buildCommand")
 STACK=$(read_derived "stack")

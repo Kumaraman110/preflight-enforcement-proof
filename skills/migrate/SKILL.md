@@ -32,16 +32,16 @@ This skill uses CRITICAL-INSTRUCTION blocks to mark behavioral requirements. The
 
 ## Framework Root Resolution
 
-This skill is installed as a junction: `~/.claude/skills/migrate/` → `code-forge/skills/migrate/`. References to framework assets (generation specs, rubrics, validators) resolve relative to the framework root (`code-forge/`). Resolve it once at the start of every run:
+Framework assets (generation specs, rubrics, validators) install into the consumer's `.claude/` tree alongside the skills and agents (skills/agents are platform-locked to `.claude/`; hooks/lib/examples join them there). Resolve the root once at the start of every run:
 
 ```bash
-FRAMEWORK_ROOT=$(realpath "$(dirname "$(readlink -f ~/.claude/skills/migrate/SKILL.md)")/../../" 2>/dev/null)
-echo "Framework root: ${FRAMEWORK_ROOT:-UNRESOLVED}"
+FRAMEWORK_ROOT="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/.claude"
+echo "Framework root: ${FRAMEWORK_ROOT}"
 ```
 
-If `FRAMEWORK_ROOT` is empty or the directory doesn't exist, warn: "Framework root resolution failed — junction from ~/.claude/skills/migrate/ may be broken." Continue with project-local config only (`.preflight/` paths); framework-relative fallbacks will be unavailable.
+If the directory doesn't exist (`[ -d "$FRAMEWORK_ROOT" ]` is false), warn: "Framework root resolution failed — .claude/ not found at the project root." Continue with project-local config only (`.preflight/` paths); framework-relative fallbacks will be unavailable.
 
-All `${FRAMEWORK_ROOT}` references in this file use the junction-resolved path above. The env var `CLAUDE_PLUGIN_ROOT` is NOT reliably set in all environments — do not depend on it; always use the junction-resolution mechanism.
+All `${FRAMEWORK_ROOT}` references in this file use the path above. Do NOT depend on `CLAUDE_PLUGIN_ROOT` — it is empty off-plugin and never reaches sub-agents. `CLAUDE_PROJECT_DIR` is also unset in some contexts, so the git/pwd fallback is what resolves there; the cwd is the project root in every context, so the fallback is reliable. (This replaces the earlier `~/.claude/skills/migrate` junction-readlink mechanism, which assumed a home-level symlink to the author's code-forge checkout — that symlink does not exist on a standard project-level install.)
 
 ## The Architectural Commitment
 
@@ -265,9 +265,9 @@ The migration phases are defined by the generation spec. The generation spec is 
 Resolve the spec file using this ordered fallback. Try each step; use the first that resolves to an existing file.
 
 1. **Explicit config path:** Check `generation-spec` field in `.preflight/config.json`. If set and the file exists, use it.
-2. **Framework-relative path (junction resolution):** The skill file lives in a junction from `~/.claude/skills/migrate/` → `code-forge/skills/migrate/`. Resolve the framework root by running:
+2. **Framework-relative path:** Framework assets install under the consumer's `.claude/` root. Resolve and check:
    ```bash
-   FRAMEWORK_ROOT=$(realpath "$(dirname "$(readlink -f ~/.claude/skills/migrate/SKILL.md)")/../../" 2>/dev/null)
+   FRAMEWORK_ROOT="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/.claude"
    SPEC_PATH="${FRAMEWORK_ROOT}/examples/generation-specs/dotnet-service.md"
    test -f "$SPEC_PATH" && echo "SPEC FOUND: $SPEC_PATH" || echo "SPEC NOT FOUND at: $SPEC_PATH"
    ```
