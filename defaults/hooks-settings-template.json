@@ -1,4 +1,5 @@
 {
+  "_comment_hooks": "Preflight accountability-layer hook registration. The installer MERGES this 'hooks' block into the consumer's .claude/settings.json (preserving any existing 'permissions' / other keys — never overwrite the file). These are first-class settings-based hooks: they fire WITHOUT plugin enablement. Every command resolves via ${CLAUDE_PROJECT_DIR} anchored on the consumer's installed .preflight/hooks/ tree — there is NO dependency on ${CLAUDE_PLUGIN_ROOT} (which is empty off-plugin and never reaches sub-agents). The dispatcher (run-hook.cmd) self-resolves its own location; the hook scripts self-resolve via $BASH_SOURCE. Keep the 'hooks' value below byte-identical to hooks/hooks.json — same events, matchers, and command shape — so plugin-form and settings-form registration never drift.",
   "hooks": {
     "SessionStart": [
       {
