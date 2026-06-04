@@ -6,13 +6,13 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PROJECT_DIR}/.preflight/hooks/run-hook.cmd\" session-start",
+            "command": "\"${CLAUDE_PROJECT_DIR}/.claude/hooks/run-hook.cmd\" session-start",
             "timeout": 5000,
             "async": false
           },
           {
             "type": "command",
-            "command": "\"${CLAUDE_PROJECT_DIR}/.preflight/hooks/run-hook.cmd\" drift-detector",
+            "command": "\"${CLAUDE_PROJECT_DIR}/.claude/hooks/run-hook.cmd\" drift-detector",
             "timeout": 10000,
             "async": true
           }
@@ -25,7 +25,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PROJECT_DIR}/.preflight/hooks/run-hook.cmd\" pre-push-gate-check \"$TOOL_INPUT\"",
+            "command": "\"${CLAUDE_PROJECT_DIR}/.claude/hooks/run-hook.cmd\" pre-push-gate-check \"$TOOL_INPUT\"",
             "timeout": 10000,
             "async": false
           }
@@ -36,7 +36,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PROJECT_DIR}/.preflight/hooks/run-hook.cmd\" bootstrap-write-gate \"$TOOL_INPUT\"",
+            "command": "\"${CLAUDE_PROJECT_DIR}/.claude/hooks/run-hook.cmd\" bootstrap-write-gate \"$TOOL_INPUT\"",
             "timeout": 5000,
             "async": false
           }
@@ -47,13 +47,13 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PROJECT_DIR}/.preflight/hooks/run-hook.cmd\" coupled-edit-gate \"$TOOL_INPUT\"",
+            "command": "\"${CLAUDE_PROJECT_DIR}/.claude/hooks/run-hook.cmd\" coupled-edit-gate \"$TOOL_INPUT\"",
             "timeout": 5000,
             "async": false
           },
           {
             "type": "command",
-            "command": "\"${CLAUDE_PROJECT_DIR}/.preflight/hooks/run-hook.cmd\" bootstrap-write-gate \"$TOOL_INPUT\"",
+            "command": "\"${CLAUDE_PROJECT_DIR}/.claude/hooks/run-hook.cmd\" bootstrap-write-gate \"$TOOL_INPUT\"",
             "timeout": 5000,
             "async": false
           }
@@ -64,7 +64,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "\"${CLAUDE_PROJECT_DIR}/.preflight/hooks/run-hook.cmd\" rubric-validity-gate \"$TOOL_INPUT\"",
+            "command": "\"${CLAUDE_PROJECT_DIR}/.claude/hooks/run-hook.cmd\" rubric-validity-gate \"$TOOL_INPUT\"",
             "timeout": 5000,
             "async": false
           }
