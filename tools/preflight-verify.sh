@@ -93,6 +93,43 @@ while IFS=$'\t' read -r SKILL_NAME EXPECTED_SHA; do
     fi
 done < <(jq -r '.artifacts.skills | to_entries[] | [.key, .value] | @tsv' "$MANIFEST")
 
+# ── File-tree surfaces: lib/, hooks/, examples/ ──────────────────────────────
+# Each manifest entry is "<relpath> → <blob sha>"; the installed file lives at
+# .claude/<surface>/<relpath>. Same strict per-file git hash-object compare as
+# agents (CR-strip both fields). Drift in ANY file fails, named with its surface.
+for SURFACE in lib hooks examples; do
+    # Skip surfaces absent from the manifest (older installs predating this gate).
+    if [ "$(jq -r --arg s "$SURFACE" '.artifacts[$s] // "absent"' "$MANIFEST")" = "absent" ]; then
+        echo ""
+        echo "Checking ${SURFACE}... (not in manifest — skipping; pre-multi-surface install)"
+        continue
+    fi
+    echo ""
+    echo "Checking ${SURFACE}..."
+    SURFACE_DIR="${CONSUMER_DIR}/.claude/${SURFACE}"
+    while IFS=$'\t' read -r REL_PATH EXPECTED_BLOB; do
+        REL_PATH="${REL_PATH%$'\r'}"
+        EXPECTED_BLOB="${EXPECTED_BLOB%$'\r'}"
+        [ -z "$REL_PATH" ] && continue
+        CHECKED_COUNT=$((CHECKED_COUNT + 1))
+        INSTALLED_FILE="${SURFACE_DIR}/${REL_PATH}"
+
+        if [ ! -f "$INSTALLED_FILE" ]; then
+            echo "  DRIFT: ${SURFACE}/${REL_PATH} — file MISSING (expected blob ${EXPECTED_BLOB:0:7})"
+            DRIFT_COUNT=$((DRIFT_COUNT + 1))
+            continue
+        fi
+
+        ACTUAL_BLOB=$(git hash-object "$INSTALLED_FILE" 2>/dev/null || echo "unknown")
+        if [ "$ACTUAL_BLOB" != "$EXPECTED_BLOB" ]; then
+            echo "  DRIFT: ${SURFACE}/${REL_PATH} — blob mismatch (installed ${ACTUAL_BLOB:0:7} ≠ manifest ${EXPECTED_BLOB:0:7})"
+            DRIFT_COUNT=$((DRIFT_COUNT + 1))
+        else
+            echo "  OK: ${SURFACE}/${REL_PATH}"
+        fi
+    done < <(jq -r --arg s "$SURFACE" '.artifacts[$s] | to_entries[] | [.key, .value] | @tsv' "$MANIFEST")
+done
+
 echo ""
 echo "Checked: ${CHECKED_COUNT} artifacts (${DRIFT_COUNT} drifted)"
 
