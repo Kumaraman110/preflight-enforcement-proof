@@ -159,15 +159,32 @@ Absent condition (b), the status is "RE_REVIEW_NOT_RECEIVED" (unconfirmed), NOT 
 - A Copilot review event (top-level or inline comments) exists with timestamp > HEAD commit timestamp AND that event contains zero new findings.
 
 **RE_REVIEW_NOT_RECEIVED** (new status):
-- Polling window expired AND no Copilot review activity has a timestamp > HEAD commit timestamp.
-- Report honestly: "Copilot has not re-reviewed the latest push. Cannot confirm clean."
-- The loop stops and surfaces this state. It does NOT claim success.
+- Polling window exhausted AND the final authoritative fetch (Step 3) confirmed no Copilot review activity after HEAD.
+- This is a TERMINAL STATE — but it does NOT skip cleanup. Proceed to **terminal-state cleanup** (see below) before reporting.
 
 Compare timestamps: get HEAD commit date via `git log -1 --format=%cI HEAD`. Any review event's `submitted_at` or comment's `created_at` must be strictly later than this value.
 
+### Step 5.5 — Terminal-state cleanup (ALL terminal states route through here)
+
+<CRITICAL-INSTRUCTION>
+**Every terminal state (SUCCESS, RE_REVIEW_NOT_RECEIVED, CAPPED, STUCK, DIVERGING) routes through Steps 9.5 and 10 before reporting to the parent.** Thread resolution and the full-resolution gate are NOT exclusive to SUCCESS — they fire for ANY exit path where findings have been addressed.
+
+A terminal state that exits without resolving/replying on addressed threads is the run-7 failure mode: threads left dangling because the exit path skipped cleanup. The terminal state determines what STATUS is reported; it does NOT determine whether cleanup runs.
+
+Resolution on a non-SUCCESS terminal:
+- For findings already fixed in a prior push: resolve their threads (they were addressed, the fix exists).
+- For findings not yet addressed (CAPPED/STUCK before fix): post a reply noting the terminal state ("Iteration cap reached — deferred to human"), do NOT resolve.
+- For RE_REVIEW_NOT_RECEIVED: resolve threads for findings addressed in the push that Copilot hasn't re-reviewed — the fix IS pushed, the thread IS addressed, the absence of re-review doesn't undo the fix.
+</CRITICAL-INSTRUCTION>
+
+When a terminal state is determined (by Step 5, 6, or the success check):
+1. Execute Step 9.5 (thread resolution) for all findings addressed so far.
+2. Execute Step 10 (full-resolution gate) — every thread must have a reply or resolution.
+3. THEN report the terminal status to the parent.
+
 ### Step 6 — Check termination conditions
 
-**Hard cap:** If this is iteration 3 or higher → CAPPED. Stop immediately regardless of findings. (Override: config `loop.maxStage2Iterations` can be set up to 8 for services with known-incomplete coupling maps.)
+**Hard cap:** If this is iteration 3 or higher → CAPPED. Proceed to terminal-state cleanup (Step 5.5) before reporting. (Override: config `loop.maxStage2Iterations` can be set up to 8 for services with known-incomplete coupling maps.)
 
 **Oscillation:**
 - Same files across consecutive iterations → STUCK
@@ -267,9 +284,13 @@ Return findings with status code. Mark each finding's stability:
 
 Control returns to you at Step 3.
 
-### Step 9.5 — Thread resolution (after parent pushes fix round)
+### Step 9.5 — Thread resolution (after fix push OR on terminal-state cleanup)
 
-When the parent reports DONE for a set of findings and has pushed the fix commit, resolve the corresponding review threads on GitHub. This replaces the temporal "no newer comments" success proxy with state-based resolution.
+Resolve review threads for findings that have been addressed. This fires in TWO contexts:
+1. **After parent pushes a fix round** (normal loop iteration — parent reports DONE for a set of findings).
+2. **On terminal-state cleanup** (Step 5.5 routes here before reporting ANY terminal state — SUCCESS, RE_REVIEW_NOT_RECEIVED, CAPPED, STUCK, DIVERGING).
+
+In context (2), resolve/reply threads for ALL findings addressed across all iterations of this run, not just the latest round. A thread whose finding was fixed two iterations ago but never resolved (because the loop was still running) gets resolved now.
 
 **Prerequisites:**
 1. Source `${CLAUDE_PLUGIN_ROOT}/lib/resolve-review-thread.sh`
