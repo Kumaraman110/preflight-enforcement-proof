@@ -14,7 +14,9 @@
 # All functions:
 #   - Retry with exponential backoff (1s, 3s, 10s) on transient failures
 #   - Do NOT retry on 403/permission errors
-#   - Log rate-limit remaining to .preflight/derived/rate-limit-log.json
+#   - Log rate-limit remaining to .preflight/derived/rate-limit-log.json — query path
+#     (fetch_threads) only; the mutations do not query rateLimit (it is a Query-only
+#     field and is invalid on the Mutation root type).
 #   - Return non-zero on permanent failure (caller handles gracefully)
 
 # ─── Constants ────────────────────────────────────────────────
@@ -200,7 +202,6 @@ resolve_review_post_reply() {
     addPullRequestReviewThreadReply(input:{pullRequestReviewThreadId:$threadId,body:$body}) {
       comment { id }
     }
-    rateLimit { remaining resetAt }
   }'
 
   _rrt_execute_with_retry "post_reply" "$thread_id" \
@@ -222,7 +223,6 @@ resolve_review_resolve_thread() {
     resolveReviewThread(input:{threadId:$threadId}) {
       thread { id isResolved }
     }
-    rateLimit { remaining resetAt }
   }'
 
   _rrt_execute_with_retry "resolve_thread" "$thread_id" \
