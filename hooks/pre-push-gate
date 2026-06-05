@@ -54,13 +54,15 @@ check_evidence "tests-pass" "Test suite"
 check_evidence "stage1-clean" "Stage 1 review"
 
 # Gate 3: Dependency map validation (if a map exists)
-if [ -f "dependency-map.json" ] || find . -name "dependency-map.json" -maxdepth 2 2>/dev/null | grep -q .; then
+# Depth note: -maxdepth 3 matches the layout .preflight/<Service>/dependency-map.json (depth 3).
+# A map nested deeper would be silently skipped — keep this depth in sync with that layout.
+if [ -f "dependency-map.json" ] || find . -maxdepth 3 -name "dependency-map.json" 2>/dev/null | grep -q .; then
   check_evidence "map-validated" "Dependency map validation"
 fi
 
 # Gate 4: Parity check (if a behavior-spec baseline exists for the service)
 BASELINE_FOUND=""
-if find . -path "*/.preflight/*/behavior-spec.json" -maxdepth 3 2>/dev/null | grep -q .; then
+if find . -maxdepth 3 -path "*/.preflight/*/behavior-spec.json" 2>/dev/null | grep -q .; then
   BASELINE_FOUND="true"
 fi
 if [ -n "$BASELINE_FOUND" ]; then
