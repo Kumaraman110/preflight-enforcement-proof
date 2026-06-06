@@ -157,9 +157,9 @@ Bootstrap is the framework's adoption mechanism. Any team runs it once and gets 
 |---|---|
 | `/preflight:fix-and-close` | Full pipeline: Stage 1 gate, commit, push, Stage 2 external review loop, metrics |
 | `/preflight:self-review` | Stage 1 standalone: review current diff, fix locally, loop until clean. Never pushes. |
-| `/preflight:rubric-edit` *(planned)* | Promote validated captures into rubric sections. Reviews accumulated captures, proposes promotions, opens a rubric-edit PR. Closes the self-improvement loop. |
+| `/preflight:rubric-edit` | Promote validated captures into rubric sections. Runs the deterministic promotion matrix, skips defended entries, and drafts a human-reviewed `chore(rubric)` PR. Closes the self-improvement loop. |
 
-The rubric-edit skill is designed but not yet implemented; the promotion process it will automate is documented in `docs/rubric-edit-process.md` and can be performed manually in the interim.
+The rubric-edit skill runs the deterministic promotion matrix (`lib/rubric-promotion-evaluator.sh`), skips defended entries, and drafts a human-reviewed `chore(rubric)` PR. It does not auto-edit the rubric — promotion stays human-approved. The promotion process it automates is documented in full at `docs/rubric-edit-process.md`.
 
 ### Process skills
 
