@@ -39,6 +39,12 @@
             "command": "\"${CLAUDE_PROJECT_DIR}/.claude/hooks/run-hook.cmd\" bootstrap-write-gate \"$TOOL_INPUT\"",
             "timeout": 5000,
             "async": false
+          },
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PROJECT_DIR}/.claude/hooks/run-hook.cmd\" adjudication-output-gate \"$TOOL_INPUT\"",
+            "timeout": 5000,
+            "async": false
           }
         ]
       },

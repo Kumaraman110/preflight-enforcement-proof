@@ -1,0 +1,131 @@
+#!/usr/bin/env bash
+# PreToolUse hook for Write. Mechanically validates the parent's adjudication
+# record (the verdict-of-record) before it reaches disk. Closes the 1A gap:
+# the artifact was parent-written and un-gated, so a fabricated correctness
+# field (the verifiedAgainstSource disease) or an evidence-less DEFENDED could
+# enter the durable record. This gate makes that unrepresentable.
+#
+# Guards ONLY writes to .preflight/adjudications/*.json. Every other path
+# passes through untouched.
+#
+# Two enforcement targets (spec: lib/adjudication-record.md):
+#   1. Forbidden keys — any per-finding key outside the closed allow-list
+#      (e.g. a smuggled verifiedAgainstSource / isRealBug / legacyConfirmed).
+#   2. No-DEFENDED-without-evidence — a DEFENDED / AMBIGUOUS-DEFENDED entry
+#      whose citedEvidence is not a concrete citation (file:line, §N, or a
+#      named design-doc artifact) — i.e. a bare prose excuse.
+#
+# FAIL BEHAVIOR:
+#   For the guarded path, the gate fails CLOSED: malformed tool JSON,
+#   unparseable content JSON, or no available JSON parser → BLOCK (exit 2).
+#   A malformed verdict-of-record is exactly what must not reach disk.
+#   For every non-guarded path, the gate passes through (exit 0) — including
+#   when file_path extraction yields nothing (not our artifact).
+#
+# INPUT CONTRACT:
+#   Claude Code pipes a JSON object to stdin:
+#   {"tool_name":"Write","tool_input":{"file_path":"...","content":"..."}}.
+#   content is the JSON text being written — a STRING inside the tool JSON,
+#   so validation is a two-level parse: tool JSON → .tool_input.content
+#   (string) → parse that string as the adjudication record.
+#
+# Exit 0 = allow      Exit 2 = block (reason on stderr; Claude Code blocks on 2)
+
+set -uo pipefail
+
+STDIN_JSON="$(cat)"
+
+# ─── Pick a JSON tool (jq preferred, node fallback) ──────────
+JSON_TOOL=""
+if command -v jq &>/dev/null; then
+  JSON_TOOL="jq"
+elif command -v node &>/dev/null; then
+  JSON_TOOL="node"
+fi
+
+# ─── Level 1: extract tool_input.file_path ───────────────────
+FILE_PATH=""
+if [ "$JSON_TOOL" = "jq" ]; then
+  FILE_PATH=$(printf '%s' "$STDIN_JSON" | jq -r '.tool_input.file_path // empty' 2>/dev/null || echo "")
+elif [ "$JSON_TOOL" = "node" ]; then
+  FILE_PATH=$(printf '%s' "$STDIN_JSON" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const j=JSON.parse(d);process.stdout.write((j.tool_input&&j.tool_input.file_path)||'')}catch(e){}})" 2>/dev/null || echo "")
+else
+  # No JSON parser: extract path by grep so we can tell if this is our artifact.
+  FILE_PATH=$(printf '%s' "$STDIN_JSON" | grep -o '"file_path"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"file_path"[[:space:]]*:[[:space:]]*"//;s/"$//' || echo "")
+fi
+
+# ─── Is this an adjudication record? ─────────────────────────
+# Match .preflight/adjudications/<anything>.json (forward or back slashes).
+is_adjudication() {
+  printf '%s' "$1" | grep -qE '[/\\]?\.preflight[/\\]adjudications[/\\][^/\\]+\.json$'
+}
+
+# Not our artifact (or unextractable path that isn't ours) → pass through.
+if [ -z "$FILE_PATH" ] || ! is_adjudication "$FILE_PATH"; then
+  exit 0
+fi
+
+# ─── This IS an adjudication record — fail closed from here ──
+# A guarded write with no JSON parser cannot be validated → block.
+if [ -z "$JSON_TOOL" ]; then
+  echo "BLOCKED: cannot validate adjudication record — no jq or node available. Failing closed." >&2
+  exit 2
+fi
+
+# ─── Level 2: extract tool_input.content (the record JSON text) ──
+CONTENT=""
+if [ "$JSON_TOOL" = "jq" ]; then
+  CONTENT=$(printf '%s' "$STDIN_JSON" | jq -r '.tool_input.content // empty' 2>/dev/null || echo "")
+else
+  CONTENT=$(printf '%s' "$STDIN_JSON" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const j=JSON.parse(d);process.stdout.write((j.tool_input&&j.tool_input.content)||'')}catch(e){}})" 2>/dev/null || echo "")
+fi
+
+if [ -z "$CONTENT" ]; then
+  echo "BLOCKED: adjudication record has empty/unreadable content. Failing closed." >&2
+  exit 2
+fi
+
+# ─── Validate the content JSON via node (portable; does the schema walk) ──
+# Allow-list of per-finding keys (lib/adjudication-record.md). citedEvidence
+# regex accepts: file:line ( .<ext>:<digits> ), rubric §<digits>, or a named
+# design-doc artifact (MIGRATION_PATTERNS.md / behavior-spec* / name-contract /
+# dependency-map.json / legacy-db-name-contract). Bare prose excuses are rejected.
+VALIDATOR_NODE='
+const fs=require("fs");
+let raw;
+try { raw = JSON.parse(process.argv[1]); }
+catch(e){ console.error("BLOCKED: adjudication record is not valid JSON. Failing closed."); process.exit(2); }
+
+const ALLOW = new Set(["commentId","threadNodeId","path","parentVerdict","citedEvidence","handlerStability","securityEscalated","residualUncertainty"]);
+const CITES = /\.[A-Za-z0-9]+:[0-9]+|§[0-9]+|MIGRATION_PATTERNS\.md|behavior-spec[A-Za-z0-9._-]*|name-contract|dependency-map\.json|legacy-db-name-contract/;
+const DEFENDED = new Set(["DEFENDED","AMBIGUOUS-DEFENDED"]);
+
+const entries = Array.isArray(raw.adjudications) ? raw.adjudications : [];
+for (let i=0;i<entries.length;i++){
+  const e = entries[i] || {};
+  // Target 1: forbidden keys
+  for (const k of Object.keys(e)){
+    if (!ALLOW.has(k)){
+      console.error(`BLOCKED: forbidden key "${k}" in adjudication entry ${i} (commentId=${e.commentId||"?"}). The verdict-of-record carries FORM+VERDICT only; correctness-attestation fields (verifiedAgainstSource, isRealBug, legacyConfirmed) are not permitted.`);
+      process.exit(2);
+    }
+  }
+  // Target 2: DEFENDED requires a concrete citation
+  if (DEFENDED.has(e.parentVerdict)){
+    const cv = (e.citedEvidence==null) ? "" : String(e.citedEvidence);
+    if (!CITES.test(cv)){
+      console.error(`BLOCKED: ${e.parentVerdict} entry ${i} (commentId=${e.commentId||"?"}) has citedEvidence="${cv}" — a prose excuse, not a concrete citation. A defended verdict requires a legacy file:line, rubric §N, or named design-doc artifact (see lib/adjudication-record.md).`);
+      process.exit(2);
+    }
+  }
+}
+process.exit(0);
+'
+node -e "$VALIDATOR_NODE" "$CONTENT" >&2
+RC=$?
+if [ "$RC" -ne 0 ]; then
+  exit 2
+fi
+
+# All entries clean — allow the write.
+exit 0

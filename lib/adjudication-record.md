@@ -81,19 +81,26 @@ verdict-aware cap will require.
 - **`securityEscalated`** — `true` when the finding touched auth/authz/fail-open/SSRF/injection/
   secrets/privilege-escalation and was escalated to the human (security findings never auto-defend).
 
-## Enforcement boundary (1A is un-gated; 1B mechanizes this)
+## Enforcement (mechanical — `adjudication-output-gate`)
 
-1A is written by the **parent** directly and is **not yet gated** — the parent is instructed to
-honor the schema, but nothing mechanically blocks a malformed write. This is a known transitional
-gap: until 1B lands, the verdict-of-record is agent-mintable (the same class as the
-`verifiedAgainstSource` fabrication and the parity-clean self-clear).
+The parent writes this artifact directly, and the write is **mechanically gated** by the
+`adjudication-output-gate` hook (registered as a `PreToolUse:Write` matcher in `hooks/hooks.json`,
+alongside `bootstrap-write-gate`). The hook intercepts any Write whose `file_path` matches
+`.preflight/adjudications/*.json`, two-level-parses `tool_input.content`, and blocks the write
+(exit 2) on either enforcement target:
 
-**1B closes it** with a `PreToolUse:Write` validator (`adjudication-output-gate`) that intercepts
-any Write to `.preflight/adjudications/*.json` and blocks (exit 2) on **two** enforcement targets
-defined here:
-1. **Forbidden keys** — any key outside the closed per-finding schema above (e.g. a smuggled
-   `verifiedAgainstSource`/`isRealBug`/`legacyConfirmed` correctness-attestation field).
-2. **No-DEFENDED-without-evidence** — a `DEFENDED`/`AMBIGUOUS-DEFENDED` entry whose `citedEvidence`
-   is not a concrete `file:line` or `§N` citation (i.e. matches a prose-excuse pattern).
+1. **Forbidden keys** — any per-finding key outside the closed allow-list above is rejected. A
+   smuggled correctness-attestation field (`verifiedAgainstSource`, `isRealBug`, `legacyConfirmed`)
+   cannot enter the record — this is what makes the `verifiedAgainstSource` fabrication
+   *unrepresentable*, not merely discouraged.
+2. **No-DEFENDED-without-evidence** — a `DEFENDED` / `AMBIGUOUS-DEFENDED` entry whose `citedEvidence`
+   does not match a concrete citation (a legacy `file:line`, a rubric `§N`, or a named design-doc
+   artifact: `MIGRATION_PATTERNS.md`, `behavior-spec*`, `name-contract`, `dependency-map.json`,
+   `legacy-db-name-contract`) is rejected as a prose excuse.
 
-Both rules are stated here precisely so 1B has an unambiguous spec to mechanize.
+The gate **fails closed** for this path: malformed tool JSON, unparseable content, or no available
+JSON parser all block the write — a malformed verdict-of-record must not reach disk. Every
+non-adjudication write passes through untouched. The accepted-citation forms are deliberately
+lexical (presence of a real citation token), not semantic: the gate blocks *un-auditable* defenses
+(bare adjectives); whether a named artifact substantively supports the claim is the parent's
+context-before-fix job plus human audit, not the gate's.
