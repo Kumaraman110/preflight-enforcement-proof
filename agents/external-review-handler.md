@@ -557,11 +557,20 @@ When a coupled fix group is successfully resolved (parent reports DONE after imp
 
 ---
 
-## Rubric-Edit PR: Promotion Criteria and Scanning
+## Rubric-Edit PR: Promotion Criteria (reference)
 
-> Full process documentation: `docs/rubric-edit-process.md`
+> **Ownership:** The handler does NOT draft the rubric-edit PR. Promotion and drafting are owned by
+> the `/preflight:rubric-edit` skill (`skills/rubric-edit/SKILL.md`), which runs the deterministic
+> promotion matrix in `lib/rubric-promotion-evaluator.sh` and drafts the human-reviewed PR. Full
+> process documentation: `docs/rubric-edit-process.md`.
+>
+> The handler's only roles in the rubric-edit lifecycle are: (1) writing capture entries during the
+> Stage 2 loop (the four buckets above), and (2) the Step 9.4 post-adjudication reconciliation pass
+> that marks defended findings `⛔ DO NOT PROMOTE`. The handler never scans captures to draft a PR.
 
-When preparing a batched rubric-edit PR (per `loop.rubricEditCadence`), scan all capture entries in calibration-log and checklist-additions. Evaluate each for promotion using this decision matrix:
+This section is retained as reference for the criteria the `/preflight:rubric-edit` skill applies
+(via `lib/rubric-promotion-evaluator.sh`) when it scans all capture entries in calibration-log and
+checklist-additions and evaluates each for promotion:
 
 **Promotion criteria (Survived × Confidence):**
 
