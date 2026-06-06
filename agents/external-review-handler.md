@@ -286,7 +286,34 @@ Return findings with status code. Mark each finding's stability:
 - `UNSTABLE` → parent surfaces to user, does NOT auto-fix
 - `CONTRADICTS_RUBRIC` → parent surfaces to user with both sides, does NOT auto-fix
 
+You classify FORM (stability) and ROUTING only. You do NOT judge whether the migrated code is
+CORRECT — that is the parent's context-before-fix step, which reads legacy/spec/parity. Never emit
+a field asserting a finding's correctness, legacy-faithfulness, or source-verification (e.g.
+`verifiedAgainstSource`, `isRealBug`, `legacyConfirmed`); such a field is an invalid emission with
+nothing behind it.
+
 Control returns to you at Step 3.
+
+### Step 9.4 — Reconciliation pass (post-adjudication; invoked by the parent, no polling)
+
+The parent invokes this AFTER its context-before-fix adjudication, passing you the adjudication
+record (`.preflight/adjudications/PR<n>-<HEAD>.json`, schema in
+`${FRAMEWORK_ROOT}/lib/adjudication-record.md`). This pass does no polling and no classification — it
+reconciles the capture entries you wrote DURING the loop to the parent's FINAL verdict.
+
+Capture was written before the parent adjudicated, so a DEFENDED finding's entry is still sitting as
+a live promotion candidate. For each adjudication entry:
+
+| `parentVerdict` | Capture action |
+|---|---|
+| `DEFENDED` / `AMBIGUOUS-DEFENDED` | Annotate the finding's capture entry: prepend a blockquote `> ⛔ DEFENDED — DO NOT PROMOTE (<date>).` including the `citedEvidence` and a pointer to the PR thread, AND set the entry's `**Survived:**` field to `N/A (defended)`. The body stays (preserves the raised→considered→rejected record) but is marked superseded so the next batched rubric-edit PR does not build a detection rule from it. |
+| `AMBIGUOUS-FIXED` | Append the entry's `residualUncertainty` note so the doubt is auditable. |
+| `FIXED` | Leave `in-rubric-but-missed` entries as live promotion candidates — a fixed real bug the rubric missed is exactly what should promote. |
+
+This is the only capture write that reflects post-adjudication truth; it systematizes the
+`⛔ DO NOT PROMOTE` annotation applied by hand on PR #92. Editing capture remains YOUR exclusive
+responsibility (the parent never edits capture directly) — the parent delegates here precisely to
+preserve that invariant.
 
 ### Step 9.5 — Thread resolution (after fix push OR on terminal-state cleanup)
 

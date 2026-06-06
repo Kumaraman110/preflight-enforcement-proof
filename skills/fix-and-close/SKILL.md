@@ -342,6 +342,45 @@ The iteration cap (`maxStage2Iterations`, oscillation detection) bounds CHURN �
 - Every finding terminal: can't silently drop findings by hitting a cap and walking away
 - After cap hit: remaining unresolved findings are decided (context-before-fix → fix or defend) and documented without further push/poll rounds
 
+### Adjudication Record (verdict-of-record — MANDATORY after context-before-fix)
+
+After context-before-fix decides each behavioral finding (FIXED / DEFENDED / AMBIGUOUS-*), write the
+**verdict-of-record** to `.preflight/adjudications/PR<n>-<HEAD>.json` per the schema in
+`${FRAMEWORK_ROOT}/lib/adjudication-record.md`. One entry per finding with `parentVerdict` +
+`citedEvidence` (the same specific legacy `file:line`-or-`§N` citation the context-before-fix
+evidence requirement already mandates for DEFENDED). This is the authoritative decision-of-record —
+distinct from `metrics.json` (which holds counts/telemetry only) and from gate evidence (pass/fail).
+
+The parent writes this artifact directly. This is NOT a capture file — the "only the handler edits
+capture files" rule does not apply; the parent already writes other `.preflight/` artifacts
+(`write-gate-evidence`, `write-active-groups`, `metrics.json`), and this is the same kind of
+parent-owned write.
+
+**`citedEvidence` rule (honor it — 1B will mechanically enforce it):** for `DEFENDED` /
+`AMBIGUOUS-DEFENDED`, `citedEvidence` MUST be a concrete legacy `file:line` or rubric `§N` — a prose
+excuse ("no evidence", "intentional", "legacy-faithful") is INVALID for a defended verdict. For
+`FIXED` / `AMBIGUOUS-FIXED`, `"n/a — fixed, not defended"` is accepted.
+
+**Transitional note:** until the 1B `PreToolUse:Write` validator (`adjudication-output-gate`) lands,
+this artifact is parent-written and un-gated — honor the schema by instruction. 1B mechanizes both
+the forbidden-key block and the no-DEFENDED-without-evidence rule. (v0.7.3 ledger: 1B is committed
+next.)
+
+### Capture Reconciliation (post-adjudication — delegate to the handler)
+
+Capture entries are written by the handler DURING the loop, BEFORE the parent adjudicates — so a
+DEFENDED finding's capture entry is still written as a live promotion candidate. Reconcile it to the
+final verdict so the next batched rubric-edit PR does not promote a detection rule for behavior the
+team deliberately kept.
+
+Because "only the handler edits capture files" (see *What This Does NOT Do*), the parent does NOT
+annotate capture directly. Instead, **re-invoke the `external-review-handler` sub-agent for a
+reconciliation pass (no polling)**, passing it the adjudication record. The handler executes its
+*Reconciliation pass (post-adjudication)* step: for each DEFENDED / AMBIGUOUS-DEFENDED finding it
+annotates the capture entry with a `⛔ DEFENDED — DO NOT PROMOTE` banner (cited evidence + date) and
+sets `Survived: N/A (defended)`; FIXED in-rubric-but-missed entries stay as live promotion
+candidates. This systematizes the annotation that was applied by hand on PR #92.
+
 ### Final Summary
 
 15. PR URL, total Stage 1 iterations, total Stage 2 iterations, capture entries by bucket, coverage achieved, findings resolved (N fixed + M defended).

@@ -33,6 +33,8 @@ Without metrics, "we're superior" is a claim, not a fact. The system's core cont
         "stableFindings": 3,
         "trivialStableFindings": 1,
         "unstableFindings": 0,
+        "fixedCount": 2,
+        "defendedCount": 1,
         "pollWaitSeconds": 400,
         "durationSeconds": 490
       },
@@ -49,6 +51,16 @@ Without metrics, "we're superior" is a claim, not a fact. The system's core cont
   ]
 }
 ```
+
+## Telemetry only — NOT the decision-of-record
+
+Metrics holds **counts**, not verdicts. `fixedCount` / `defendedCount` are tallies for trend
+analysis. The per-finding adjudicated verdict (which finding was fixed vs defended) **and its cited
+legacy evidence** are the authoritative decision-of-record and live in the SHA-keyed adjudication
+artifact (`.preflight/adjudications/PR<n>-<HEAD>.json`, schema in `lib/adjudication-record.md`) —
+NOT here. Do not add per-finding verdict detail or `citedEvidence` to metrics: that would bury
+load-bearing decision infrastructure in a free-form telemetry blob the agent appends to, where a
+fabricated verdict would look native. Counts here; verdicts + evidence there.
 
 ## Collection Points
 
