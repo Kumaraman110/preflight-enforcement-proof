@@ -10,6 +10,7 @@ Without metrics, "we're superior" is a claim, not a fact. The system's core cont
 
 ```json
 {
+  "lastRubricEditAtRun": 0,
   "runs": [
     {
       "timestamp": "2026-05-18T14:32:00Z",
@@ -51,6 +52,16 @@ Without metrics, "we're superior" is a claim, not a fact. The system's core cont
   ]
 }
 ```
+
+## Cadence counter — `lastRubricEditAtRun`
+
+`lastRubricEditAtRun` is the `runs`-array index (length) at which the last rubric-edit PR was
+opened. The rubric-edit cadence is computed as `len(runs) - lastRubricEditAtRun` — when that
+reaches `loop.rubricEditCadence` (default 5), fix-and-close surfaces a low-urgency reminder to run
+`/preflight:rubric-edit` (segment 2). The `rubric-edit` skill resets it to the current `runs`
+length after its PR merges. Absent field → treat as 0 (no rubric-edit has run yet). This is the
+counter design specified in `docs/rubric-edit-process.md` §2 ("the `runs` array length since last
+rubric-edit") — the cadence is a guideline, not a gate.
 
 ## Telemetry only — NOT the decision-of-record
 

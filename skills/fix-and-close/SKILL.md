@@ -385,12 +385,13 @@ candidates. This systematizes the annotation that was applied by hand on PR #92.
 
 15. PR URL, total Stage 1 iterations, total Stage 2 iterations, capture entries by bucket, coverage achieved, findings resolved (N fixed + M defended).
 16. Tell user PR is ready for human review. Do NOT merge.
+17. **Rubric-edit cadence reminder (low-urgency surface — NOT a gate, NOT auto-fire).** After writing metrics, check whether a rubric-edit is due: count the `runs` array length in `.preflight/metrics.json` and subtract `lastRubricEditAtRun` (absent → treat as 0). If `(runs - lastRubricEditAtRun) >= loop.rubricEditCadence` (default 5), surface a one-line reminder in the final summary: "Rubric-edit due: N preflight runs since the last promotion — consider running `/preflight:rubric-edit` to draft a batched rubric PR from accumulated captures." Do NOT auto-invoke `rubric-edit`, do NOT block — promotion is a separate human-gated effort (`docs/rubric-edit-process.md` §2). The cadence is a guideline.
 
 ## Capture Files and the Rubric
 
 Capture files are **transient evidence** — they record what Copilot flagged, how it was classified, and how many services have validated the pattern. They do NOT take immediate operative effect. Code-reviewer reads only the rubric for detection rules.
 
-Capture entries become operative detection rules through the **batched rubric-edit PR process**: after `loop.rubricEditCadence` migrations, the external-review-handler drafts a PR that promotes validated entries (Survived 2+, Confidence high/medium) into new rubric sections. A human reviews and merges that PR. Only then do those rules fire on subsequent services.
+Capture entries become operative detection rules through the **batched rubric-edit PR process**: after `loop.rubricEditCadence` runs, the `/preflight:rubric-edit` skill (segment 2 — see `docs/rubric-edit-process.md`) runs the deterministic promotion matrix (`lib/rubric-promotion-evaluator.sh`), skips defended entries, and drafts a `chore(rubric)` PR promoting validated entries (Survived 2+) into rubric sections. A human reviews and merges that PR. Only then do those rules fire on subsequent services.
 
 This trades "learnings take effect next invocation" for conflict-free parallel execution — multiple engineers can run preflight simultaneously without race conditions on shared capture files.
 
