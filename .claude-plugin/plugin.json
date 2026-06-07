@@ -2,6 +2,7 @@
   "name": "preflight",
   "version": "0.1.0",
   "description": "Self-improving code review and development framework. Provides rubric-driven Stage 1 review, Copilot-driven Stage 2 review loops, learning capture, and orchestration for both .NET migration and net-new API development.",
+  "_status": "WORK-IN-PROGRESS — NOT the live delivery path. This manifest is a roadmap placeholder for future Claude-Code-plugin-form delivery (tracked as the #1 item in docs/v0.2-design.md). The LIVE install path is tools/preflight-install.sh, which copies surfaces into the consumer's .claude/ and merges hook registration directly from hooks/hooks.json into settings.json — it NEVER reads this file. Two keys are deliberately ABSENT until plugin-form is built against verified official Claude Code plugin docs: `hooks` (hook registration; today via hooks/hooks.json -> settings.json) and `agents` (sub-agent registration; today via per-file copy into .claude/agents/). Do NOT assume plugin-form works from this manifest — see docs/v0.2-design.md before enabling it.",
   "author": {
     "name": "Kumar Aman"
   },
@@ -9,13 +10,16 @@
   "license": "UNLICENSED",
   "keywords": ["review", "migration", "self-improving", "copilot"],
   "skills": [
-    "./skills/self-review",
+    "./skills/behavior-spec",
+    "./skills/bootstrap",
     "./skills/fix-and-close",
-    "./skills/migrate",
-    "./skills/scaffold",
-    "./skills/systematic-debugging",
-    "./skills/test-driven-development",
     "./skills/gps-decide",
-    "./skills/routing"
+    "./skills/migrate",
+    "./skills/routing",
+    "./skills/rubric-edit",
+    "./skills/scaffold",
+    "./skills/self-review",
+    "./skills/systematic-debugging",
+    "./skills/test-driven-development"
   ]
 }
