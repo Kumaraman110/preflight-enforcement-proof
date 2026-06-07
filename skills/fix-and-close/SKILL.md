@@ -388,6 +388,38 @@ candidates. This systematizes the annotation that was applied by hand on PR #92.
 16. Tell user PR is ready for human review. Do NOT merge.
 17. **Rubric-edit cadence reminder (low-urgency surface — NOT a gate, NOT auto-fire).** After writing metrics, check whether a rubric-edit is due: count the `runs` array length in `.preflight/metrics.json` and subtract `lastRubricEditAtRun` (absent → treat as 0). If `(runs - lastRubricEditAtRun) >= loop.rubricEditCadence` (default 5), surface a one-line reminder in the final summary: "Rubric-edit due: N preflight runs since the last promotion — consider running `/preflight:rubric-edit` to draft a batched rubric PR from accumulated captures." Do NOT auto-invoke `rubric-edit`, do NOT block — promotion is a separate human-gated effort (`docs/rubric-edit-process.md` §2). The cadence is a guideline.
 
+## Branch Cleanup (verify-after-close — NOT part of the no-merge happy path)
+
+fix-and-close hands a clean PR to a human and does **NOT merge** — so it does not delete the branch
+on the happy path (the PR is still open, awaiting human merge). This procedure is for the cases that
+DO require branch cleanup: a PR that is **intentionally closed** (superseded by a re-attempt, or
+abandoned), or cleanup **after a human has merged**. Invoke it then — never on an open PR you intend
+to keep.
+
+**Why this exists / the gotcha:** observed in practice — five PRs reused the same head branch
+(`feature/migrate-sessiontoken`: #70, #71, #90, #91, #92) and the branch was never deleted, because
+(a) the framework had no cleanup logic at all, and (b) `gh pr close --delete-branch` **silently
+skips deletion when another open PR still references the same branch**. A blind `--delete-branch`
+therefore fails silently under exactly the branch-reuse pattern that produces the debris. Cleanup
+must verify, not assume.
+
+**Procedure (close → verify → diagnose-before-force):**
+1. Close with deletion requested: `gh pr close <n> --delete-branch` (or, post-merge, just verify).
+2. **Verify the branch is actually gone:** `git ls-remote --heads <branch.remote> <branch>`.
+   - **Empty** → deleted. Done.
+   - **Still present** → do NOT assume failure or blindly force-delete. Diagnose:
+3. **Diagnose the persistence:** `gh pr list --repo <canonical> --head <branch> --state open`.
+   - **Another open PR references the branch** → this is correct: that PR needs it. Do NOT delete.
+     Surface it ("branch retained — open PR #<m> still references it").
+   - **No open PR references it** (the silent-skip case, or a permissions/protection issue) →
+     explicitly delete: `git push <branch.remote> --delete <branch>`, then **re-verify** with
+     `git ls-remote --heads`. If it STILL persists, surface the reason (protected branch? perms?) —
+     do not loop.
+
+Always operate against the canonical remote/repo (`config.branch.remote`) — never `origin` if that
+is the legacy repo. (Deeper fix — not reusing branch names across migration attempts — is tracked
+separately; this procedure handles the debris that pattern produces.)
+
 ## Capture Files and the Rubric
 
 Capture files are **transient evidence** — they record what Copilot flagged, how it was classified, and how many services have validated the pattern. They do NOT take immediate operative effect. Code-reviewer reads only the rubric for detection rules.
