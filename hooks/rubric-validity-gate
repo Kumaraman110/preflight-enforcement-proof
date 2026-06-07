@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
-# PreToolUse hook for Agent calls. Only activates when spawning a
+# PreToolUse hook for subagent-spawn calls. Only activates when spawning a
 # code-reviewer sub-agent. Blocks if no valid rubric can be resolved.
+#
+# MATCHER NOTE: registered in hooks.json with matcher "Agent|Task" (exact-token
+# alternation, supported by Claude Code's matcher syntax). The tool that spawns a
+# sub-agent is named "Agent" in current Claude Code; it was historically "Task"
+# (and the SubagentStart event is yet another surface). Matching BOTH tokens keeps
+# this gate live across versions instead of going silently dead if the token differs
+# from whatever a given Claude Code build emits. The body below is matcher-agnostic:
+# it reads tool_input.subagent_type and only acts on a code-reviewer spawn, so a
+# false match on the other token is harmless (subagent_type != code-reviewer -> exit 0).
 #
 # INPUT CONTRACT:
 #   Claude Code pipes a JSON object to stdin: {"tool_name":"Agent",
