@@ -20,6 +20,7 @@ If you think there is even a 1% chance a skill applies to what you're about to d
 | Lock in a readiness score, pick an architectural approach, or propose a rubric/rule change | `/preflight:gps-decide` (skip for trivial reversible choices) | Confident-but-untested judgment ships unchallenged; a wrong one-way-door call costs weeks, not the seconds a stress-test pass takes |
 | Adopt preflight / set up team config | `/preflight:bootstrap` | Skipping bootstrap means ad-hoc config that drifts. Bootstrap produces expert-practice configuration in one conversation. |
 | Promote accumulated captures into the rubric (cadence reminder fired, or asked to "run the rubric-edit"/"promote captures") | `/preflight:rubric-edit` | Captures that never promote = the loop self-observes but never self-improves. The skill runs the deterministic promotion matrix (skips defended entries) and drafts a human-reviewed rubric PR — never auto-edits the rubric. |
+| Establish or refresh a behavioral baseline, or check parity drift OUTSIDE a full migration (e.g. before a refactor, or to re-baseline a service) | `/preflight:behavior-spec <Service> [--legacy\|--migrated]` | The parity gate compares against `behavior-spec.json`; without a current baseline, drift goes undetected. Inside `/preflight:migrate` this runs automatically — this entry is for the standalone case (re-baseline, ad-hoc parity check) the migrate path doesn't cover. |
 
 ## Red Flags — You Are Rationalizing
 
