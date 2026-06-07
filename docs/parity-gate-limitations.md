@@ -70,3 +70,26 @@ admin-bypass on the environment, reopens the hole — the close assumes the appr
 one the agent cannot assume.
 
 Until then: the residual protections above **raise the bar; they do not close the hole.**
+
+## Related: force-push / wrong-remote guard (same buildable-local, server-side-ceiling shape)
+
+`hooks/pre-push-gate-check` includes a guard that blocks, for the agent's Bash tool, two
+irreversible mistakes that prose alone otherwise forbids:
+- **force-push** (`--force` / `-f` / `--force-with-lease`) to a **protected branch**
+  (`config.branch.base`, plus `main`/`master` always) — even a leased force rewrites shared
+  history;
+- a **push to a non-canonical remote** (anything other than `config.branch.remote` — notably
+  `origin`, which on these clones is the legacy CPSL production repo).
+
+This guard has the **same enforcement boundary as the parity gate above**: it constrains the
+**agent's Bash tool only** — not a human shell, a CI token, or another machine. It closes the
+*live, agentic* exposure (the actor that matters during an automated migration run), but it is
+**not** true branch protection. Real protection (restrict force-push, restrict who can push,
+require PR) is a **server-side branch-protection setting** — the same team/infrastructure
+decision as the parity close above.
+
+The guard is also **fail-open**: if `.preflight/config.json` is absent or unparseable it does
+**not** block (it is an additive guard, and must never newly block a repo that did not opt into
+branch protection). So its absence of a block is **not** evidence that a push was protection-checked
+— only that either the push was allowed or no config was present. Do not read this guard as
+unconditional force-push protection.

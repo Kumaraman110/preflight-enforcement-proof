@@ -30,6 +30,87 @@ if ! printf '%s' "$COMMAND" | grep -qE '(^|&&|\|\||;|")\s*git\s+push'; then
   exit 0
 fi
 
+# ── #6b: force-push + wrong-remote guard (BEFORE the evidence gate) ───────────
+# Block, for the AGENT's Bash tool, two irreversible mistakes prose alone forbids:
+#   (A) force-push (--force / -f / --force-with-lease) to a PROTECTED branch
+#       (config.branch.base, plus main/master always), and
+#   (B) push to a NON-CANONICAL remote (anything other than config.branch.remote —
+#       notably `origin`, which on these clones is the legacy CPSL prod repo).
+#
+# Scope/ceiling (see docs/parity-gate-limitations.md): this guards the agent's Bash
+# tool ONLY — not a human shell, a CI token, or another machine. True protection is
+# server-side branch protection. It is also FAIL-OPEN: if config is absent/unparseable
+# it does NOT block (additive guard; never newly blocks a repo that didn't opt in).
+
+# Isolate the single `git push …` invocation from any compound command for parsing.
+PUSH_CMD="$(printf '%s' "$COMMAND" | grep -oE 'git[[:space:]]+push[^&|;]*' | head -1 || true)"
+
+# Resolve config (fail-open on any miss). jq → node → grep fallback, same idiom as other hooks.
+CONFIG="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/.preflight/config.json"
+BASE=""; REMOTE=""
+if [ -f "$CONFIG" ]; then
+  if command -v jq &>/dev/null; then
+    BASE="$(jq -r '.branch.base // empty' "$CONFIG" 2>/dev/null || true)"
+    REMOTE="$(jq -r '.branch.remote // empty' "$CONFIG" 2>/dev/null || true)"
+  elif command -v node &>/dev/null; then
+    BASE="$(node -e "try{const c=require('$CONFIG');process.stdout.write((c.branch&&c.branch.base)||'')}catch(e){}" 2>/dev/null || true)"
+    REMOTE="$(node -e "try{const c=require('$CONFIG');process.stdout.write((c.branch&&c.branch.remote)||'')}catch(e){}" 2>/dev/null || true)"
+  else
+    BASE="$(grep -oE '"base"[[:space:]]*:[[:space:]]*"[^"]*"' "$CONFIG" | head -1 | sed 's/.*"\([^"]*\)"$/\1/' || true)"
+    REMOTE="$(grep -oE '"remote"[[:space:]]*:[[:space:]]*"[^"]*"' "$CONFIG" | head -1 | sed 's/.*"\([^"]*\)"$/\1/' || true)"
+  fi
+fi
+
+# Protected branch names: config base (if any) + main/master always.
+PROTECTED_BRANCHES="main master"
+[ -n "$BASE" ] && PROTECTED_BRANCHES="$PROTECTED_BRANCHES $BASE"
+
+# Does the push carry a force flag of any kind?
+HAS_FORCE=false
+if printf '%s' "$PUSH_CMD" | grep -qE '(^|[[:space:]])(--force-with-lease([=[:space:]]|$)|--force([[:space:]]|$)|-f([[:space:]]|$))'; then
+  HAS_FORCE=true
+fi
+
+# Token-scan the push args (drop `git push` and any flags) → [remote] [refspec...].
+PUSH_ARGS="$(printf '%s' "$PUSH_CMD" | sed -E 's/^git[[:space:]]+push//')"
+POSITIONAL=""
+for tok in $PUSH_ARGS; do
+  case "$tok" in
+    -*) ;;                       # skip flags (--force, -u, --force-with-lease=…, etc.)
+    *)  POSITIONAL="$POSITIONAL $tok" ;;
+  esac
+done
+set -- $POSITIONAL
+ARG_REMOTE="${1:-}"             # first positional = remote (if named)
+ARG_REFSPEC="${2:-}"           # second positional = refspec (if named)
+
+# (B) wrong-remote: a NAMED remote that isn't the canonical one → block.
+if [ -n "$REMOTE" ] && [ -n "$ARG_REMOTE" ] && [ "$ARG_REMOTE" != "$REMOTE" ]; then
+  echo "BLOCKED: push targets remote '$ARG_REMOTE', not the canonical '$REMOTE' (config.branch.remote)." >&2
+  echo "  On these clones 'origin' is the legacy CPSL prod repo — never push there. Use '$REMOTE'." >&2
+  echo "  (Agent Bash-tool guard only; not server-side protection — see docs/parity-gate-limitations.md.)" >&2
+  exit 2
+fi
+
+# (A) force to a protected branch → block. Target branch = refspec's destination
+# (after a ':' if present, e.g. HEAD:AccountLookUp_POC), else the named ref, else the
+# current branch (bare `git push --force`).
+if [ "$HAS_FORCE" = true ]; then
+  TARGET_BRANCH="${ARG_REFSPEC##*:}"
+  if [ -z "$TARGET_BRANCH" ]; then
+    TARGET_BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+  fi
+  for pb in $PROTECTED_BRANCHES; do
+    if [ "$TARGET_BRANCH" = "$pb" ]; then
+      echo "BLOCKED: force-push (--force/-f/--force-with-lease) to protected branch '$pb'." >&2
+      echo "  Shared branches must never be force-pushed — even --force-with-lease rewrites shared history." >&2
+      echo "  (Agent Bash-tool guard only; not server-side protection — see docs/parity-gate-limitations.md.)" >&2
+      exit 2
+    fi
+  done
+fi
+
+# Not a blocked operation — fall through to the evidence gate.
 # This IS a git push - run the full pre-push gate
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 exec bash "$SCRIPT_DIR/pre-push-gate"
