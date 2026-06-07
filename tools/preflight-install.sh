@@ -286,6 +286,38 @@ if [ -f "$MANIFEST_PATH" ] && command -v jq &>/dev/null; then
     echo ""
 fi
 
+# ── Step 6.6: Place .preflight/.gitignore so runtime state can't be committed (GAP-5c) ──
+# Without this, a consumer has NO ignore for .preflight/ runtime state, so a broad `git add`
+# sweeps gate evidence / derived caches / metrics / checkpoint into a commit. The template
+# ships in defaults/ (already installed to .claude/defaults/preflight-gitignore above).
+# - Absent  → create from template.
+# - Present → APPEND only the required lines that are missing (don't clobber a consumer's
+#   customized ignore; a prior hand-made file was observed missing 'derived/' and 'metrics.json').
+GITIGNORE_TEMPLATE="${CONSUMER_DIR}/.claude/defaults/preflight-gitignore"
+CONSUMER_GITIGNORE="${MANIFEST_DIR}/.gitignore"
+REQUIRED_IGNORES="cache/ derived/ gate/ metrics.json migrate-checkpoint.json"
+if [ -f "$GITIGNORE_TEMPLATE" ]; then
+    if [ ! -f "$CONSUMER_GITIGNORE" ]; then
+        cp "$GITIGNORE_TEMPLATE" "$CONSUMER_GITIGNORE"
+        echo "Created .preflight/.gitignore from template (runtime state will not be committed)."
+    else
+        ADDED=""
+        for pat in $REQUIRED_IGNORES; do
+            # match the bare pattern as a whole line (ignoring CR), so we don't double-add
+            if ! grep -qE "^${pat//./\\.}[[:space:]]*$" <(tr -d '\r' < "$CONSUMER_GITIGNORE"); then
+                printf '%s\n' "$pat" >> "$CONSUMER_GITIGNORE"
+                ADDED="${ADDED} ${pat}"
+            fi
+        done
+        if [ -n "$ADDED" ]; then
+            echo "Updated .preflight/.gitignore — added missing runtime-state ignores:${ADDED}"
+        else
+            echo ".preflight/.gitignore already covers all required runtime-state paths."
+        fi
+    fi
+    echo ""
+fi
+
 TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
 AGENTS_JSON=$(tsv_to_json "${TSV_DIR}/agents.tsv")

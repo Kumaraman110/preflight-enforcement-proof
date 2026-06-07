@@ -1,0 +1,32 @@
+# Preflight runtime state — never commit.
+#
+# This file is installed to <consumer>/.preflight/.gitignore by tools/preflight-install.sh.
+# Paths are relative to the .preflight/ directory it lives in.
+#
+# These files are per-clone, per-run, and HEAD-stamped: mechanical-gate evidence,
+# derived caches, metrics, and the migration progress checkpoint. They are written by
+# hooks and skills at runtime and have no meaning on another machine or after HEAD moves.
+#
+# What is intentionally NOT ignored (and stays tracked):
+#   - config.json            project config (the framework reads this)
+#   - installed.lock         the install manifest (drift detection depends on it)
+#   - <Service>/             per-service baseline artifacts (behavior-spec, dependency-map,
+#                            name-contract, extraction SQL) — committed migration inputs
+#   - adjudications/         the SHA-keyed verdict-of-record (deliberately tracked)
+#
+# gitignore only excludes UNtracked files from staging, so already-tracked files above
+# are unaffected; this guard exists to stop a broad `git add` from sweeping runtime state
+# into a commit.
+
+# Machine-local caches (drift detector) and derived state (resolved config, overrides, rate-limit log)
+cache/
+derived/
+
+# Mechanical gate evidence (tests-pass, stage1-clean, map-validated, parity-*, *-requested)
+gate/
+
+# Self-improvement metrics (local operational state)
+metrics.json
+
+# Migration progress checkpoint (session-local recovery state)
+migrate-checkpoint.json
