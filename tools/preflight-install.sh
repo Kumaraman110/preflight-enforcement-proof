@@ -87,9 +87,9 @@ install_file_surface() {
         path="${line#*$'\t'}"
         mode="${meta%% *}"
         relpath="${path#"${surface}"/}"          # strip "lib/" → "detect-stack.sh"
-        # Skip an explicitly-excluded file (e.g. defaults/hooks-settings-template.json,
-        # whose content already reaches the consumer via the Step 6 settings.json merge —
-        # copying it as a file would be misleading).
+        # Skip an explicitly-excluded file (optional 2nd arg) — for a surface file whose
+        # content reaches the consumer by another path and would be misleading to copy.
+        # (Currently no surface passes an exclude; the mechanism is retained for reuse.)
         if [ -n "$exclude" ] && [ "$relpath" = "$exclude" ]; then
             echo "  ${surface}: skip ${relpath} (excluded — consumed via settings.json merge, not copied as a file)"
             continue
@@ -152,10 +152,10 @@ install_file_surface "lib"
 install_file_surface "hooks"
 install_file_surface "examples"
 install_file_surface "docs"
-# defaults/: ship the files the consumer uses AS files (config-template + capture-templates),
-# but NOT hooks-settings-template.json — its content reaches the consumer via the Step 6
-# settings.json merge, so copying it as a file would be misleading/redundant.
-install_file_surface "defaults" "hooks-settings-template.json"
+# defaults/: ship config-template + capture-templates. (There is no hooks-settings-template
+# anymore — hook registration has a SINGLE source of truth: hooks/hooks.json, read directly by
+# Step 6. This eliminates the dual-source drift that silently dropped adjudication-output-gate.)
+install_file_surface "defaults"
 
 # Hook scripts are invoked by Claude Code (run-hook.cmd) and by skills (bash <script>).
 # Ensure they are executable on POSIX consumers — chmod does NOT change the content
@@ -164,14 +164,17 @@ chmod +x "${CONSUMER_DIR}/.claude/hooks/"* 2>/dev/null || true
 
 # ── Step 6: Merge the hooks registration block into .claude/settings.json ─────
 # Structured jq merge — add/replace ONLY the .hooks key; every other key is preserved.
-# The hooks block is read from the PINNED REF (never the working tree), consistent
-# with the rest of the install.
+# SINGLE SOURCE OF TRUTH: the .hooks block is read directly from hooks/hooks.json (the same
+# file shipped to .claude/hooks/ and the file engineers edit when adding a hook). There is no
+# separate settings-template to keep in sync — eliminating the dual-source drift that silently
+# dropped adjudication-output-gate from the merged settings.json (the v0.7.4 RED-1 dead-gate).
+# Read from the PINNED REF (never the working tree), consistent with the rest of the install.
 echo "Merging hooks block into .claude/settings.json…"
 SETTINGS="${CONSUMER_DIR}/.claude/settings.json"
-HOOKS_BLOCK=$(git show "${RESOLVED_SHA}:defaults/hooks-settings-template.json" | jq '.hooks')
+HOOKS_BLOCK=$(git show "${RESOLVED_SHA}:hooks/hooks.json" | jq '.hooks')
 
 if [ -z "$HOOKS_BLOCK" ] || [ "$HOOKS_BLOCK" = "null" ]; then
-    echo "ABORT: hooks template at ${RESOLVED_SHA}:defaults/hooks-settings-template.json has no .hooks block."
+    echo "ABORT: hooks/hooks.json at ${RESOLVED_SHA} has no .hooks block."
     exit 1
 fi
 
