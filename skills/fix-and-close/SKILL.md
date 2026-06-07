@@ -356,15 +356,16 @@ capture files" rule does not apply; the parent already writes other `.preflight/
 (`write-gate-evidence`, `write-active-groups`, `metrics.json`), and this is the same kind of
 parent-owned write.
 
-**`citedEvidence` rule (honor it — 1B will mechanically enforce it):** for `DEFENDED` /
-`AMBIGUOUS-DEFENDED`, `citedEvidence` MUST be a concrete legacy `file:line` or rubric `§N` — a prose
-excuse ("no evidence", "intentional", "legacy-faithful") is INVALID for a defended verdict. For
-`FIXED` / `AMBIGUOUS-FIXED`, `"n/a — fixed, not defended"` is accepted.
+**`citedEvidence` rule (mechanically enforced):** for `DEFENDED` / `AMBIGUOUS-DEFENDED`,
+`citedEvidence` MUST be a concrete legacy `file:line` or rubric `§N` — a prose excuse ("no evidence",
+"intentional", "legacy-faithful") is INVALID for a defended verdict. For `FIXED` / `AMBIGUOUS-FIXED`,
+`"n/a — fixed, not defended"` is accepted.
 
-**Transitional note:** until the 1B `PreToolUse:Write` validator (`adjudication-output-gate`) lands,
-this artifact is parent-written and un-gated — honor the schema by instruction. 1B mechanizes both
-the forbidden-key block and the no-DEFENDED-without-evidence rule. (v0.7.3 ledger: 1B is committed
-next.)
+**Enforcement:** this write is mechanically gated by the `adjudication-output-gate` hook
+(`PreToolUse:Write`, registered in `hooks/hooks.json`) — it blocks any forbidden key and any
+`DEFENDED` / `AMBIGUOUS-DEFENDED` entry whose `citedEvidence` is not a concrete citation, and fails
+closed on malformed JSON. The schema is enforced, not merely honored by instruction. See
+`lib/adjudication-record.md` and `docs/parity-gate-limitations.md`.
 
 ### Capture Reconciliation (post-adjudication — delegate to the handler)
 
