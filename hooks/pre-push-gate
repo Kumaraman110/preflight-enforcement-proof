@@ -39,7 +39,22 @@ check_evidence() {
   fi
 
   local evidence_head
-  evidence_head=$(grep "^HEAD=" "$GATE_DIR/$file" 2>/dev/null | cut -d= -f2)
+  # Read the HEAD the evidence was stamped at. GUARD the substitution: a present-but-corrupt
+  # evidence file (it exists, so it passed the -f check above, but carries no "HEAD=" line —
+  # truncated, externally edited, or an older/foreign format) makes `grep` exit non-zero, which
+  # under `set -euo pipefail` would ABORT the hook with exit 1 — and exit 1 is NON-blocking to
+  # Claude Code, a fail-OPEN that lets the push through on unverifiable evidence. Capture WITHOUT
+  # aborting (|| true), then fail CLOSED on an empty result: if we cannot read which commit the
+  # evidence covers, we cannot prove it covers the pushed code, so we must BLOCK. (Same
+  # fail-direction discipline as the git-diff guard below and the sibling dependency-map-validator.
+  # write-gate-evidence always writes HEAD=<sha-or-"unknown">, so a legitimate file is never empty
+  # here — this only fires on a corrupt/foreign file, never on a valid stamp.)
+  evidence_head=$(grep "^HEAD=" "$GATE_DIR/$file" 2>/dev/null | cut -d= -f2 || true)
+  if [ -z "$evidence_head" ]; then
+    echo "BLOCKED: $label evidence file exists but carries no HEAD= line (corrupt/truncated/foreign format)." >&2
+    echo "  Cannot verify the evidence is tied to the pushed code — failing closed. Re-run the gate at HEAD." >&2
+    exit 2
+  fi
 
   if [ "$evidence_head" = "$CURRENT_HEAD" ]; then
     return 0   # evidence is for exactly the code being pushed — valid.
