@@ -211,6 +211,81 @@ echo ""
 MANIFEST_DIR="${CONSUMER_DIR}/.preflight"
 mkdir -p "$MANIFEST_DIR"
 MANIFEST_PATH="${MANIFEST_DIR}/installed.lock"
+
+# ── Step 6.5: Manifest-diff prune (close the copy-only-never-prune gap) ───────
+# Before overwriting the manifest, remove consumer artifacts that a PRIOR install
+# placed but the pinned ref NO LONGER ships — e.g. a renamed/removed agent like the
+# `copilot-review-loop` zombie (renamed to external-review-handler; the old file
+# lingered in consumers and stayed an invocable subagent_type). Same dead-artifact
+# CLASS as the RED-1 dead gate: the surface was additive-only, so stale files
+# accumulated invisibly (preflight-verify is manifest-blind to EXTRA files).
+#
+# SURGICAL + SAFE: prunes EXACTLY (old manifest keys) − (new manifest keys) per
+# surface. A consumer's own hand-authored file is NEVER touched — it was never in
+# preflight's manifest, so it is never in the "old keys" set. Only the seven
+# framework-owned .claude/ surfaces are in scope; .preflight/ runtime state is never
+# pruned. If there is no prior manifest (first install), nothing is pruned.
+PRUNED_COUNT=0
+if [ -f "$MANIFEST_PATH" ] && command -v jq &>/dev/null; then
+    OLD_MANIFEST="$(cat "$MANIFEST_PATH")"
+    prune_surface() {
+        # NOTE: split declarations — a single `local a=$1 b="${a}.x"` does NOT see `a` in
+        # `b`'s RHS in some bash builds (all RHS expand before any binds), which silently made
+        # tsv resolve to "${TSV_DIR}/.tsv" → no file → nothing pruned (caught in sandbox).
+        local surface="$1" kind="$2"
+        local tsv="${TSV_DIR}/${surface}.tsv"
+        local k target
+        # Set-difference (removed = old manifest keys − newly-installed keys) computed with a
+        # single CRLF-proof awk pass. tr -d '\r' on BOTH inputs is load-bearing: jq output and
+        # TSV lines can carry CRLF on Windows consumers; a stray "\r" makes naive comparison see
+        # "name\r" != "name" and prune LIVE artifacts while keeping zombies (both inversions were
+        # caught in sandbox). awk (not `comm`) avoids `comm`'s strict byte+collation fragility.
+        # Process-substitution feeds the while-loop (NOT a pipe) so PRUNED_COUNT survives.
+        while IFS= read -r k; do
+            k="${k%$'\r'}"          # belt-and-suspenders: strip any residual CR on the read key
+            [ -z "$k" ] && continue
+            if [ "$kind" = "skill" ]; then
+                target="${CONSUMER_DIR}/.claude/skills/${k}"
+                if [ -d "$target" ]; then
+                    echo "  prune skill: ${k}/ (prior install; not in ${PINNED_REF})"
+                    rm -rf "$target"
+                    PRUNED_COUNT=$((PRUNED_COUNT + 1))
+                fi
+            else
+                # file surface — agents key=basename; lib/hooks/examples/docs/defaults key=relpath
+                target="${CONSUMER_DIR}/.claude/${surface}/${k}"
+                if [ -f "$target" ]; then
+                    echo "  prune ${surface}: ${k} (prior install; not in ${PINNED_REF})"
+                    rm -f "$target"
+                    PRUNED_COUNT=$((PRUNED_COUNT + 1))
+                fi
+            fi
+        done < <(
+            # Tag each line with its source file (n=new, o=old) instead of relying on NR==FNR —
+            # NR==FNR mis-assigns when the FIRST file is EMPTY (a surface that ships zero files),
+            # the classic awk empty-first-file bug. Tag-by-prefix is immune. removed = old − new.
+            { cut -f1 "$tsv" 2>/dev/null | tr -d '\r' | sort -u | sed 's/^/n /'
+              printf '%s' "$OLD_MANIFEST" | jq -r ".artifacts.${surface} // {} | keys[]" 2>/dev/null | tr -d '\r' | sort -u | sed 's/^/o /'
+            } | awk '{ if($1=="n"){new[$2]=1} else {old[$2]=1} } END{ for(k in old) if(!(k in new)) print k }'
+        )
+    }
+    prune_surface agents   file
+    prune_surface skills   skill
+    prune_surface lib      file
+    prune_surface hooks    file
+    prune_surface examples file
+    prune_surface docs     file
+    prune_surface defaults file
+    # Remove now-empty subdirs left behind by file-surface prunes (never the surface root).
+    for s in agents lib hooks examples docs defaults; do
+        find "${CONSUMER_DIR}/.claude/${s}" -mindepth 1 -type d -empty -delete 2>/dev/null || true
+    done
+    if [ "$PRUNED_COUNT" -gt 0 ]; then
+        echo "  → pruned ${PRUNED_COUNT} stale artifact(s) no longer shipped at ${PINNED_REF}"
+    fi
+    echo ""
+fi
+
 TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
 AGENTS_JSON=$(tsv_to_json "${TSV_DIR}/agents.tsv")
