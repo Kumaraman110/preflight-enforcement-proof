@@ -157,7 +157,9 @@ From config (or defaults):
    - If still not converging → STUCK. Hit the cap early.
    - If iteration count reaches 5 → HARD STOP regardless of convergence.
 
-8. **If CLEAN** → write gate evidence: `bash "${FRAMEWORK_ROOT}/hooks/write-gate-evidence" stage1-clean` → proceed to commit/push.
+8. **If CLEAN** → write gate evidence: `bash "${FRAMEWORK_ROOT}/hooks/write-gate-evidence" stage1-clean`.
+   - **Also write `map-validated` if a dependency map exists.** The pre-push gate (Gate 3) demands `map-validated` whenever a `dependency-map.json` is present — independent of whether Stage 1 found anything. On a CLEAN run the Coupled-Group Protocol (step 6) never executes, so its map-validation step never runs and `map-validated` would otherwise never be written — falsely blocking the push. So on the CLEAN path: if a dependency map exists, run the same structural validation as step 6b (via `${FRAMEWORK_ROOT}/lib/dependency-map-validator.md`), and on pass write `bash "${FRAMEWORK_ROOT}/hooks/write-gate-evidence" map-validated`. (The map is validated, not consumed for coupling, on the clean path — but the gate evidence is required either way.)
+   - Then proceed to commit/push.
 
 ### Commit and Push
 
