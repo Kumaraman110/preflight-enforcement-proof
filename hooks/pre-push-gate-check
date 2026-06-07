@@ -25,10 +25,43 @@ if [ -z "$COMMAND" ]; then
   COMMAND="$STDIN_JSON"
 fi
 
+# ── REPO-AWARENESS (NEW-2 fix) ────────────────────────────────────────────────
+# This guard must resolve config + canonical remote from the repo the push
+# ACTUALLY targets, NOT the session root. A session rooted in repo A (e.g. a
+# consumer with config.branch.remote=poc) that pushes repo B (e.g. the framework
+# source repo, whose canonical origin differs) must read B's config — otherwise A's
+# config false-blocks B's legitimate push (the observed NEW-2 over-block: it blocked
+# a verified-safe `cd <framework-repo> && git push origin <branch>`).
+#
+# Signal: honor a leading `cd <dir>` in the command (the compound `cd X && git push`
+# pattern the agent commonly emits — and exactly the shape that was false-blocked),
+# else fall back to the hook's own cwd (= session root, which is correct for an
+# in-repo push: a consumer pushing its own `origin`=legacy-prod SHOULD still block).
+# A repo with no .preflight/config.json → fail-open (unchanged additive posture).
+_pfg_target_cwd() {  # $1 = command string; echo the cwd the git command runs in. Always returns 0.
+  local cmd="$1" cwd cd_dir
+  cwd="$(pwd)"
+  if printf '%s' "$cmd" | grep -qE '(^|;|&&|\|)[[:space:]]*cd[[:space:]]'; then
+    cd_dir="$(printf '%s' "$cmd" | grep -oE '(^|;|&&|\|)[[:space:]]*cd[[:space:]]+[^&|;]+' | head -1 | sed -E 's/.*cd[[:space:]]+//; s/[[:space:]]+$//')"
+    # strip one layer of surrounding quotes
+    cd_dir="${cd_dir%[\"\']}"; cd_dir="${cd_dir#[\"\']}"
+    if [ -n "$cd_dir" ] && [ -d "$cd_dir" ]; then cwd="$cd_dir"; fi
+  fi
+  printf '%s' "$cwd"
+  return 0
+}
+# The cwd the push/pr-create command will execute in (repo-aware anchor for ALL
+# config + git resolution below). Computed ONCE from the command string.
+PFG_TARGET_CWD="$(_pfg_target_cwd "$COMMAND")"
+
 # ── Resolve canonical repo (owner/repo) from config.branch.remote. Fail-open. ─
 # Shared by the #3a pr-create guard below and reused by the #6b push guard.
+# REPO-AWARE: reads config from the PUSH-TARGET repo (PFG_TARGET_CWD), not the session root.
 _pfg_config() {  # echo the resolved .preflight/config.json path, or nothing. Always returns 0.
-  local c="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/.preflight/config.json"
+  local top
+  top="$(git -C "$PFG_TARGET_CWD" rev-parse --show-toplevel 2>/dev/null || echo "")"
+  [ -z "$top" ] && top="$PFG_TARGET_CWD"
+  local c="$top/.preflight/config.json"
   if [ -f "$c" ]; then echo "$c"; fi
   return 0
 }
@@ -61,7 +94,7 @@ if printf '%s' "$COMMAND" | grep -qE '(^|&&|\|\||;|")\s*gh[[:space:]]+pr[[:space
   # Resolve canonical slug from the configured remote's URL (fail-open if unresolvable).
   CANON_SLUG=""
   if [ -n "$CANON_REMOTE" ]; then
-    CANON_URL="$(git remote get-url "$CANON_REMOTE" 2>/dev/null || true)"
+    CANON_URL="$(git -C "$PFG_TARGET_CWD" remote get-url "$CANON_REMOTE" 2>/dev/null || true)"
     [ -n "$CANON_URL" ] && CANON_SLUG="$(_pfg_url_to_slug "$CANON_URL")"
   fi
   if [ -n "$CANON_SLUG" ]; then
@@ -78,7 +111,7 @@ if printf '%s' "$COMMAND" | grep -qE '(^|&&|\|\||;|")\s*gh[[:space:]]+pr[[:space
       fi
     else
       # (b) no --repo → gh would resolve from the cwd default remote. Compare that to canonical.
-      DEFAULT_URL="$(git remote get-url origin 2>/dev/null || true)"
+      DEFAULT_URL="$(git -C "$PFG_TARGET_CWD" remote get-url origin 2>/dev/null || true)"
       DEFAULT_SLUG=""; [ -n "$DEFAULT_URL" ] && DEFAULT_SLUG="$(_pfg_url_to_slug "$DEFAULT_URL")"
       if [ -n "$DEFAULT_SLUG" ] && [ "$DEFAULT_SLUG" != "$CANON_SLUG" ]; then
         echo "BLOCKED: 'gh pr create' has no --repo; it would resolve to '$DEFAULT_SLUG' (cwd default remote), not the canonical '$CANON_SLUG'." >&2
@@ -113,7 +146,11 @@ fi
 PUSH_CMD="$(printf '%s' "$COMMAND" | grep -oE 'git[[:space:]]+push[^&|;]*' | head -1 || true)"
 
 # Resolve config (fail-open on any miss). jq → node → grep fallback, same idiom as other hooks.
-CONFIG="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/.preflight/config.json"
+# REPO-AWARE (NEW-2): config comes from the PUSH-TARGET repo, not the session root — so a
+# session rooted in repo A that pushes repo B reads B's config (B's canonical remote), which is
+# what makes the wrong-remote comparison correct cross-repo. _pfg_config already anchors on
+# PFG_TARGET_CWD; reuse it here so the #6b block and the #3a block resolve identically.
+CONFIG="$(_pfg_config)"
 BASE=""; REMOTE=""
 if [ -f "$CONFIG" ]; then
   if command -v jq &>/dev/null; then
@@ -165,7 +202,8 @@ fi
 if [ "$HAS_FORCE" = true ]; then
   TARGET_BRANCH="${ARG_REFSPEC##*:}"
   if [ -z "$TARGET_BRANCH" ]; then
-    TARGET_BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+    # Bare `git push --force`: the current branch OF THE PUSH-TARGET REPO (repo-aware, NEW-2).
+    TARGET_BRANCH="$(git -C "$PFG_TARGET_CWD" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
   fi
   for pb in $PROTECTED_BRANCHES; do
     if [ "$TARGET_BRANCH" = "$pb" ]; then
