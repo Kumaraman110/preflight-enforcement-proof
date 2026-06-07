@@ -38,6 +38,12 @@ STDIN_JSON="$(cat)"
 GATE_DIR=".preflight/gate"
 GROUPS_FILE="$GATE_DIR/active-groups.json"
 
+# Resolve the framework root for the BLOCKED help-text path below. Use the same idiom every
+# other component uses — NEVER the empty CLAUDE_PLUGIN_ROOT (empty off-plugin, which is the live
+# install path; the old message printed a broken "/hooks/write-group-ack"). CLAUDE_PROJECT_DIR
+# is unset in some hook contexts, so the git/pwd fallback is what resolves there.
+FRAMEWORK_ROOT="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/.claude"
+
 # ─── Extract file_path from stdin JSON ───────────────────────
 FILE_PATH=""
 if command -v jq &>/dev/null; then
@@ -101,7 +107,7 @@ Fixing coupled findings independently is the #1 cause of cascading regressions
 To proceed:
 1. Read all findings for this coupling group
 2. Design ONE coherent change that addresses all findings simultaneously
-3. Write acknowledgment: bash "\${CLAUDE_PLUGIN_ROOT}/hooks/write-group-ack" "<group-index>"
+3. Write acknowledgment: bash "${FRAMEWORK_ROOT}/hooks/write-group-ack" "<group-index>"
 4. Then edit the files
 
 File: $FILE_PATH
