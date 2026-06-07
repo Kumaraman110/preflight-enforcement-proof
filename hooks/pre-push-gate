@@ -41,8 +41,29 @@ check_evidence() {
   local evidence_head
   evidence_head=$(grep "^HEAD=" "$GATE_DIR/$file" 2>/dev/null | cut -d= -f2)
 
-  if [ "$evidence_head" != "$CURRENT_HEAD" ] && [ "$evidence_head" != "$PARENT_HEAD" ]; then
+  if [ "$evidence_head" = "$CURRENT_HEAD" ]; then
+    return 0   # evidence is for exactly the code being pushed — valid.
+  fi
+
+  if [ "$evidence_head" != "$PARENT_HEAD" ]; then
     echo "BLOCKED: $label evidence is stale (was at $evidence_head, now at $CURRENT_HEAD). Code changed since last check — re-run Stage 1." >&2
+    exit 2
+  fi
+
+  # ── evidence == HEAD^ : the legitimate stamp→commit→push window. But content-aware
+  # (RED-3 / the #6a content-aware staleness): the one-commit tolerance is ONLY safe if that
+  # commit introduced no UNREVIEWED code. Stage 1 reviews the ENTIRE diff, so "reviewed" = the
+  # whole changed set; the only files that legitimately churn between stamp and push are the
+  # gate-evidence files themselves (write-gate-evidence writes ONLY under .preflight/gate/).
+  # If the HEAD^→HEAD commit touched ANYTHING outside .preflight/gate/, that change was never
+  # Stage-1-reviewed/tested at the pushed tree → the evidence does not cover it → BLOCK.
+  local changed non_evidence
+  changed=$(git diff --name-only "$evidence_head" HEAD 2>/dev/null)
+  non_evidence=$(printf '%s\n' "$changed" | grep -vE '^\.preflight/gate/' | grep -v '^$' || true)
+  if [ -n "$non_evidence" ]; then
+    echo "BLOCKED: $label evidence is at HEAD^ ($evidence_head) but the commit since then changed unreviewed files:" >&2
+    printf '  %s\n' $non_evidence >&2
+    echo "  That code was never Stage-1-reviewed/tested at the pushed tree. Re-run the gate at HEAD." >&2
     exit 2
   fi
 }
