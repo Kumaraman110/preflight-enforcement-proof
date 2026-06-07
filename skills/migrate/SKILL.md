@@ -992,7 +992,7 @@ This checkpoint is local-only — `.preflight/migrate-checkpoint.json` is in `.g
 - Mix feature work with migration
 - Fix coupled findings independently (enforced by /fix-and-close's Coupled-Group Protocol)
 - Loop past iteration caps (5 for Stage 1, 3 for Stage 2 — enforced by /fix-and-close)
-- Write to capture files directly — only the external-review-handler sub-agent writes captures
+- Write to capture files directly — only the external-review-handler sub-agent writes the four capture files (calibration-log / checklist-additions / false-positives / generation-spec-candidates). Carve-out: the parent session writes its own adjudication record under `.preflight/adjudications/` and `metrics.json` — those are the verdict-of-record and metrics, not capture files, and are gated by the adjudication-output-gate hook.
 - Confuse sub-agent roles — code-reviewer reads/reports, external-review-handler orchestrates/captures, discovery-analyst maps dependencies, implementer fixes coupled groups, this skill orchestrates the overall flow
 - Auto-bump the rubric cadence — `loop.rubricEditCadence` is read from config (default 5); the rubric-edit PR is a separate batched effort
 
