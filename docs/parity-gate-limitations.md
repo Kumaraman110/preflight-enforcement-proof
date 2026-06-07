@@ -93,3 +93,19 @@ The guard is also **fail-open**: if `.preflight/config.json` is absent or unpars
 branch protection). So its absence of a block is **not** evidence that a push was protection-checked
 — only that either the push was allowed or no config was present. Do not read this guard as
 unconditional force-push protection.
+
+## Related: wrong-repo PR-creation guard (`gh pr create`)
+
+`gh pr create` with no `--repo` resolves the target repo from the cwd's default remote — which on
+migration clones is often `origin` = the **legacy production repo that must never be touched**. The
+primary fix is that the migrate skill and external-review-handler now always pass
+`--repo <canonical>` (resolved from `config.branch.remote`'s URL). As a backstop,
+`hooks/pre-push-gate-check` also guards `gh pr create`: it blocks (exit 2) when an explicit
+`--repo X` is non-canonical, or when `--repo` is absent and the cwd default remote resolves to a
+different repo than `config.branch.remote`.
+
+Same boundary as above: it guards the **agent's Bash tool only** — a human shell or CI could still
+open a PR against any repo; true restriction is server-side. And **fail-open** — if config (or the
+canonical remote URL) cannot be resolved, it does not block. So a legitimate
+`gh pr create --repo <canonical>` always passes; the guard fires only on a demonstrably
+non-canonical target.

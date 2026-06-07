@@ -55,7 +55,14 @@ Create them with a header line if they don't exist.
 ## The Orchestration Loop
 
 ### Step 1 — Ensure PR exists
-`gh pr view --json number,url,headRefName,state`. If no PR, run `gh pr create --fill --base <branch.base>`.
+`gh pr view --json number,url,headRefName,state`. If no PR, run `gh pr create --repo <canonical> --fill --base <branch.base>`.
+
+**ALWAYS pass `--repo <canonical>`** — resolve `<canonical>` from `config.branch.remote`'s URL
+(`git remote get-url <branch.remote>` → `owner/repo`). Without `--repo`, `gh` resolves the repo from
+the cwd's default remote, which on migration clones is often `origin` = the **legacy production repo
+that must never be touched**. Omitting `--repo` is how a PR gets raised against the wrong repo; the
+`pre-push-gate-check` guard blocks a `gh pr create` that would resolve non-canonical, but passing
+`--repo` explicitly is the primary fix.
 
 ### Step 2 — Request Copilot review
 

@@ -865,7 +865,7 @@ The fix-and-close skill handles:
 - Structural verification (build command, test command from project config, directory structure, health endpoint)
 - Metrics collection
 
-**PR opening:** Before the first push, open the PR via `gh pr create --base <branch.base> --head <branch-name>`. Title and body follow conventional-commits format. Include Phase 1 outputs in the PR description so reviewers see your reasoning. Do not prompt for confirmation — open automatically.
+**PR opening:** Before the first push, open the PR via `gh pr create --repo <canonical> --base <branch.base> --head <branch-name>`. **ALWAYS pass `--repo <canonical>`** — resolve `<canonical>` from `config.branch.remote`'s URL (`git remote get-url <branch.remote>` → `owner/repo`). Without `--repo`, `gh` resolves the repo from the cwd's default remote, which on migration clones is often `origin` = the **legacy production repo that must never be touched** — omitting it is how a PR gets raised against the wrong repo. (The `pre-push-gate-check` guard backstops this, but `--repo` is the primary fix.) Title and body follow conventional-commits format. Include Phase 1 outputs in the PR description so reviewers see your reasoning. Do not prompt for confirmation — open automatically.
 
 **Write checkpoint:** `phase: handoff_complete`.
 

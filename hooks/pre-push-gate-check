@@ -25,6 +25,73 @@ if [ -z "$COMMAND" ]; then
   COMMAND="$STDIN_JSON"
 fi
 
+# ── Resolve canonical repo (owner/repo) from config.branch.remote. Fail-open. ─
+# Shared by the #3a pr-create guard below and reused by the #6b push guard.
+_pfg_config() {  # echo the resolved .preflight/config.json path, or nothing. Always returns 0.
+  local c="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/.preflight/config.json"
+  if [ -f "$c" ]; then echo "$c"; fi
+  return 0
+}
+_pfg_branch_field() {  # $1 = base|remote ; echo value or empty (jq → node → grep)
+  local cfg="$1" field="$2"
+  [ -z "$cfg" ] && return 0
+  if command -v jq &>/dev/null; then
+    jq -r ".branch.$field // empty" "$cfg" 2>/dev/null || true
+  elif command -v node &>/dev/null; then
+    node -e "try{const c=require('$cfg');process.stdout.write((c.branch&&c.branch.$field)||'')}catch(e){}" 2>/dev/null || true
+  else
+    grep -oE "\"$field\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" "$cfg" | head -1 | sed 's/.*"\([^"]*\)"$/\1/' || true
+  fi
+}
+# Normalize a git remote URL (https or ssh) to "owner/repo" (strip .git).
+_pfg_url_to_slug() {
+  printf '%s' "$1" | sed -E 's#^git@[^:]+:#https://x/#; s#^https?://[^/]+/##; s#\.git$##' | sed -E 's#^/+##'
+}
+
+# ── #3a: guard `gh pr create` against a NON-CANONICAL repo (the #6b sibling) ──
+# `gh pr create` with no --repo resolves the repo from the cwd's default remote,
+# which on migration clones is often origin = the legacy production repo. Block
+# (exit 2), for the AGENT's Bash tool, a pr-create that would target non-canonical.
+# Buildable-LOCAL with a server-side CEILING (agent's Bash tool only). FAIL-OPEN:
+# inert if config is absent/unparseable — see docs/parity-gate-limitations.md.
+if printf '%s' "$COMMAND" | grep -qE '(^|&&|\|\||;|")\s*gh[[:space:]]+pr[[:space:]]+create'; then
+  PR_CMD="$(printf '%s' "$COMMAND" | grep -oE 'gh[[:space:]]+pr[[:space:]]+create[^&|;]*' | head -1 || true)"
+  CFG="$(_pfg_config)"
+  CANON_REMOTE="$(_pfg_branch_field "$CFG" remote)"
+  # Resolve canonical slug from the configured remote's URL (fail-open if unresolvable).
+  CANON_SLUG=""
+  if [ -n "$CANON_REMOTE" ]; then
+    CANON_URL="$(git remote get-url "$CANON_REMOTE" 2>/dev/null || true)"
+    [ -n "$CANON_URL" ] && CANON_SLUG="$(_pfg_url_to_slug "$CANON_URL")"
+  fi
+  if [ -n "$CANON_SLUG" ]; then
+    # Extract an explicit --repo <X> if present (supports --repo X and --repo=X).
+    REPO_ARG="$(printf '%s' "$PR_CMD" | grep -oE -- '--repo[=[:space:]]+[^[:space:]]+' | head -1 | sed -E 's/--repo[=[:space:]]+//' || true)"
+    REPO_SLUG="$(_pfg_url_to_slug "$REPO_ARG")"   # normalize (handles owner/repo, URL, or .git)
+    if [ -n "$REPO_ARG" ]; then
+      # (a) explicit --repo present → must equal canonical.
+      if [ "$REPO_SLUG" != "$CANON_SLUG" ]; then
+        echo "BLOCKED: 'gh pr create --repo $REPO_ARG' targets a non-canonical repo (expected '$CANON_SLUG' from config.branch.remote)." >&2
+        echo "  On migration clones the wrong repo is often the legacy production repo. Use --repo $CANON_SLUG." >&2
+        echo "  (Agent Bash-tool guard only; not server-side protection — see docs/parity-gate-limitations.md.)" >&2
+        exit 2
+      fi
+    else
+      # (b) no --repo → gh would resolve from the cwd default remote. Compare that to canonical.
+      DEFAULT_URL="$(git remote get-url origin 2>/dev/null || true)"
+      DEFAULT_SLUG=""; [ -n "$DEFAULT_URL" ] && DEFAULT_SLUG="$(_pfg_url_to_slug "$DEFAULT_URL")"
+      if [ -n "$DEFAULT_SLUG" ] && [ "$DEFAULT_SLUG" != "$CANON_SLUG" ]; then
+        echo "BLOCKED: 'gh pr create' has no --repo; it would resolve to '$DEFAULT_SLUG' (cwd default remote), not the canonical '$CANON_SLUG'." >&2
+        echo "  Add --repo $CANON_SLUG. (On migration clones the default 'origin' is often the legacy production repo.)" >&2
+        echo "  (Agent Bash-tool guard only; not server-side protection — see docs/parity-gate-limitations.md.)" >&2
+        exit 2
+      fi
+    fi
+  fi
+  # Canonical (or fail-open) → allow the pr-create. Not a push; nothing more to gate here.
+  exit 0
+fi
+
 # Only gate on git push commands
 if ! printf '%s' "$COMMAND" | grep -qE '(^|&&|\|\||;|")\s*git\s+push'; then
   exit 0
