@@ -42,7 +42,7 @@ trap 'rm -rf "$TSV_DIR"' EXIT
 # ── Step 1: Dirty-tree guard ─────────────────────────────────────────────────
 # Refuse if code-forge has uncommitted changes at any copied artifact path.
 cd "$CODE_FORGE_DIR"
-DIRTY=$(git status --porcelain -- agents/ skills/ lib/ hooks/ examples/ defaults/ 2>/dev/null || true)
+DIRTY=$(git status --porcelain -- agents/ skills/ lib/ hooks/ examples/ defaults/ docs/ 2>/dev/null || true)
 if [ -n "$DIRTY" ]; then
     echo "ABORT: code-forge has uncommitted changes at artifact paths."
     echo "Commit or stash before installing. Dirty files:"
@@ -75,6 +75,7 @@ tsv_to_json() {
 # SHA keyed by its path RELATIVE to the surface dir (e.g. "rubrics/foo.md").
 install_file_surface() {
     local surface="$1"
+    local exclude="${2:-}"   # optional: relpath (relative to surface) to NOT copy as a file
     local tsv="${TSV_DIR}/${surface}.tsv"
     : > "$tsv"
     local count=0
@@ -86,6 +87,13 @@ install_file_surface() {
         path="${line#*$'\t'}"
         mode="${meta%% *}"
         relpath="${path#"${surface}"/}"          # strip "lib/" → "detect-stack.sh"
+        # Skip an explicitly-excluded file (e.g. defaults/hooks-settings-template.json,
+        # whose content already reaches the consumer via the Step 6 settings.json merge —
+        # copying it as a file would be misleading).
+        if [ -n "$exclude" ] && [ "$relpath" = "$exclude" ]; then
+            echo "  ${surface}: skip ${relpath} (excluded — consumed via settings.json merge, not copied as a file)"
+            continue
+        fi
         dest="${CONSUMER_DIR}/.claude/${path}"    # → .claude/lib/detect-stack.sh
         mkdir -p "$(dirname "$dest")"
         git show "${RESOLVED_SHA}:${path}" > "$dest"
@@ -139,10 +147,15 @@ done
 echo "  → ${SKILL_COUNT} skills installed"
 echo ""
 
-# ── Step 5: Install lib/, hooks/, examples/ (file-tree surfaces) ─────────────
+# ── Step 5: Install lib/, hooks/, examples/, docs/, defaults/ (file-tree surfaces) ─────────────
 install_file_surface "lib"
 install_file_surface "hooks"
 install_file_surface "examples"
+install_file_surface "docs"
+# defaults/: ship the files the consumer uses AS files (config-template + capture-templates),
+# but NOT hooks-settings-template.json — its content reaches the consumer via the Step 6
+# settings.json merge, so copying it as a file would be misleading/redundant.
+install_file_surface "defaults" "hooks-settings-template.json"
 
 # Hook scripts are invoked by Claude Code (run-hook.cmd) and by skills (bash <script>).
 # Ensure they are executable on POSIX consumers — chmod does NOT change the content
@@ -202,6 +215,8 @@ SKILLS_JSON=$(tsv_to_json "${TSV_DIR}/skills.tsv")
 LIB_JSON=$(tsv_to_json "${TSV_DIR}/lib.tsv")
 HOOKS_JSON=$(tsv_to_json "${TSV_DIR}/hooks.tsv")
 EXAMPLES_JSON=$(tsv_to_json "${TSV_DIR}/examples.tsv")
+DOCS_JSON=$(tsv_to_json "${TSV_DIR}/docs.tsv")
+DEFAULTS_JSON=$(tsv_to_json "${TSV_DIR}/defaults.tsv")
 
 jq -n \
     --arg framework "preflight" \
@@ -214,6 +229,8 @@ jq -n \
     --argjson lib "$LIB_JSON" \
     --argjson hooks "$HOOKS_JSON" \
     --argjson examples "$EXAMPLES_JSON" \
+    --argjson docs "$DOCS_JSON" \
+    --argjson defaults "$DEFAULTS_JSON" \
     '{
         framework: $framework,
         pinnedRef: $pinnedRef,
@@ -225,12 +242,14 @@ jq -n \
             skills: $skills,
             lib: $lib,
             hooks: $hooks,
-            examples: $examples
+            examples: $examples,
+            docs: $docs,
+            defaults: $defaults
         }
     }' > "$MANIFEST_PATH"
 
 echo "Manifest written: ${MANIFEST_PATH}"
-echo "  (artifacts: agents=$(echo "$AGENTS_JSON" | jq 'length'), skills=$(echo "$SKILLS_JSON" | jq 'length'), lib=$(echo "$LIB_JSON" | jq 'length'), hooks=$(echo "$HOOKS_JSON" | jq 'length'), examples=$(echo "$EXAMPLES_JSON" | jq 'length'))"
+echo "  (artifacts: agents=$(echo "$AGENTS_JSON" | jq 'length'), skills=$(echo "$SKILLS_JSON" | jq 'length'), lib=$(echo "$LIB_JSON" | jq 'length'), hooks=$(echo "$HOOKS_JSON" | jq 'length'), examples=$(echo "$EXAMPLES_JSON" | jq 'length'), docs=$(echo "$DOCS_JSON" | jq 'length'), defaults=$(echo "$DEFAULTS_JSON" | jq 'length'))"
 echo ""
 
 # ── Step 8: Summary ──────────────────────────────────────────────────────────
@@ -239,7 +258,7 @@ echo "  Ref:      ${PINNED_REF}"
 echo "  SHA:      ${RESOLVED_SHA}"
 echo "  Agents:   ${AGENT_COUNT}"
 echo "  Skills:   ${SKILL_COUNT}"
-echo "  lib/hooks/examples + hooks block merged into settings.json"
+echo "  lib/hooks/examples/docs/defaults + hooks block merged into settings.json"
 echo ""
 echo "Next steps:"
 echo "  cd ${CONSUMER_DIR}"

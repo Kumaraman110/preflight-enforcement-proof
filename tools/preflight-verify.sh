@@ -97,7 +97,7 @@ done < <(jq -r '.artifacts.skills | to_entries[] | [.key, .value] | @tsv' "$MANI
 # Each manifest entry is "<relpath> → <blob sha>"; the installed file lives at
 # .claude/<surface>/<relpath>. Same strict per-file git hash-object compare as
 # agents (CR-strip both fields). Drift in ANY file fails, named with its surface.
-for SURFACE in lib hooks examples; do
+for SURFACE in lib hooks examples docs defaults; do
     # Skip surfaces absent from the manifest (older installs predating this gate).
     if [ "$(jq -r --arg s "$SURFACE" '.artifacts[$s] // "absent"' "$MANIFEST")" = "absent" ]; then
         echo ""
