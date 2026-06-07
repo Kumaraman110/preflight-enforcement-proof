@@ -57,8 +57,19 @@ check_evidence() {
   # gate-evidence files themselves (write-gate-evidence writes ONLY under .preflight/gate/).
   # If the HEAD^→HEAD commit touched ANYTHING outside .preflight/gate/, that change was never
   # Stage-1-reviewed/tested at the pushed tree → the evidence does not cover it → BLOCK.
+  # FAIL CLOSED on any git-diff error: if we cannot compute what changed (unreachable
+  # evidence_head in a shallow clone, corrupt/missing ref, etc.), we cannot prove the commit
+  # introduced no unreviewed code — so we must BLOCK, not let the push through. (Without this,
+  # `set -e` would abort the hook with exit 128 on the failing substitution, and exit 128 is
+  # NON-blocking to Claude Code — a fail-OPEN that defeats this gate's invariant. The sibling
+  # dependency-map-validator fails closed on the same error class; match that posture.)
   local changed non_evidence
-  changed=$(git diff --name-only "$evidence_head" HEAD 2>/dev/null)
+  if ! changed=$(git diff --name-only "$evidence_head" HEAD 2>/dev/null); then
+    echo "BLOCKED: $label evidence is at HEAD^ ($evidence_head) but the diff to HEAD could not be computed" >&2
+    echo "  (unreachable ref / shallow clone / corrupt object). Cannot verify the commit introduced no" >&2
+    echo "  unreviewed code — failing closed. Re-run the gate at HEAD." >&2
+    exit 2
+  fi
   non_evidence=$(printf '%s\n' "$changed" | grep -vE '^\.preflight/gate/' | grep -v '^$' || true)
   if [ -n "$non_evidence" ]; then
     echo "BLOCKED: $label evidence is at HEAD^ ($evidence_head) but the commit since then changed unreviewed files:" >&2
