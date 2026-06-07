@@ -87,6 +87,11 @@ Verify from config:
 
 7. **Cut the migration branch.**
    - Ensure the working tree is clean. If there are uncommitted changes that are not yours, stop and ask the user what to do.
+   - **Remote-collision check (prompt-level — YOU run this; it is NOT a mechanical hook).** Before cutting, run `git ls-remote --heads <branch.remote> <branchName>` (where `<branchName>` is the name you are about to cut). The migration branch name is deterministic per service (`feature/migrate-<service>`), so a re-attempt on a service whose branch still exists on the remote would silently cut over prior-attempt debris (the observed 5-PRs-on-one-branch pattern).
+     - **Branch EXISTS on the remote** → do NOT silently cut over it. STOP and surface: *"Remote branch `<branchName>` still exists on `<branch.remote>` — likely prior-attempt debris. Clear it first (close any open PR, then delete the branch via the fix-and-close Branch Cleanup procedure: close → verify-after-close), OR if this is an intentional resume, confirm intent."* Do not proceed to the cut until the branch is cleared or the user confirms.
+     - **Branch ABSENT** → proceed with the cut.
+     - **`branch.remote` / config unresolvable** → fail-open: proceed (same posture as the force-push and wrong-repo guards — an additive check must not newly block a repo that didn't opt in).
+   - *Honesty:* this collision check is **prompt-level** (the migrate agent performs it). Unlike the force-push and wrong-repo guards — which are mechanical `PreToolUse:Bash` hooks because the dangerous operation is a distinctive command string — branch-cut is **not** on a hookable seam (`git checkout -b` is too common to match, and the collision needs a remote round-trip the command doesn't carry). It is honestly a prompt-level guard, not a mechanism. See `docs/parity-gate-limitations.md`.
    - Switch to `branch.base`, pull `branch.remote/branch.base`, cut a new branch named per the config's `branch.migrationPrefix` (default: `feature/migrate-<service>`). Teams that want to encode target platform in the branch name can configure `branch.migrationPrefix` in `.preflight/config.json`.
 
 ## Phase 1 — Discovery (NEVER SKIP)

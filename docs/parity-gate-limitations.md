@@ -109,3 +109,16 @@ open a PR against any repo; true restriction is server-side. And **fail-open** �
 canonical remote URL) cannot be resolved, it does not block. So a legitimate
 `gh pr create --repo <canonical>` always passes; the guard fires only on a demonstrably
 non-canonical target.
+
+## Related: branch-cut remote-collision check is PROMPT-LEVEL (not a hook)
+
+The migrate skill, before cutting `feature/migrate-<service>`, runs `git ls-remote --heads
+<branch.remote> <branchName>` and refuses to cut over a remote branch that still exists
+(prior-attempt debris). **This one is explicitly prompt-level, not mechanical** — and we label it
+so rather than overstate it. Branch-cut is not on a hookable command seam: `git checkout -b` is too
+common to match without firing on every branch creation in every repo, and the collision needs a
+remote round-trip the command string does not carry. So unlike the force-push and wrong-repo guards
+(real `PreToolUse:Bash` hooks), the collision check depends on the migrate agent actually performing
+it — a drifting or skip-the-skill agent could cut over the debris anyway. It is a genuine guard for
+the normal path, but it is enforcement-by-instruction. (Fail-open on unresolvable config, like the
+others.)
