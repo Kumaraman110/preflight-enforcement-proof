@@ -358,6 +358,8 @@ When no config exists: mode is `generic`, rubric is resolved from the plugin's b
 - Hook behavior under real Claude Code plugin loading (vs development `--plugin-dir`) may surface integration issues
 - The rubric-edit promotion process has not been exercised end-to-end yet
 
+**Known enforcement limitation:** the behavior-spec parity gate's clearance is prompt-enforced locally, not mechanically authenticated — an agent with shell access *can* mint the local `parity-clean` evidence file. The honest posture, residual protections, and the path to close it mechanically (GitHub environment protection + prevent-self-review) are documented in [`docs/parity-gate-limitations.md`](docs/parity-gate-limitations.md).
+
 **What will NOT change:**
 - The architectural commitment (the promise)
 - Sub-agent role separation (who edits, who reads, who writes)

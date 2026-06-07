@@ -766,8 +766,10 @@ fi
 
 ### Check 6 — Behavioral parity verification ran and passed
 
+> **Parity-gate enforcement boundary:** the `parity-clean` gate is prompt-enforced locally (the agent *can* technically mint the file; the local pre-push Gate 4 trusts file-existence, not authorship). The genuine close is GitHub environment protection + prevent-self-review — a team decision. See `docs/parity-gate-limitations.md`.
+
 <CRITICAL-INSTRUCTION>
-Check 6 RE-RUNS parity-check.sh and reads its EXIT CODE. It does NOT check for the existence of a file the agent can create. The agent CANNOT satisfy this gate by writing .preflight/gate/parity-clean — that file has no authority. The ONLY authority is the exit code of parity-check.sh executed HERE, NOW, against the two spec files.
+Check 6 RE-RUNS parity-check.sh and reads its EXIT CODE. It does NOT check for the existence of a file the agent can create. The agent CANNOT satisfy Check 6 by writing .preflight/gate/parity-clean — Check 6's only authority is the live exit code of parity-check.sh executed HERE, NOW, against the two spec files. (Note: the SEPARATE pre-push Gate 4 DOES trust the parity-clean file's existence + HEAD-freshness — which is exactly why the agent must never write it. That local gate is prompt-enforced, not mechanical; see docs/parity-gate-limitations.md.)
 
 If the agent disagrees with a blocking violation and wants an override, it writes its rationale to `.preflight/gate/parity-override-requested` — a DIFFERENT file that does NOT satisfy Check 6 and does NOT unblock the run. An override is a HUMAN decision; the agent proposes, it does not authorize.
 

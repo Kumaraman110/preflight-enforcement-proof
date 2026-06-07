@@ -3,7 +3,11 @@
 # after tests pass, Stage 1 returns CLEAN, or map validation passes.
 #
 # Usage: write-gate-evidence <gate-name>
-#   gate-name: tests-pass | stage1-clean | map-validated
+#   gate-name: tests-pass | stage1-clean | map-validated | parity-clean
+#
+# NOTE: parity-clean is HUMAN-ONLY by convention (see skills/migrate/SKILL.md /
+# docs/parity-gate-limitations.md). This script enforces NO actor check — the
+# restriction is prompt-level, not mechanical.
 #
 # Writes a file to .preflight/gate/<gate-name> with:
 #   - Current timestamp
