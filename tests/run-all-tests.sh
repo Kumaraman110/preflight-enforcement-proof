@@ -399,6 +399,18 @@ run_behavioral_tests() {
   else
     yellow "SKIP: review-thread-resolution-test.sh not found"
   fi
+
+  local prune_confinement_test="$SCRIPT_DIR/behavioral/install-prune-confinement-test.sh"
+  if [ -f "$prune_confinement_test" ]; then
+    if bash "$prune_confinement_test"; then
+      PASSES=$((PASSES + 14))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: install-prune path-traversal confinement tests failed"
+    fi
+  else
+    yellow "SKIP: install-prune-confinement-test.sh not found"
+  fi
 }
 
 # ═══════════════════════════════════════════════════════════════

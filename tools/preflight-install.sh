@@ -244,6 +244,23 @@ if [ -f "$MANIFEST_PATH" ] && command -v jq &>/dev/null; then
         while IFS= read -r k; do
             k="${k%$'\r'}"          # belt-and-suspenders: strip any residual CR on the read key
             [ -z "$k" ] && continue
+            # ── Path-traversal confinement (security) ──────────────────────────────
+            # `k` originates from a PRIOR install's manifest, which a corrupt or
+            # hostile manifest could populate with an escaping path (e.g.
+            # "../../../../etc/passwd" or "/etc/cron.d/x"). The key is interpolated
+            # into an rm -rf/-f target, so confine it to the surface subtree: reject
+            # absolute paths, any "../" / "/.." / bare ".." segment, "~", and NUL.
+            # Pruning only ever targets framework-owned relative keys under
+            # .claude/<surface>/; anything that could escape that subtree is skipped
+            # (not pruned) and reported, never deleted.
+            case "$k" in
+                /*|~*|*$'\n'*)
+                    echo "  WARN prune ${surface}: skipping unsafe key (absolute/escaping): ${k}" >&2
+                    continue ;;
+                ..|../*|*/..|*/../*)
+                    echo "  WARN prune ${surface}: skipping unsafe key (path traversal): ${k}" >&2
+                    continue ;;
+            esac
             if [ "$kind" = "skill" ]; then
                 target="${CONSUMER_DIR}/.claude/skills/${k}"
                 if [ -d "$target" ]; then
