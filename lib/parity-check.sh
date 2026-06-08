@@ -91,10 +91,27 @@ def main():
     with open(current_path) as f:
         current = json.load(f)
 
+    # Defensive canonicalization net (backstop for the spec-analyst id rules).
+    # The DURABLE fix lives in agents/spec-analyst.md (deterministic id derivation);
+    # this normalizes residual cross-extraction noise so it does not surface as phantom
+    # MISSING+ADDED. It is conservative: it only strips a leading slash from endpoint
+    # ids/routes, which is unambiguous and cannot merge two genuinely-distinct behaviors.
+    def canonicalize_id(bid):
+        # endpoint ids: strip a leading slash in the route segment so
+        # 'wire_contract:endpoint:POST:/ivr/pnr/x' == '...:POST:ivr/pnr/x'
+        if ":endpoint:" in bid:
+            head, _, route = bid.partition(":endpoint:")
+            # route is '<METHOD>:<path>' — strip a leading slash on the path only
+            method, sep, path = route.partition(":")
+            if sep:
+                path = path[1:] if path.startswith("/") else path
+                return head + ":endpoint:" + method + ":" + path
+        return bid
+
     # Build id -> behavior maps
     base_map = {}
     for b in baseline.get("behaviors", []):
-        bid = b.get("id", "")
+        bid = canonicalize_id(b.get("id", ""))
         obs = b.get("observable", b.get("observables", {}))
         conf = b.get("confidence", "high")
         # Normalize confidence values agents might use
@@ -104,7 +121,7 @@ def main():
 
     curr_map = {}
     for b in current.get("behaviors", []):
-        bid = b.get("id", "")
+        bid = canonicalize_id(b.get("id", ""))
         obs = b.get("observable", b.get("observables", {}))
         conf = b.get("confidence", "high")
         if conf in ("definite", "certain", "explicit"):
