@@ -150,7 +150,9 @@ Phase 1 runs on every migration, even when the service "looks simple." The readi
    - `behavior-spec.json` documenting all externally-observable behaviors with citation-grounded evidence
    - A completeness check verifying all pattern matches in scope are accounted for
 
-   If CLAUDE.md has no "Behavioral Contract" section, the spec-analyst will return BLOCKED. Surface this to the user — they need to declare the recognition pattern, category vocabulary, and comparison surfaces before behavioral extraction can proceed. This is not a fatal error for the migration — proceed to step 3 without a behavior spec, but warn that parity checking will be unavailable post-migration.
+   If CLAUDE.md has no "Behavioral Contract" section, the spec-analyst will return BLOCKED. Surface this to the user and POINT THEM TO THE ON-RAMP: run `/preflight:bootstrap` (Generate mode) to stamp the Behavioral Contract scaffold, or stamp the template at `${FRAMEWORK_ROOT}/examples/behavioral-contract-template.md` directly, then author the OPERATOR sections against the legacy source. This is not a fatal error for the migration — you may proceed without a behavior spec, but warn that parity checking will be unavailable post-migration (the flagship drift gate will be a no-op).
+
+   If CLAUDE.md HAS a Behavioral Contract section but it is still a **DRAFT** (any `OPERATOR:` placeholder or `TODO` remaining in the behaviour sections — the bootstrap scaffold was stamped but not completed), warn explicitly: "the Behavioral Contract is still a scaffold draft — the parity baseline extracted from it will be incomplete, so parity is NOT yet protecting this migration. Complete the OPERATOR sections against the legacy source before trusting the gate." The user decides whether to complete it now or proceed knowingly.
 
    If the spec-analyst returns DONE_INCOMPLETE, surface the missing entries. The user decides whether to investigate or accept.
 

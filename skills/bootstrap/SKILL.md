@@ -104,6 +104,12 @@ Ask questions in this order. Adapt based on what codebase analysis already revea
 - "I detected your test command as `dotnet test`. Is that correct, or do you use something different?"
 - Capture overrides as natural-language statements for CLAUDE.md
 
+**Behavioral Contract questions (only when `mode: migration`, or the team intends migration/refactor parity):**
+
+The Behavioral Contract is the input the parity gate depends on. Bootstrap does NOT author it (a wrong auto-authored contract produces a false-green parity baseline — strictly worse than none). Bootstrap SCAFFOLDS it and the lead completes the behaviour list. Ask only what you need to scaffold:
+- "Do you have a result-code / status convention callers key off? (e.g. `[EWS]\d{4}` codes, HTTP status enums, gRPC codes, a domain result object.)" — this seeds the recognition pattern. If the answer is unclear, leave it blank-with-guidance (do NOT guess a low-confidence regex — a blank forces authoring; a guess invites rubber-stamping).
+- "Which is the LEGACY service/endpoint this team will migrate first?" — the contract describes what the **legacy code being migrated** does (always the OLD system's observable behaviour). Use the answer to point the comparison-surface candidates at the right files.
+
 ### Phase 3 — Draft Generation
 
 Produce these artifacts:
@@ -116,6 +122,17 @@ Produce these artifacts:
    - Additional files based on team-specific needs (e.g., `migration-conventions.md`, `deployment.md`)
 3. **.preflight/config.json** — project config with mode, rubric paths, capture paths, branch config
 4. **Scan profile recommendation** — if a matching profile exists in `examples/scan-profiles/`, suggest configuring it. If not, offer to draft one based on the codebase analysis.
+5. **Behavioral Contract scaffold (when `mode: migration`, or migration/refactor parity is intended)** — append the Behavioral Contract section to CLAUDE.md by stamping the template at `${FRAMEWORK_ROOT}/examples/behavioral-contract-template.md` (everything below its "WHAT BOOTSTRAP STAMPS" marker). This is the on-ramp that makes the parity gate START on the documented install→bootstrap path — without it, `spec-analyst` returns BLOCKED and parity is silently unavailable.
+
+   <CRITICAL-INSTRUCTION>
+   Bootstrap SCAFFOLDS the contract; it does NOT author the behaviour list. Fill ONLY the cheap, mechanically-derivable, human-eyeballable parts and LABEL them `AUTO-DERIVED — VERIFY`:
+   - **Recognition pattern:** if codebase analysis found result-code-like literals (strings assigned to `*ResultCode`/`*Code`/`*Status` fields) that cluster into a clear regex, pre-fill it labelled `AUTO-DERIVED — VERIFY`. If you cannot derive one CONFIDENTLY, leave it BLANK with the `OPERATOR: COMPLETE` note — never emit a low-confidence guess (a guess invites rubber-stamping; a blank forces authoring). This is the (a) blank-not-guess rule.
+   - **Comparison-surface candidate files:** pre-fill the detected entry-point / repository / model / auth-filter file paths labelled `AUTO`, each with an `OPERATOR: confirm` note (and the "confirm FULL transitive scope, not just the controller" warning the template carries).
+   - **Behaviour list (result-code map, result-determination, side-effects/state, constraint handling):** leave ENTIRELY operator-authored. Do NOT pre-fill. A guessed behaviour list is a false parity baseline.
+   - **Truth source:** the contract describes the **legacy code being migrated** (the OLD system's observable behaviour). Point the operator at the legacy source, not the new code.
+
+   The stamped section keeps the headings spec-analyst requires verbatim ("recognition pattern", "Behavior categories", "Comparison surfaces"). Leave every `OPERATOR:` placeholder intact for the human — their presence is the DRAFT marker (see Validate mode). Note this may push CLAUDE.md beyond the 200-300 line target; the contract is load-bearing and exempt, but consider moving other content to pointer files to compensate.
+   </CRITICAL-INSTRUCTION>
 
 ### Phase 4 — Iterative Alignment
 
@@ -169,6 +186,11 @@ For each verifiable section of CLAUDE.md, classify:
 
 **Accuracy calculation:** verified-true sections / total verifiable sections. Aspirational content excluded from denominator.
 
+**Behavioral Contract check (do this whenever a Behavioral Contract section exists, or `mode: migration`):**
+- **Absent** — no "Behavioral Contract" section and `mode: migration`: report as a HIGH finding ("parity gate is unavailable — spec-analyst will return BLOCKED; run Generate mode or stamp the template at `${FRAMEWORK_ROOT}/examples/behavioral-contract-template.md`").
+- **DRAFT** — section exists but still contains any `OPERATOR:` placeholder or `TODO` in the behaviour sections (result-code map, result-determination, side-effects, constraint handling): report as DRAFT — "the contract is a scaffold the operator has not yet completed; parity is NOT protecting this project until the OPERATOR sections are authored against the legacy source." This is the mechanical faithfulness interlock: a DRAFT contract is treated as not-yet-trustworthy, not as done.
+- **Complete** — section exists, no `OPERATOR:`/`TODO` placeholders remain, all three spec-analyst-required headings present (recognition pattern, Behavior categories, Comparison surfaces): report Complete. (Bootstrap does not attempt to verify the behaviour list's *faithfulness* to legacy — that is the human's ratification and the parity gate's job; bootstrap only verifies the scaffold was filled in.)
+
 ### Phase 3 — Format Assessment
 
 Check CLAUDE.md against format principles:
@@ -199,6 +221,10 @@ Present to the lead:
 - Length: X lines (target 200-300)
 - Structure: [WHAT/WHY/HOW coverage]
 - Issues: [style rules, task-specific content, etc.]
+
+### Behavioral Contract
+- Status: [Absent (HIGH if mode: migration) | DRAFT (OPERATOR sections unfilled — parity not protecting yet) | Complete]
+- [if DRAFT: list which OPERATOR sections are still placeholders]
 
 ### Safety Findings
 - [any dangerous configurations found regardless of CLAUDE.md coverage]
