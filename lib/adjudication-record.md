@@ -84,10 +84,14 @@ verdict-aware cap will require.
 ## Enforcement (mechanical — `adjudication-output-gate`)
 
 The parent writes this artifact directly, and the write is **mechanically gated** by the
-`adjudication-output-gate` hook (registered as a `PreToolUse:Write` matcher in `hooks/hooks.json`,
-alongside `bootstrap-write-gate`). The hook intercepts any Write whose `file_path` matches
-`.preflight/adjudications/*.json`, two-level-parses `tool_input.content`, and blocks the write
-(exit 2) on either enforcement target:
+`adjudication-output-gate` hook (registered on BOTH the `PreToolUse:Write` AND `PreToolUse:Edit`
+matchers in `hooks/hooks.json`, alongside `bootstrap-write-gate`). On a Write whose `file_path`
+matches `.preflight/adjudications/*.json`, the hook two-level-parses `tool_input.content` and blocks
+the write (exit 2) on either enforcement target below. On an **Edit** to such a path it blocks
+unconditionally (exit 2): the record is "one file per PR per HEAD" and is written WHOLE via Write,
+never partially edited — editing in place would bypass content validation (the Edit payload carries
+`old_string`/`new_string`, not the full `content` the validator needs). Rewrite the whole file via
+Write instead. The two Write-path enforcement targets:
 
 1. **Forbidden keys** — any per-finding key outside the closed allow-list above is rejected. A
    smuggled correctness-attestation field (`verifiedAgainstSource`, `isRealBug`, `legacyConfirmed`)

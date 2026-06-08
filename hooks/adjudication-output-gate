@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# PreToolUse hook for Write. Mechanically validates the parent's adjudication
-# record (the verdict-of-record) before it reaches disk. Closes the 1A gap:
+# PreToolUse hook for Write AND Edit. Mechanically validates the parent's adjudication
+# record (the verdict-of-record) before it reaches disk. On Write it schema-validates
+# the whole content; on Edit it BLOCKS (the record is written whole, never edited in
+# place — GAP-2). Closes the 1A gap:
 # the artifact was parent-written and un-gated, so a fabricated correctness
 # field (the verifiedAgainstSource disease) or an evidence-less DEFENDED could
 # enter the durable record. This gate makes that unrepresentable.
@@ -65,7 +67,30 @@ if [ -z "$FILE_PATH" ] || ! is_adjudication "$FILE_PATH"; then
   exit 0
 fi
 
-# ─── This IS an adjudication record — fail closed from here ──
+# ─── Edit on an adjudication record is FORBIDDEN (GAP-2) ─────
+# Spec (lib/adjudication-record.md): the record is "one file per PR per HEAD"
+# and "the parent writes this artifact directly" — it is written WHOLE via Write,
+# never partially edited. An Edit carries old_string/new_string (no `content`),
+# so it cannot be schema-validated; rather than letting it hit the generic
+# empty-content failure below (a misleading message), block it explicitly with
+# the correct remedy. This gate is registered on BOTH the Write and Edit matchers.
+TOOL_NAME=""
+if [ "$JSON_TOOL" = "jq" ]; then
+  TOOL_NAME=$(printf '%s' "$STDIN_JSON" | jq -r '.tool_name // empty' 2>/dev/null || echo "")
+elif [ "$JSON_TOOL" = "node" ]; then
+  TOOL_NAME=$(printf '%s' "$STDIN_JSON" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const j=JSON.parse(d);process.stdout.write(j.tool_name||'')}catch(e){}})" 2>/dev/null || echo "")
+else
+  TOOL_NAME=$(printf '%s' "$STDIN_JSON" | grep -o '"tool_name"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"tool_name"[[:space:]]*:[[:space:]]*"//;s/"$//' || echo "")
+fi
+
+# Detect Edit either by tool_name or by the presence of old_string/new_string
+# (covers Edit/MultiEdit and any tool that mutates in place rather than writing whole).
+if [ "$TOOL_NAME" = "Edit" ] || [ "$TOOL_NAME" = "MultiEdit" ] || printf '%s' "$STDIN_JSON" | grep -q '"old_string"'; then
+  echo "BLOCKED: adjudication records are written WHOLE, not edited. The verdict-of-record is one immutable file per PR per HEAD (lib/adjudication-record.md). Rewrite the entire file via the Write tool — do not Edit it in place." >&2
+  exit 2
+fi
+
+# ─── This IS an adjudication record (Write path) — fail closed from here ──
 # A guarded write with no JSON parser cannot be validated → block.
 if [ -z "$JSON_TOOL" ]; then
   echo "BLOCKED: cannot validate adjudication record — no jq or node available. Failing closed." >&2
