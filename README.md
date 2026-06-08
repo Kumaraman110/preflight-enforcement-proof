@@ -204,11 +204,10 @@ See `defaults/config-template.json` for the full schema.
 
 ## Status
 
-**Version: v0.1-pre**
+**Version: v0.8.0**
 
 - All contracts (sub-agent I/O, hook formats, config schema, capture templates) are designed and statically verified
-- Internal test suite passes (39 assertions across 4 suites)
-- No real-world execution evidence yet — no PR has been driven through the full published loop
+- Internal test suite passes (`bash tests/run-all-tests.sh`)
 - Reference implementation: .NET migration (CPSL) — validated the design before extraction into this framework
 
 What "pre" means: contracts may revise based on early execution evidence. The architectural commitment, sub-agent role separation, and mechanical gate enforcement will not change.
@@ -217,7 +216,7 @@ What "pre" means: contracts may revise based on early execution evidence. The ar
 
 ## Roadmap
 
-Near-term (before v0.1):
+Near-term:
 - [ ] Generalize `migrate` away from hardcoded service prefix patterns
 - [ ] Extract discovery-analyst's technical debt scan into configurable profiles
 - [ ] Validate on a non-.NET project (proving core stack-neutrality)
@@ -246,6 +245,6 @@ The main session is the ONLY actor that edits service code. Sub-agents have stri
 
 ## Contributing
 
-This framework is in active internal development. Contribution guidelines will be published when the framework reaches v0.1 stability.
+This framework is in active internal development. Contribution guidelines will be published when the framework reaches a stable release.
 
 For feedback or questions, open an issue on this repository.
