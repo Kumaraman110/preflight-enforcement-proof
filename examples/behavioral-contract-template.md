@@ -42,10 +42,10 @@ every `OPERATOR:` section against the legacy source.
 > faithful contract here, the parity gate cannot protect you.
 >
 > ⚠️ THIS IS A SCAFFOLD, NOT A FINISHED CONTRACT. Bootstrap generated the STRUCTURE and pre-filled
-> only the parts it could detect mechanically (marked AUTO-DERIVED — VERIFY). The load-bearing
-> part — the behavior list — MUST be authored by a human who knows the behavior (marked
-> OPERATOR: COMPLETE). An incomplete or wrong contract is WORSE than none: the gate will pass
-> GREEN against a baseline that itself omits behaviors, so a migration dropping those same
+> only the parts it could detect mechanically (the auto-derived-and-verify markers). The
+> load-bearing part — the behavior list — MUST be authored by a human who knows the behavior (the
+> operator-to-complete markers). An incomplete or wrong contract is WORSE than none: the gate will
+> pass GREEN against a baseline that itself omits behaviors, so a migration dropping those same
 > behaviors slips through. Parity protection is NOT real until a human confirms this contract is
 > faithful to the legacy code.
 >
@@ -109,9 +109,9 @@ every `OPERATOR:` section against the legacy source.
   library (verify output equivalence), logging framework, exception-handling idiom — as long as the
   observable result code / HTTP status outcomes above are preserved.
 
-<!-- ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-     FAITHFULNESS GATE — this contract is NOT done until a human has confirmed every OPERATOR
-     section against the legacy source. While any "OPERATOR:" placeholder or TODO remains, the
-     contract is a DRAFT and parity is NOT protecting you. Bootstrap Validate reports DRAFT until
-     the OPERATOR placeholders are replaced.
-     ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ -->
+<!-- =====================================================================================
+     FAITHFULNESS GATE — this contract is NOT done until a human has confirmed every
+     operator-to-complete section against the legacy source. While any unfilled scaffold
+     placeholder comment remains, the contract is a DRAFT and parity is NOT protecting you.
+     Bootstrap Validate reports DRAFT until the placeholder comments are replaced.
+     ===================================================================================== -->
