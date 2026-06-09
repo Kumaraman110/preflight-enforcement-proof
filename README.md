@@ -1,250 +1,132 @@
+<div align="center">
+
 # preflight
 
-A discipline scaffold for AI-assisted engineering work. Mechanical enforcement of team standards through gates and hooks, self-improving via captured findings, adapting to any team's stack through project context.
+**Catch the bug before the push. Not after the incident.**
+
+A self-improving code-review and migration framework for Claude Code that puts a **fail-closed behavioral gate** in front of every push — and refuses code that silently changed what your service does.
+
+`migration` · `self-improving review` · `behavioral parity` · `Claude Code`
+
+</div>
 
 ---
 
-## The Problem
+## The problem preflight solves
 
-AI-assisted engineering produces inconsistent quality. Standards live in people's heads, in scattered docs, or in prompts that degrade as context grows. When multiple engineers use AI tools on the same codebase, there is no mechanical way to ensure the work meets the team's bar.
+Tests pass. Code review approves. The diff looks clean. And the service still ships a behavioral regression — a result code that quietly changed, an identifier-precedence order that flipped, a fire-and-forget side effect that became synchronous. Nobody catches it, because **nothing in the pipeline was watching the externally-observable behavior** — only the syntax, the style, and the tests someone remembered to write.
 
-Prompt-based discipline fails at scale:
-- At 65%+ context utilization, attention drifts from instructions read 40K tokens ago
-- Under time pressure, the model weighs user urgency against quality instructions
-- Team conventions accumulate faster than any single prompt can carry
+That class of bug is invisible to tests and code review by construction: the code compiles, the tests (written against the new code) pass, and a human reviewer reads intent, not byte-level wire contracts. It surfaces in production, as an incident.
 
-Preflight solves this by making discipline mechanical — enforced by gates that don't depend on model judgment — and self-improving — getting better with every PR, not just every prompt edit.
+**preflight blocks the push.**
 
 ---
 
-## How It Works
+## The headline: the parity gate
 
-### The core loop
+preflight extracts a **behavioral baseline** from your legacy service — every result code and the exact condition that emits it, every wire-contract field, every side effect and state transition — as a machine-comparable spec. After migration, it extracts the same spec from the new code and **diffs them**. If a behavior was dropped, changed, or had its result-determination mechanism silently altered, the **parity gate blocks the push**.
 
-```
-Code written
-  │
-  ▼
-Stage 1: sub-agent walks team rubric against diff
-  ├── Findings? → fix → re-run Stage 1
-  └── Clean? → push
-        │
-        ▼
-Stage 2: external reviewer (Copilot) reviews the PR
-  ├── Findings? → classify → capture → fix → re-push
-  └── Clean? → done
-        │
-        ▼
-After N PRs: batched rubric-edit PR promotes validated
-captures into operative rules → next PR inherits them
-```
+It is a real mechanical gate, not a linter suggestion:
 
-### What makes it different from a linter or a prompt
+- **Fail-closed.** It blocks on a real diff *and* on unparseable input. The dangerous direction is the default.
+- **Un-bypassable by the agent.** The AI that wrote the migration cannot clear its own gate. Only a live re-run of the comparison engine — or an authenticated human — clears it. (See [`docs/parity-gate-limitations.md`](docs/parity-gate-limitations.md) for the honest enforcement boundary; preflight labels exactly what is mechanical versus prompt-level rather than overstating it.)
+- **Behavioral, not textual.** It compares what a *caller observes* — result codes, HTTP status per condition, field names and types, side effects — canonicalized so a pure implementation change (sync→async, Newtonsoft→System.Text.Json, a renamed DTO) passes, while a real behavior change is caught.
 
-- **Mechanical gates** block pushes unless tests pass and Stage 1 is clean. These are bash scripts, not suggestions — they execute before the tool call reaches the model.
-- **Self-improvement** is structural, not aspirational. Every external finding gets classified into one of four buckets. After N PRs, validated findings get promoted into the rubric through a human-reviewed PR. The system literally gets stricter over time.
-- **Role separation** prevents the model from reviewing its own work. The reviewer sub-agent is a different context than the author. The capture agent never edits code. The implementer never sees the full project.
-- **Coupled-group protocol** prevents cascading regressions — the primary failure mode where fixing finding A introduces finding B, and rounds multiply without converging.
-
-### Adaptation via project context
-
-Preflight reads your team's conventions from:
-1. **Project config** (`.preflight/config.json`) — mode, rubric path, test command, branch conventions
-2. **CLAUDE.md** — architectural context, team conventions, what-not-to-do lists
-3. **Rubric** — the specific detection rules Stage 1 enforces
-
-Different teams get different behavior by providing different context. The framework machinery is the same.
+This is the differentiator. Test suites verify the behaviors you thought to test. The parity gate verifies the behaviors that *already existed* — including the ones nobody wrote a test for.
 
 ---
 
-## What's in the Box
+## How it works
 
-### Skills (slash commands)
+preflight runs a migration (or any change) through a disciplined loop, each step backed by a mechanical gate or an isolated sub-agent:
 
-| Command | What it does |
-|---|---|
-| `/preflight:self-review` | Run Stage 1 against current diff. Fix locally. Loop until clean. Never pushes. |
-| `/preflight:fix-and-close` | Full pipeline: Stage 1 gate → commit → push → Stage 2 Copilot loop → clean PR. |
-| `/preflight:migrate` | End-to-end legacy service migration: discovery, execution, review loop. |
-| `/preflight:scaffold` | Net-new API: design, generate skeleton, review loop. |
-| `/preflight:systematic-debugging` | Root cause investigation before fixes. Prevents shotgun debugging. |
-| `/preflight:test-driven-development` | RED-GREEN-REFACTOR enforcement. Tests before implementation. |
-| `/preflight:gps-decide` | Decision framework that scales scrutiny to stakes. Prevents over-deliberation. |
+1. **Baseline** — extract a behavioral spec from the legacy service (`spec-analyst`), grounded in citations to the source. Committed *before* any new code exists, so it can't be retro-fitted.
+2. **Discover** — map dependencies and score migration readiness (`discovery-analyst`), read-only, in its own context.
+3. **Migrate** — generate the modernized service from validated generation specs, not from improvisation.
+4. **Stage 1 review** — a `code-reviewer` sub-agent walks the rubric against the diff and reports findings. The author never reviews their own work.
+5. **Gates** — fail-closed `PreToolUse` hooks block the push until evidence exists: tests ran, the dependency map validated, the review is clean, and the **parity check passed**.
+6. **Parity** — extract the spec from the migrated code, diff against the baseline. Drift → blocked.
+7. **Stage 2 review** — drive the external (Copilot) review loop to convergence (`external-review-handler`), then **capture** every finding into the rubric.
+8. **Adjudicate** — record the verdict-of-record in a tamper-resistant artifact whose schema makes fabrication *unrepresentable*, not merely discouraged.
 
-### Sub-agents
+The architectural commitment behind the whole loop:
 
-| Agent | Role | Writes |
-|---|---|---|
-| `code-reviewer` | Walks rubric against diff, reports findings | Nothing (findings returned as output) |
-| `external-review-handler` | Polls external reviewer, classifies findings, captures learnings | Capture files only |
-| `discovery-analyst` | Codebase analysis for readiness assessment | `dependency-map.json` |
-| `implementer` | Fresh-context executor for coupled-group fixes | Only files listed in fix brief |
+> **Every issue caught by external review on ServiceN should be caught by local review on ServiceN+1.**
 
-### Mechanical infrastructure
-
-| Component | Purpose |
-|---|---|
-| Pre-push gate | Blocks `git push` unless tests pass and Stage 1 is clean (evidence-based) |
-| Coupled-edit gate | Blocks edits to coupled files until all related findings are acknowledged |
-| Evidence files | Record which commit was verified; go stale on any new commit |
-| Session-start hook | Injects behavioral routing into every session automatically |
-| Oscillation detection | Stops loops that aren't converging (same files churning, finding count flat) |
-| Hard iteration caps | Stage 1: max 5, Stage 2: max 3. Non-negotiable. |
+The capture step (7) is what makes that real — each finding the external reviewer surfaces becomes a rule the *local* Stage-1 reviewer applies next time. The framework is designed to get harder to fool with every service it sees.
 
 ---
 
-## Self-Improvement
+## Quickstart
 
-The system's architectural commitment:
-
-> **Every issue caught by external review on PR N should be caught by local review on PR N+1.**
-
-This is delivered through four capture buckets:
-
-| Bucket | Meaning | Destination |
-|---|---|---|
-| `in-rubric-but-missed` | Rubric covers this, Stage 1 missed it | Strengthen detection signal |
-| `new-category` | No rubric section exists for this | Draft new rubric section |
-| `false-positive` | Stage 1 flagged it, external review disagrees | Loosen detection signal |
-| `human-judgment` | Subjective, not automatable | Surface for human review |
-
-After N PRs (configurable, default 5), a batched rubric-edit PR consolidates validated captures into new rubric sections. A human reviews and merges. The rubric gets better. The next PR inherits it.
-
-See [`docs/rubric-edit-process.md`](docs/rubric-edit-process.md) for the full promotion lifecycle.
-
----
-
-## Stack Support
-
-**The core framework is stack-neutral.** The loop, the gates, the captures, the sub-agent roles, the oscillation detection — none of these know or care about your language or cloud provider.
-
-**Default presets target .NET** as the reference implementation:
-- `rubric-generic.md` — cross-cutting concerns for .NET projects
-- `rubric-migration.md` — .NET Framework → modern .NET migration patterns
-- `rubric-api-design.md` — API design rules (mostly language-agnostic)
-- `generation-specs/dotnet-service.md` — copy-pasteable .NET service patterns
-
-**Teams using other stacks** bring their own rubric and skip the .NET-specific presets. The config-based adaptation means preflight reviews whatever your rubric describes — it is not hard-wired to any stack.
-
-This is being actively generalized. See [Roadmap](#roadmap) below.
-
----
-
-## Getting Started
-
-### Install
+preflight installs from a **pinned git ref** into a consumer repo's `.claude/` tree. The installer reads committed git objects (never your working tree), writes an integrity manifest, and merges hook registration into your settings.
 
 ```bash
-# From a local clone (development / internal use)
-claude --plugin-dir /path/to/preflight
+# From the preflight repo, install into your service repo at a pinned version:
+./tools/preflight-install.sh /path/to/your-repo v0.8.0
 
-# Or as a symlinked plugin
-ln -s /path/to/preflight ~/.claude/plugins/preflight
+# Verify the install is intact (manifest present, zero drift):
+./tools/preflight-verify.sh /path/to/your-repo
+#   exit 0 = PASS · 1 = FAIL (drift) · 2 = STALE (newer release available)
 ```
 
-### First-time setup
-
-1. Add a `.preflight/config.json` to your project (copy from `defaults/config-template.json`)
-2. Set `mode` to `"generic"`, `"migration"`, or `"api-new"`
-3. Point `rubric` at your team's review rubric (or leave null for defaults)
-4. Set `test.command` to your test runner (or leave null for auto-detection)
-
-### First invocation
+Then, in a Claude Code session rooted in your repo:
 
 ```
-/preflight:self-review
+/preflight:bootstrap     # scaffold your team contract + Behavioral Contract (the parity baseline input)
+/preflight:migrate <Service>   # run the full migration loop end-to-end
 ```
 
-This runs Stage 1 against your current diff using the configured rubric. Low-risk, no push, instant feedback. Start here.
+`bootstrap` scaffolds the Behavioral Contract for you — it auto-fills what it can detect mechanically and hands you the behavior list to complete, so the parity gate starts working on the documented path instead of silently sitting idle.
 
-### Where to look next
+---
 
-| Document | Purpose |
+## What's inside
+
+preflight ships as composable surfaces installed into `.claude/`:
+
+| Surface | What it is |
 |---|---|
-| `FRAMEWORK.md` | The framework contract — how all the pieces fit together |
-| `docs/rubric-edit-process.md` | How captures get promoted into operative rubric rules |
-| `defaults/config-template.json` | Full config schema with comments |
-| `lib/verification-discipline.md` | The "no claims without evidence" behavioral rule |
-| `lib/mechanical-gates.md` | Gate architecture and evidence format |
+| **5 agents** | Single-purpose, isolated sub-agents: `code-reviewer`, `discovery-analyst`, `spec-analyst`, `external-review-handler`, `implementer`. Non-overlapping write permissions — no agent reviews its own work. |
+| **11 skills** | The invocable surface: `migrate`, `scaffold`, `fix-and-close`, `self-review`, `bootstrap`, `behavior-spec`, `rubric-edit`, `gps-decide`, `systematic-debugging`, `test-driven-development`, `routing`. |
+| **14 hooks** | The mechanical gates — `PreToolUse` blocks (parity, adjudication, pre-push, coupled-edit), evidence writers, drift detection. Registered into `settings.json` from a single source of truth. |
+| **lib engines** | The stack-neutral comparison engines: `parity-check.sh`, `spec-integrity-check.sh`, the detectors, the rubric-promotion evaluator. |
+
+Stack-neutral by design: the orchestration is generic; stack specifics (scan profiles, generation specs, rubrics) are configuration. The reference implementation is .NET Framework → .NET 10 migration.
 
 ---
 
-## Project Config
+## Why it works
 
-Create `.preflight/config.json` in your project root. Key fields:
+Most "AI review" tooling asks a model to *judge* a diff and trusts the answer. preflight assumes the opposite — that an unconstrained agent will confidently ship a plausible-but-wrong change — and engineers around it:
 
-```json
-{
-  "mode": "generic",
-  "rubric": "path/to/your-rubric.md",
-  "branch": {
-    "base": "main",
-    "remote": "origin"
-  },
-  "test": {
-    "command": null,
-    "coverageBaseline": null
-  }
-}
-```
+- **Roles are separated.** The agent that writes code is not the agent that reviews it, and neither can clear the gate that blocks the push.
+- **Guarantees are mechanical where it counts.** A hook either fires or it doesn't; that's testable, and preflight ships behavioral tests for its own gates. Where a guard is only prompt-level, the docs say so plainly.
+- **Fabrication is engineered out of the data model.** The verdict-of-record's schema forbids the fields a model would invent to fake a clean result — it can't be represented, not just discouraged.
+- **The framework learns.** Findings from external review are captured into the rubric so the local gate catches them next time.
 
-| Field | Purpose | Default |
-|---|---|---|
-| `mode` | `"generic"`, `"migration"`, or `"api-new"` | `"generic"` |
-| `rubric` | Path (or array of paths) to review rubric(s) | Plugin defaults based on mode |
-| `branch.base` | Target branch for PRs | `"main"` |
-| `branch.remote` | Git remote name | `"origin"` |
-| `test.command` | Test runner command | Auto-detect |
-| `test.coverageBaseline` | Minimum coverage % | None |
-| `migration.legacyRepoPath` | Path to legacy repo (migration mode only) | None |
-
-See `defaults/config-template.json` for the full schema.
+This is the discipline that a failed real-world migration (an agent that invented five nonexistent database functions across 70+ review rounds) taught the hard way — preflight is the framework built to make that specific class of failure impossible to repeat silently.
 
 ---
 
-## Status
+## Status & maturity
 
-**Version: v0.8.0**
-
-- All contracts (sub-agent I/O, hook formats, config schema, capture templates) are designed and statically verified
-- Internal test suite passes (`bash tests/run-all-tests.sh`)
-- Reference implementation: .NET migration (CPSL) — validated the design before extraction into this framework
-
-What "pre" means: contracts may revise based on early execution evidence. The architectural commitment, sub-agent role separation, and mechanical gate enforcement will not change.
+preflight is in **active development** (latest release `v0.8.0`; releases are annotated tags on `feature/preflight-framework`). The architecture is built and its gates are behaviorally tested; the self-improvement loop is proven in design and exercised internally, **not yet validated across a large public track record** — so we describe what it *does*, and where it's *going*, without inflating a history it hasn't earned yet. See [`FRAMEWORK.md`](FRAMEWORK.md) for the architecture and honest maturity assessment.
 
 ---
 
-## Roadmap
+## Documentation
 
-Near-term:
-- [ ] Generalize `migrate` away from hardcoded service prefix patterns
-- [ ] Extract discovery-analyst's technical debt scan into configurable profiles
-- [ ] Validate on a non-.NET project (proving core stack-neutrality)
-- [ ] First real-world execution through the published framework
-
-Medium-term:
-- [ ] Generation spec presets for additional stacks
-- [ ] Discovery profiles for additional legacy platforms
-- [ ] Community rubric contributions (when stable)
+- [`FRAMEWORK.md`](FRAMEWORK.md) — what preflight is, the architectural commitment, surface overview.
+- [`docs/v0.2-design.md`](docs/v0.2-design.md) — the design record (OPEN items marked explicitly).
+- [`docs/parity-gate-limitations.md`](docs/parity-gate-limitations.md) — the honest enforcement boundary: what's mechanical, what's prompt-level, what's a team/infra decision.
+- [`docs/v0.2-run-protocol.md`](docs/v0.2-run-protocol.md) — how an end-to-end run executes.
+- [`docs/pr12-*.md`](docs/) — the real-world failure post-mortem that motivated the framework.
 
 ---
 
-## Architecture
+<div align="center">
 
-```
-Main session (you)                    ← edits code, orchestrates everything
-  ├── code-reviewer (sub-agent)       ← reads rubric + diff, reports findings
-  ├── external-review-handler (sub-agent) ← polls external review, classifies, captures
-  ├── discovery-analyst (sub-agent)   ← reads codebase, produces dependency map
-  └── implementer (sub-agent)         ← fresh-context fixer for coupled groups
-```
+**Catch it locally on N+1, or pay for it in production on N. preflight makes that a gate, not a hope.**
 
-The main session is the ONLY actor that edits service code. Sub-agents have strictly non-overlapping write permissions. This prevents the model from reviewing its own work and prevents cascading context degradation.
-
----
-
-## Contributing
-
-This framework is in active internal development. Contribution guidelines will be published when the framework reaches a stable release.
-
-For feedback or questions, open an issue on this repository.
+</div>
