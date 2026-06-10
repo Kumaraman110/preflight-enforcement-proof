@@ -423,6 +423,18 @@ run_behavioral_tests() {
   else
     yellow "SKIP: pre-push-remote-guard-test.sh not found"
   fi
+
+  local install_cwd_test="$SCRIPT_DIR/behavioral/install-cwd-independence-test.sh"
+  if [ -f "$install_cwd_test" ]; then
+    if bash "$install_cwd_test"; then
+      PASSES=$((PASSES + 3))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: installer cwd-independence tests failed (A4 CODE_FORGE_DIR)"
+    fi
+  else
+    yellow "SKIP: install-cwd-independence-test.sh not found"
+  fi
 }
 
 # ═══════════════════════════════════════════════════════════════

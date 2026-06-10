@@ -21,7 +21,26 @@ set -euo pipefail
 # (preserving every pre-existing key), and a manifest covering every surface.
 # .preflight/ holds runtime state only (manifest, cache, captures).
 
-CODE_FORGE_DIR="${CODE_FORGE_DIR:-$(git rev-parse --show-toplevel 2>/dev/null)}"
+# CODE_FORGE_DIR resolution (A4 fix): default to the code-forge repo derived from THIS
+# script's own location (tools/preflight-install.sh → repo root is the parent dir), NOT
+# from `git rev-parse` in the caller's cwd. The old default ran `git rev-parse
+# --show-toplevel` in cwd; with `set -e` (above) a non-git cwd made that substitution
+# exit 128 and the whole installer died — even when given absolute path args. The env
+# override still wins (CODE_FORGE_DIR=… bash …). We then VALIDATE the resolved dir is a
+# git worktree (the install reads git objects via the pinned ref), failing with a CLEAR
+# message rather than an opaque exit 128 deeper in.
+if [ -z "${CODE_FORGE_DIR:-}" ]; then
+    _PF_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    CODE_FORGE_DIR="$(cd "${_PF_SCRIPT_DIR}/.." && pwd)"   # tools/ → repo root
+fi
+if ! git -C "$CODE_FORGE_DIR" rev-parse --git-dir >/dev/null 2>&1; then
+    echo "ABORT: CODE_FORGE_DIR ('${CODE_FORGE_DIR}') is not a git repository."
+    echo "  The installer reads framework artifacts from git objects at a pinned ref, so it"
+    echo "  must point at the code-forge git worktree. Either run this script from within the"
+    echo "  code-forge checkout, or set CODE_FORGE_DIR=/path/to/code-forge explicitly."
+    exit 1
+fi
+
 CONSUMER_DIR="${1:?Usage: preflight-install.sh <CONSUMER_DIR> [PINNED_REF]}"
 PINNED_REF="${2:-HEAD}"
 
@@ -51,7 +70,12 @@ if [ -n "$DIRTY" ]; then
 fi
 
 # ── Step 2: Resolve pinned ref ───────────────────────────────────────────────
-RESOLVED_SHA=$(git rev-parse "$PINNED_REF" 2>/dev/null)
+# Use --verify --quiet so an UNKNOWN ref yields an EMPTY result + non-zero (caught by the
+# -z check below), instead of (a) echoing the bad ref to stdout — plain `git rev-parse
+# <bad>` prints its argument, which would slip past `[ -z ]` as a bogus non-empty SHA — and
+# (b) aborting the script at exit 128 under `set -e` BEFORE this friendly ABORT can run
+# (that handler was dead). `|| true` keeps the assignment from tripping errexit.
+RESOLVED_SHA=$(git -C "$CODE_FORGE_DIR" rev-parse --verify --quiet "$PINNED_REF" 2>/dev/null || true)
 if [ -z "$RESOLVED_SHA" ]; then
     echo "ABORT: cannot resolve ref '${PINNED_REF}' to a SHA."
     exit 1
