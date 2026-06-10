@@ -447,6 +447,18 @@ run_behavioral_tests() {
   else
     yellow "SKIP: copilot-reviewer-path-test.sh not found"
   fi
+
+  local ci_liveness_test="$SCRIPT_DIR/behavioral/ci-gate-liveness-template-test.sh"
+  if [ -f "$ci_liveness_test" ]; then
+    if bash "$ci_liveness_test"; then
+      PASSES=$((PASSES + 5))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: CI gate-liveness template tests failed (A5 dead-gate exit-capture)"
+    fi
+  else
+    yellow "SKIP: ci-gate-liveness-template-test.sh not found"
+  fi
 }
 
 # ═══════════════════════════════════════════════════════════════

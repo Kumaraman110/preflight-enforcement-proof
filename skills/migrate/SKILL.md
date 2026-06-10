@@ -432,7 +432,23 @@ jobs:
             echo "No migrated spec found — spec integrity check skipped"
             exit 0
           fi
+          # GitHub Actions runs `run:` steps under `set -e`. spec-integrity-check.sh exits
+          # non-zero on an anchor-consistency failure (2). A BARE call propagates that exit
+          # correctly (errexit → step red), but the moment ANY post-call logic is added it
+          # would abort BEFORE the capture — the same dead-gate trap the parity step below
+          # fell into. Use the explicit capture pattern proactively so both gates share ONE
+          # safe idiom: disable errexit ONLY around the call, read $?, re-enable, then decide.
+          # Any non-zero still BLOCKS (exit 1) — this never converts a failure into a pass.
+          set +e
           bash .github/scripts/spec-integrity-check.sh "$SPEC" "$SOURCE"
+          SPEC_EXIT=$?
+          set -e
+          if [ $SPEC_EXIT -ne 0 ]; then
+            echo "BLOCKED: spec integrity check failed (exit $SPEC_EXIT)."
+            echo "Anchors are inconsistent between the migrated spec and the source — a behavior"
+            echo "may have been stripped from the spec to dodge a parity failure."
+            exit 1
+          fi
 
       - name: Parity check (behavioral drift detection)
         run: |
@@ -442,8 +458,17 @@ jobs:
             echo "Spec files missing — parity check skipped"
             exit 0
           fi
+          # GitHub Actions runs `run:` steps under `set -e`, so a non-zero exit from
+          # parity-check.sh (1 advisory / 2 blocking) would abort the step AT THE CALL,
+          # BEFORE `$?` is captured — making the exit-code branching below DEAD (the
+          # "BLOCKED:" diagnostic never prints, and the intended exit-2-blocks logic never
+          # runs). Disable errexit ONLY around the call so the code is captured, then decide.
+          # (Ported from the consumer fix proven live in the SessionToken run — keep here so
+          # future consumers do not inherit the dead gate. Single source: this template.)
+          set +e
           bash .github/scripts/parity-check.sh "$BASELINE" "$CURRENT"
           PARITY_EXIT=$?
+          set -e
           if [ $PARITY_EXIT -eq 2 ]; then
             echo "BLOCKED: Blocking parity violations detected."
             echo "The migrated service has behavioral drift from legacy."
