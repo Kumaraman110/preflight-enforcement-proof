@@ -308,6 +308,70 @@ else
   fail "Check thread state — got T1='$state_t1', T2='$state_t2', T3='$state_t3'"
 fi
 
+# ─── Test 11: mutations must NOT carry rateLimit (discriminating; A3 regression guard) ──
+# rateLimit is a QUERY-only field — invalid on the GraphQL Mutation root. The prior bug
+# put `rateLimit { remaining }` inside resolve_review_resolve_thread / _post_reply, which
+# GitHub rejects. Tests 1–10 above use mocks that return canned success regardless of the
+# query body, so they PASS on the buggy lib too — they do NOT prove this fix. This test
+# uses a DISCRIMINATING mock: it inspects the GraphQL body passed to `gh api graphql` and
+# returns a GraphQL error IFF a MUTATION body contains `rateLimit` (mirroring GitHub's
+# real rejection). On the fixed lib the mutations omit rateLimit → success; a reintroduction
+# → the mock errors, the lib's retry exhausts, and the call returns non-zero (RED).
+cat > "$MOCK_BIN/gh" << 'MOCKEOF'
+#!/usr/bin/env bash
+if [[ "$*" == *"auth status"* ]]; then
+  echo "  Token scopes: 'repo'"
+  exit 0
+fi
+# Reconstruct the GraphQL query body from the args (gh api graphql -f query=...).
+BODY="$*"
+is_mutation=0
+case "$BODY" in
+  *resolveReviewThread*|*addPullRequestReviewThreadReply*) is_mutation=1 ;;
+esac
+if [ "$is_mutation" -eq 1 ] && [[ "$BODY" == *rateLimit* ]]; then
+  # Exactly what GitHub returns: rateLimit is not a field on the Mutation type.
+  echo "{\"errors\":[{\"message\":\"Field 'rateLimit' doesn't exist on type 'Mutation'\"}]}" >&2
+  exit 1
+fi
+# Valid mutation (no rateLimit) → canned success.
+if [[ "$BODY" == *resolveReviewThread* ]]; then
+  echo '{"data":{"resolveReviewThread":{"thread":{"id":"T1","isResolved":true}}}}'
+elif [[ "$BODY" == *addPullRequestReviewThreadReply* ]]; then
+  echo '{"data":{"addPullRequestReviewThreadReply":{"comment":{"id":"C99"}}}}'
+else
+  echo '{"data":{}}'
+fi
+exit 0
+MOCKEOF
+chmod +x "$MOCK_BIN/gh"
+
+res_resolve=$(
+  set +e
+  export PATH="$MOCK_BIN:$PATH"
+  source "$LIB"
+  _RRT_RATE_LIMIT_LOG="$TMPDIR_TEST/rate-limit.json"
+  _RRT_BACKOFF_DELAYS=(0 0 0)
+  resolve_review_resolve_thread "T1" >/dev/null 2>/dev/null
+  echo "EXIT:$?"
+)
+res_reply=$(
+  set +e
+  export PATH="$MOCK_BIN:$PATH"
+  source "$LIB"
+  _RRT_RATE_LIMIT_LOG="$TMPDIR_TEST/rate-limit.json"
+  _RRT_BACKOFF_DELAYS=(0 0 0)
+  resolve_review_post_reply "T1" "Fixed in abc1234" >/dev/null 2>/dev/null
+  echo "EXIT:$?"
+)
+rc_resolve=$(echo "$res_resolve" | grep -oP 'EXIT:\K[0-9]+')
+rc_reply=$(echo "$res_reply" | grep -oP 'EXIT:\K[0-9]+')
+if [ "$rc_resolve" = "0" ] && [ "$rc_reply" = "0" ]; then
+  pass "Mutations carry no rateLimit (rejecting mock accepts both mutations)"
+else
+  fail "Mutation rateLimit guard — resolve exit=$rc_resolve, reply exit=$rc_reply (rejecting mock errored → a mutation still sends rateLimit)"
+fi
+
 # ─── Summary ─────────────────────────────────────────────────
 
 echo ""

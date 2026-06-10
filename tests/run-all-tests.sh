@@ -391,7 +391,7 @@ run_behavioral_tests() {
   local review_thread_test="$SCRIPT_DIR/behavioral/review-thread-resolution-test.sh"
   if [ -f "$review_thread_test" ]; then
     if bash "$review_thread_test"; then
-      PASSES=$((PASSES + 10))
+      PASSES=$((PASSES + 11))
     else
       FAILURES=$((FAILURES + 1))
       red "FAIL: Review-thread-resolution tests failed"
