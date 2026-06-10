@@ -435,6 +435,18 @@ run_behavioral_tests() {
   else
     yellow "SKIP: install-cwd-independence-test.sh not found"
   fi
+
+  local copilot_path_test="$SCRIPT_DIR/behavioral/copilot-reviewer-path-test.sh"
+  if [ -f "$copilot_path_test" ]; then
+    if bash "$copilot_path_test"; then
+      PASSES=$((PASSES + 1))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: copilot reviewer-path test failed (A2 prescriptive --add-reviewer)"
+    fi
+  else
+    yellow "SKIP: copilot-reviewer-path-test.sh not found"
+  fi
 }
 
 # ═══════════════════════════════════════════════════════════════
