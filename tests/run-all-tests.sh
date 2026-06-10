@@ -411,6 +411,18 @@ run_behavioral_tests() {
   else
     yellow "SKIP: install-prune-confinement-test.sh not found"
   fi
+
+  local remote_guard_test="$SCRIPT_DIR/behavioral/pre-push-remote-guard-test.sh"
+  if [ -f "$remote_guard_test" ]; then
+    if bash "$remote_guard_test"; then
+      PASSES=$((PASSES + 8))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: pre-push remote/repo guard tests failed (A1 forbidden-destination)"
+    fi
+  else
+    yellow "SKIP: pre-push-remote-guard-test.sh not found"
+  fi
 }
 
 # ═══════════════════════════════════════════════════════════════

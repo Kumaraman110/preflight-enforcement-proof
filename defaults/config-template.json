@@ -30,10 +30,13 @@
     }
   },
 
+  "_comment_branch": "base = the protected target branch; remote = the intended push target. forbiddenRemotes/forbiddenRepos are an EXPLICIT denylist the pre-push guard checks the RESOLVED target against, REGARDLESS of 'remote' — set these on a clone whose 'origin' (or any remote) points at a legacy/production repo that must never be pushed to. forbiddenRemotes = remote NAMES; forbiddenRepos = owner/repo slugs or full URLs. Guard is agent-Bash-tool-only and fail-open (empty lists = inert) — not server-side protection.",
   "branch": {
     "base": "main",
     "remote": "origin",
-    "migrationPrefix": "feature/migrate-"
+    "migrationPrefix": "feature/migrate-",
+    "forbiddenRemotes": [],
+    "forbiddenRepos": []
   },
 
   "test": {

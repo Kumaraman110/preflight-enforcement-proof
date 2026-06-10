@@ -81,47 +81,122 @@ _pfg_url_to_slug() {
   printf '%s' "$1" | sed -E 's#^git@[^:]+:#https://x/#; s#^https?://[^/]+/##; s#\.git$##' | sed -E 's#^/+##'
 }
 
-# ── #3a: guard `gh pr create` against a NON-CANONICAL repo (the #6b sibling) ──
+# ── Forbidden-destination denylist (A1 fix) ───────────────────────────────────
+# The two guards below historically derived their SINGLE notion of "safe target"
+# from config.branch.remote ("anything != the configured remote is bad"). That is
+# exactly backwards on an INVERTED clone where the configured remote IS the
+# dangerous one (observed live: branch.remote=origin, but origin=legacy prod that
+# must never be touched; the real target is a DIFFERENT remote). The guard then
+# blocked the correct push AND recommended pushing to the legacy repo.
+#
+# Fix: an EXPLICIT denylist the guard checks the RESOLVED target against, REGARDLESS
+# of branch.remote. branch.forbiddenRemotes = remote NAMES that must never be pushed
+# to; branch.forbiddenRepos = owner/repo slugs (or URLs) that must never be targeted
+# by push or `gh pr create`. Fail-open exactly like the rest of this guard: absent or
+# unparseable config → empty lists → inert (never newly blocks an opted-out repo).
+_pfg_branch_array() {  # $1 = cfg path ; $2 = field ; echo array values, one per line.
+  local cfg="$1" field="$2"
+  [ -z "$cfg" ] || [ ! -f "$cfg" ] && return 0
+  if command -v jq &>/dev/null; then
+    jq -r ".branch.${field}[]? // empty" "$cfg" 2>/dev/null || true
+  elif command -v node &>/dev/null; then
+    node -e "try{const c=require('$cfg');const a=(c.branch&&c.branch.$field)||[];a.forEach(x=>console.log(x))}catch(e){}" 2>/dev/null || true
+  else
+    # Best-effort grep fallback (labeled): pull quoted strings from the field's array,
+    # dropping the first match (the field name itself). jq is the primary path.
+    grep -oE "\"$field\"[[:space:]]*:[[:space:]]*\[[^]]*\]" "$cfg" 2>/dev/null \
+      | grep -oE '"[^"]*"' | sed -n '2,$p' | sed 's/^"//; s/"$//' || true
+  fi
+}
+# Is $1 (a remote NAME) on the forbidden-remotes list $2 (newline-separated names)?
+_pfg_remote_forbidden() {
+  local name="$1" hay="$2" line
+  [ -z "$name" ] && return 1
+  while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    [ "$line" = "$name" ] && return 0
+  done <<< "$hay"
+  return 1
+}
+# Is $1 (an owner/repo slug) on the forbidden-repos list $2 (entries may be slugs OR URLs)?
+_pfg_repo_forbidden() {
+  local slug="$1" hay="$2" line
+  [ -z "$slug" ] && return 1
+  while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    [ "$(_pfg_url_to_slug "$line")" = "$slug" ] && return 0
+  done <<< "$hay"
+  return 1
+}
+
+# ── #3a: guard `gh pr create` against a FORBIDDEN or NON-CANONICAL repo ───────
 # `gh pr create` with no --repo resolves the repo from the cwd's default remote,
-# which on migration clones is often origin = the legacy production repo. Block
-# (exit 2), for the AGENT's Bash tool, a pr-create that would target non-canonical.
-# Buildable-LOCAL with a server-side CEILING (agent's Bash tool only). FAIL-OPEN:
-# inert if config is absent/unparseable — see docs/parity-gate-limitations.md.
+# which on migration clones is often origin = the legacy production repo. Two
+# layered checks, FORBIDDEN FIRST:
+#   (0) FORBIDDEN-REPO denylist (A1): if the RESOLVED target slug is on
+#       config.branch.forbiddenRepos, block — REGARDLESS of branch.remote. This is
+#       the check that holds even when branch.remote itself points at the dangerous
+#       repo (the inverted-clone case where the canonical comparison is backwards).
+#   (1) NON-CANONICAL: target != slug(branch.remote) → block (the original guard).
+# Block (exit 2), for the AGENT's Bash tool only. Buildable-LOCAL with a server-side
+# CEILING (agent's Bash tool only). FAIL-OPEN: inert if config is absent/unparseable
+# — see docs/parity-gate-limitations.md. Block messages DELIBERATELY do NOT recommend
+# a specific remote/repo: on an inverted clone the "canonical" value is itself the
+# dangerous one, so steering toward it is the original A1 defect. Surface to a human.
 if printf '%s' "$COMMAND" | grep -qE '(^|&&|\|\||;|")\s*gh[[:space:]]+pr[[:space:]]+create'; then
   PR_CMD="$(printf '%s' "$COMMAND" | grep -oE 'gh[[:space:]]+pr[[:space:]]+create[^&|;]*' | head -1 || true)"
   CFG="$(_pfg_config)"
   CANON_REMOTE="$(_pfg_branch_field "$CFG" remote)"
+  FORBIDDEN_REPOS="$(_pfg_branch_array "$CFG" forbiddenRepos)"
   # Resolve canonical slug from the configured remote's URL (fail-open if unresolvable).
   CANON_SLUG=""
   if [ -n "$CANON_REMOTE" ]; then
     CANON_URL="$(git -C "$PFG_TARGET_CWD" remote get-url "$CANON_REMOTE" 2>/dev/null || true)"
     [ -n "$CANON_URL" ] && CANON_SLUG="$(_pfg_url_to_slug "$CANON_URL")"
   fi
+  # Resolve the slug this pr-create would ACTUALLY target: explicit --repo if present,
+  # else the cwd default remote (origin) — exactly what gh resolves with no --repo.
+  REPO_ARG="$(printf '%s' "$PR_CMD" | grep -oE -- '--repo[=[:space:]]+[^[:space:]]+' | head -1 | sed -E 's/--repo[=[:space:]]+//' || true)"
+  TARGET_SLUG=""
+  if [ -n "$REPO_ARG" ]; then
+    TARGET_SLUG="$(_pfg_url_to_slug "$REPO_ARG")"
+  else
+    DEFAULT_URL="$(git -C "$PFG_TARGET_CWD" remote get-url origin 2>/dev/null || true)"
+    [ -n "$DEFAULT_URL" ] && TARGET_SLUG="$(_pfg_url_to_slug "$DEFAULT_URL")"
+  fi
+
+  # (0) FORBIDDEN-REPO pre-check — fires regardless of branch.remote.
+  if [ -n "$TARGET_SLUG" ] && _pfg_repo_forbidden "$TARGET_SLUG" "$FORBIDDEN_REPOS"; then
+    echo "BLOCKED: 'gh pr create' targets a FORBIDDEN repo '$TARGET_SLUG' (config.branch.forbiddenRepos)." >&2
+    echo "  This destination is explicitly off-limits (e.g. a legacy production repo). Do NOT retarget automatically —" >&2
+    echo "  surface to a human; see docs/parity-gate-limitations.md." >&2
+    echo "  (Agent Bash-tool guard only; not server-side protection.)" >&2
+    exit 2
+  fi
+
+  # (1) NON-CANONICAL check (original behavior; messages de-steered).
   if [ -n "$CANON_SLUG" ]; then
-    # Extract an explicit --repo <X> if present (supports --repo X and --repo=X).
-    REPO_ARG="$(printf '%s' "$PR_CMD" | grep -oE -- '--repo[=[:space:]]+[^[:space:]]+' | head -1 | sed -E 's/--repo[=[:space:]]+//' || true)"
-    REPO_SLUG="$(_pfg_url_to_slug "$REPO_ARG")"   # normalize (handles owner/repo, URL, or .git)
     if [ -n "$REPO_ARG" ]; then
       # (a) explicit --repo present → must equal canonical.
-      if [ "$REPO_SLUG" != "$CANON_SLUG" ]; then
-        echo "BLOCKED: 'gh pr create --repo $REPO_ARG' targets a non-canonical repo (expected '$CANON_SLUG' from config.branch.remote)." >&2
-        echo "  On migration clones the wrong repo is often the legacy production repo. Use --repo $CANON_SLUG." >&2
+      if [ "$TARGET_SLUG" != "$CANON_SLUG" ]; then
+        echo "BLOCKED: 'gh pr create --repo $REPO_ARG' targets a non-canonical repo (expected the configured target from config.branch.remote)." >&2
+        echo "  On migration clones the wrong repo is often the legacy production repo. Do NOT assume the configured remote is safe —" >&2
+        echo "  if the configured remote is itself wrong, surface to a human; see docs/parity-gate-limitations.md." >&2
         echo "  (Agent Bash-tool guard only; not server-side protection — see docs/parity-gate-limitations.md.)" >&2
         exit 2
       fi
     else
       # (b) no --repo → gh would resolve from the cwd default remote. Compare that to canonical.
-      DEFAULT_URL="$(git -C "$PFG_TARGET_CWD" remote get-url origin 2>/dev/null || true)"
-      DEFAULT_SLUG=""; [ -n "$DEFAULT_URL" ] && DEFAULT_SLUG="$(_pfg_url_to_slug "$DEFAULT_URL")"
-      if [ -n "$DEFAULT_SLUG" ] && [ "$DEFAULT_SLUG" != "$CANON_SLUG" ]; then
-        echo "BLOCKED: 'gh pr create' has no --repo; it would resolve to '$DEFAULT_SLUG' (cwd default remote), not the canonical '$CANON_SLUG'." >&2
-        echo "  Add --repo $CANON_SLUG. (On migration clones the default 'origin' is often the legacy production repo.)" >&2
+      if [ -n "$TARGET_SLUG" ] && [ "$TARGET_SLUG" != "$CANON_SLUG" ]; then
+        echo "BLOCKED: 'gh pr create' has no --repo; it would resolve to '$TARGET_SLUG' (cwd default remote), not the configured target." >&2
+        echo "  On migration clones the default 'origin' is often the legacy production repo. Confirm the intended repo with a human" >&2
+        echo "  before retrying; see docs/parity-gate-limitations.md." >&2
         echo "  (Agent Bash-tool guard only; not server-side protection — see docs/parity-gate-limitations.md.)" >&2
         exit 2
       fi
     fi
   fi
-  # Canonical (or fail-open) → allow the pr-create. Not a push; nothing more to gate here.
+  # Canonical / not-forbidden / fail-open → allow the pr-create. Not a push; nothing more to gate here.
   exit 0
 fi
 
@@ -165,6 +240,11 @@ if [ -f "$CONFIG" ]; then
   fi
 fi
 
+# Forbidden destinations (A1): remote NAMES and repo SLUGS that must never be pushed
+# to, REGARDLESS of branch.remote. Read via the shared helpers (jq → node → grep, fail-open).
+FORBIDDEN_REMOTES="$(_pfg_branch_array "$CONFIG" forbiddenRemotes)"
+FORBIDDEN_REPOS="$(_pfg_branch_array "$CONFIG" forbiddenRepos)"
+
 # Protected branch names: config base (if any) + main/master always.
 PROTECTED_BRANCHES="main master"
 [ -n "$BASE" ] && PROTECTED_BRANCHES="$PROTECTED_BRANCHES $BASE"
@@ -188,10 +268,35 @@ set -- $POSITIONAL
 ARG_REMOTE="${1:-}"             # first positional = remote (if named)
 ARG_REFSPEC="${2:-}"           # second positional = refspec (if named)
 
+# (B0) FORBIDDEN-DESTINATION pre-check (A1) — fires REGARDLESS of branch.remote.
+# This is the check that holds on an INVERTED clone where branch.remote itself names
+# the dangerous remote. Match the named push remote against forbiddenRemotes, AND its
+# resolved URL slug against forbiddenRepos (covers `git push <url> …` and a forbidden
+# remote reached under a different name). De-steered: never recommends a remote.
+if [ -n "$ARG_REMOTE" ]; then
+  ARG_REMOTE_SLUG=""
+  ARG_REMOTE_URL="$(git -C "$PFG_TARGET_CWD" remote get-url "$ARG_REMOTE" 2>/dev/null || true)"
+  if [ -n "$ARG_REMOTE_URL" ]; then
+    ARG_REMOTE_SLUG="$(_pfg_url_to_slug "$ARG_REMOTE_URL")"
+  else
+    # Not a known remote name — it may be an inline URL positional. Normalize it directly.
+    case "$ARG_REMOTE" in *://*|*@*:*|*/*) ARG_REMOTE_SLUG="$(_pfg_url_to_slug "$ARG_REMOTE")" ;; esac
+  fi
+  if _pfg_remote_forbidden "$ARG_REMOTE" "$FORBIDDEN_REMOTES" \
+     || { [ -n "$ARG_REMOTE_SLUG" ] && _pfg_repo_forbidden "$ARG_REMOTE_SLUG" "$FORBIDDEN_REPOS"; }; then
+    echo "BLOCKED: push targets a FORBIDDEN destination '$ARG_REMOTE' (config.branch.forbiddenRemotes/forbiddenRepos)." >&2
+    echo "  This remote is explicitly off-limits (e.g. a legacy production repo). Do NOT retarget automatically —" >&2
+    echo "  surface to a human; see docs/parity-gate-limitations.md." >&2
+    echo "  (Agent Bash-tool guard only; not server-side protection.)" >&2
+    exit 2
+  fi
+fi
+
 # (B) wrong-remote: a NAMED remote that isn't the canonical one → block.
 if [ -n "$REMOTE" ] && [ -n "$ARG_REMOTE" ] && [ "$ARG_REMOTE" != "$REMOTE" ]; then
-  echo "BLOCKED: push targets remote '$ARG_REMOTE', not the canonical '$REMOTE' (config.branch.remote)." >&2
-  echo "  On these clones 'origin' is the legacy CPSL prod repo — never push there. Use '$REMOTE'." >&2
+  echo "BLOCKED: push targets remote '$ARG_REMOTE', not the configured remote '$REMOTE' (config.branch.remote)." >&2
+  echo "  Do NOT assume the configured remote is the safe one — on an inverted clone the configured remote may itself" >&2
+  echo "  be the legacy production repo. Confirm the intended remote with a human before retrying; see docs/parity-gate-limitations.md." >&2
   echo "  (Agent Bash-tool guard only; not server-side protection — see docs/parity-gate-limitations.md.)" >&2
   exit 2
 fi
