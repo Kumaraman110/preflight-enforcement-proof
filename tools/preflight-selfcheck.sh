@@ -212,8 +212,9 @@ TOTAL=$((ALIVE_N + DEAD_N))
 echo ""
 echo "SUMMARY: $ALIVE_N alive, $DEAD_N dead (of $TOTAL gates)"
 echo "CEILING: this proves hook-script behavior on crafted stdin only. It does NOT prove"
-echo "  the Claude Code runtime invokes these hooks (hooks.json registration merge,"
-echo "  run-hook.cmd shim, \$TOOL_INPUT plumbing are unreached). Registration liveness"
-echo "  (the other half of issue #10) remains open."
+echo "  the Claude Code runtime invokes these hooks. The FILE-LEVEL registration half is"
+echo "  covered by tools/preflight-registration-check.sh (settings.json carries every"
+echo "  hooks.json entry + hook files exist); the runtime-invocation slice (settings.json"
+echo "  parsing, run-hook.cmd shim, \$TOOL_INPUT plumbing) remains open — issue #10."
 
 [ "$DEAD_N" -eq 0 ] && exit 0 || exit 1
