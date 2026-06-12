@@ -495,6 +495,42 @@ run_behavioral_tests() {
   else
     yellow "SKIP: convergence-semantics-test.sh not found"
   fi
+
+  local taut_lint_test="$SCRIPT_DIR/behavioral/anti-tautology-lint-test.sh"
+  if [ -f "$taut_lint_test" ]; then
+    if bash "$taut_lint_test"; then
+      PASSES=$((PASSES + 7))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: anti-tautology lint tests failed (issue #7 self-asserting tests)"
+    fi
+  else
+    yellow "SKIP: anti-tautology-lint-test.sh not found"
+  fi
+
+  local evidence_scope_test="$SCRIPT_DIR/behavioral/evidence-gate-scoping-test.sh"
+  if [ -f "$evidence_scope_test" ]; then
+    if bash "$evidence_scope_test"; then
+      PASSES=$((PASSES + 5))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: evidence-gate scoping tests failed (NEW-3 session-root anchoring)"
+    fi
+  else
+    yellow "SKIP: evidence-gate-scoping-test.sh not found"
+  fi
+
+  local selfcheck_test="$SCRIPT_DIR/behavioral/selfcheck-liveness-test.sh"
+  if [ -f "$selfcheck_test" ]; then
+    if bash "$selfcheck_test"; then
+      PASSES=$((PASSES + 4))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: gate-liveness selfcheck tests failed (issue #10 present-but-dead gates)"
+    fi
+  else
+    yellow "SKIP: selfcheck-liveness-test.sh not found"
+  fi
 }
 
 # ═══════════════════════════════════════════════════════════════
