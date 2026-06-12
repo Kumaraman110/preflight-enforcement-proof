@@ -23,6 +23,16 @@
 #
 # Exit 0 = allow
 # Exit 2 = block (reason on stderr; Claude Code blocks on exit 2)
+#
+# DE-STEER (gap #5, Option A): the no-sentinel block message used to PRINT the
+# exact mkdir+echo command that mints the approval sentinel — handing the blocked
+# actor its own bypass (observed live: an agent ran the printed recipe and the
+# next write passed). Same defect class as the A1 steering fix: a block message
+# must never recommend the action that defeats the block. The message now tells
+# the agent to surface to a HUMAN, who runs the approval step from their own
+# shell. NOTE this is a de-steer, not a mechanical close — an agent that already
+# knows the sentinel format can still mint it via shell (see the heuristic
+# tripwire in pre-push-gate-check and docs/parity-gate-limitations.md).
 
 set -uo pipefail
 
@@ -96,12 +106,12 @@ fi
 if [ ! -f "$SENTINEL" ]; then
   cat >&2 <<EOF
 BLOCKED: Refusing to overwrite existing $PROTECTED_NAME.
-Bootstrap must obtain explicit lead approval first.
+Overwriting this file requires explicit HUMAN lead approval.
 (No approval sentinel present at $SENTINEL.)
 
-To proceed: obtain lead approval, then write the sentinel:
-  mkdir -p .preflight/gate
-  echo '{"approvedAtHEAD":"$(git rev-parse HEAD 2>/dev/null || echo UNKNOWN)","approvedFiles":["CLAUDE.md",".preflight/config.json"],"approvedAt":"'"\$(date -u +%Y-%m-%dT%H:%M:%SZ)"'"}' > $SENTINEL
+Do NOT create the approval sentinel yourself — that would be self-approval.
+Surface this block to a human lead; the human runs the approval step from
+their own shell. See docs/parity-gate-limitations.md.
 EOF
   exit 2
 fi

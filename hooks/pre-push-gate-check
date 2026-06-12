@@ -37,6 +37,58 @@ if [ -z "$COMMAND" ]; then
   COMMAND="$STDIN_JSON"
 fi
 
+# ── SENTINEL-MINT TRIPWIRE (gap #5) ───────────────────────────────────────────
+# Blocks, for the AGENT's Bash tool, shell commands that MINT the two protected
+# gate-clearance sentinels:
+#   .preflight/gate/bootstrap-write-approved  (human lead approval to overwrite
+#                                              CLAUDE.md/.preflight/config.json)
+#   .preflight/gate/parity-clean              (human-only parity clearance —
+#                                              by convention, see
+#                                              docs/parity-gate-limitations.md)
+# Write-shaped references trip it: redirection into the sentinel path; a write
+# verb (tee/touch/cp/mv/install/dd/truncate) taking the path as an argument;
+# sed -i on the path; and ANY `write-gate-evidence parity-clean` invocation
+# (parity-clean is the one evidence name an agent must never write — tests-pass/
+# stage1-clean/map-validated remain legitimate agent evidence and pass).
+# Read-shaped references (cat/ls/grep on the paths) pass.
+#
+# HONESTY LABEL: this is a HEURISTIC pattern tripwire on the agent Bash tool
+# only — bypassable via obfuscation (variables, base64, python -c, etc.); it
+# raises effort, not impossibility. The mechanical ceiling remains server-side
+# (required reviewers / branch protection) — see docs/parity-gate-limitations.md.
+# ADDITIVE + EARLY by design: runs before all push/pr-create routing and never
+# touches the config-overlay/guard logic below.
+_TRIP_SENT='\.preflight[/\\]+gate[/\\]+(bootstrap-write-approved|parity-clean)'
+_TRIP_PRE='(^|[;&|([:space:]`])'
+_trip_block() {
+  echo "BLOCKED: agent must not mint gate-clearance evidence ($1)." >&2
+  echo "  Bootstrap approval and parity-clean are HUMAN-ONLY — do not create, copy, or edit these" >&2
+  echo "  sentinel files from the agent. Surface to a human, who runs the approval/clearance step" >&2
+  echo "  from their own shell. See docs/parity-gate-limitations.md." >&2
+  echo "  (HEURISTIC agent Bash-tool tripwire only — not server-side protection.)" >&2
+  exit 2
+}
+if printf '%s' "$COMMAND" | grep -qE "$_TRIP_SENT"; then
+  # (a) redirection (> or >>) targeting a protected sentinel path
+  if printf '%s' "$COMMAND" | grep -qE ">>?[[:space:]]*[\"']?[^[:space:]\"';|&]*${_TRIP_SENT}"; then
+    _trip_block "shell redirection into a protected sentinel path"
+  fi
+  # (b) write verb taking the sentinel path as an argument
+  if printf '%s' "$COMMAND" | grep -qE "${_TRIP_PRE}(tee|touch|cp|mv|install|dd|truncate)[[:space:]][^;|&]*${_TRIP_SENT}"; then
+    _trip_block "write command targeting a protected sentinel path"
+  fi
+  # (c) in-place sed on the sentinel path
+  if printf '%s' "$COMMAND" | grep -qE "${_TRIP_PRE}sed[[:space:]][^;|&]*${_TRIP_SENT}" \
+     && printf '%s' "$COMMAND" | grep -qE "sed[[:space:]][^;|&]*(-[a-zA-Z]*i|--in-place)"; then
+    _trip_block "in-place sed on a protected sentinel path"
+  fi
+fi
+# (d) write-gate-evidence invoked with the human-only gate name, any path form
+if printf '%s' "$COMMAND" | grep -qE "write-gate-evidence[\"']?[[:space:]]+[\"']?parity-clean"; then
+  _trip_block "'write-gate-evidence parity-clean' — parity-clean is human-only"
+fi
+# ── end sentinel-mint tripwire ────────────────────────────────────────────────
+
 # ── REPO-AWARENESS (NEW-2 fix) ────────────────────────────────────────────────
 # This guard must resolve config + canonical remote from the repo the push
 # ACTUALLY targets, NOT the session root. A session rooted in repo A (e.g. a

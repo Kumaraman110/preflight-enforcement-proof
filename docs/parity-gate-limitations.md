@@ -41,6 +41,15 @@ proceed — it carries **no authority beyond the local push.**
    drift against the committed `parity-approved-drift.json` marker (which is diff-visible in
    the PR).
 3. **Human PR review** before merge.
+4. **Sentinel-mint tripwire (HEURISTIC — raise-the-bar only).** The agent-Bash direct-mint
+   path now trips a pattern block in `hooks/pre-push-gate-check`: plain shell writes targeting
+   `.preflight/gate/bootstrap-write-approved` or `.preflight/gate/parity-clean` (redirection,
+   tee/touch/cp/mv, `sed -i`) and any `write-gate-evidence parity-clean` invocation exit 2
+   with a de-steered message. This is **explicitly raise-the-bar-only**: obfuscated shell
+   (variables, base64, `python -c`) and non-Bash actors are unaffected, so the limitation
+   stated above STANDS — the tripwire narrows the plain-shaped path, it does not close the
+   boundary. Relatedly, `bootstrap-write-gate`'s block message no longer prints the
+   mint-the-sentinel recipe (the same de-steering discipline as the A1 guard fix).
 
 ## What it does NOT protect against (stated plainly)
 
