@@ -579,6 +579,18 @@ run_behavioral_tests() {
   else
     yellow "SKIP: coverage-default-consistency-test.sh not found"
   fi
+
+  local wire_golden_test="$SCRIPT_DIR/behavioral/wire-golden-test.sh"
+  if [ -f "$wire_golden_test" ]; then
+    if bash "$wire_golden_test"; then
+      PASSES=$((PASSES + 6))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: wire-golden tests failed (issue #5 WIRE-B byte-level wire parity)"
+    fi
+  else
+    yellow "SKIP: wire-golden-test.sh not found"
+  fi
 }
 
 # ═══════════════════════════════════════════════════════════════

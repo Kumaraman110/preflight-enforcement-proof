@@ -1,0 +1,12 @@
+{
+  "captured_from": "TEST FIXTURE — same wire but golden field ORDER swapped (ordering-drift RED case)",
+  "options_accessor": "WireGolden.ServiceWireOptions.Options",
+  "cases": [
+    {
+      "name": "Ordering_Swapped",
+      "type": "OrderedResponse",
+      "sample": { "alpha": "1", "beta": "2" },
+      "golden": "{\"beta\":\"2\",\"alpha\":\"1\"}"
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "captured_from": "TEST FIXTURE — models the legacy CTIAPI camelCase + WhenWritingNull wire (PR #95 class)",
+  "options_accessor": "WireGolden.ServiceWireOptions.Options",
+  "cases": [
+    {
+      "name": "Naming_ResultCode",
+      "type": "TokenResponse",
+      "sample": { "resultCode": "S0000", "sessionToken": "abc123" },
+      "golden": "{\"resultCode\":\"S0000\",\"sessionToken\":\"abc123\"}"
+    },
+    {
+      "name": "NullEmission_OptionalOmitted",
+      "type": "TokenResponse",
+      "sample": { "resultCode": "W0008", "sessionToken": null },
+      "golden": "{\"resultCode\":\"W0008\"}"
+    },
+    {
+      "name": "Ordering_DeclarationOrder",
+      "type": "OrderedResponse",
+      "sample": { "alpha": "1", "beta": "2" },
+      "golden": "{\"alpha\":\"1\",\"beta\":\"2\"}"
+    }
+  ]
+}
