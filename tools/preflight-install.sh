@@ -336,7 +336,7 @@ fi
 #   customized ignore; a prior hand-made file was observed missing 'derived/' and 'metrics.json').
 GITIGNORE_TEMPLATE="${CONSUMER_DIR}/.claude/defaults/preflight-gitignore"
 CONSUMER_GITIGNORE="${MANIFEST_DIR}/.gitignore"
-REQUIRED_IGNORES="cache/ derived/ gate/ metrics.json migrate-checkpoint.json"
+REQUIRED_IGNORES="cache/ derived/ gate/ metrics.json migrate-checkpoint.json config.local.json"
 if [ -f "$GITIGNORE_TEMPLATE" ]; then
     if [ ! -f "$CONSUMER_GITIGNORE" ]; then
         cp "$GITIGNORE_TEMPLATE" "$CONSUMER_GITIGNORE"

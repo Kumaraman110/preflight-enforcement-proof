@@ -18,6 +18,24 @@ Every skill MUST self-detect its environment as its first action. Do NOT depend 
    - `capture.*` → capture file paths
    - `loop.*` → iteration caps, oscillation settings
 
+2b. **Per-clone topology overlay (issue #6).** After reading config, check for
+   `config.local.json` next to it (gitignored, per-clone, never committed). If present,
+   resolve topology fields through `lib/config-overlay.sh` (`overlay_resolve <key>`), or
+   apply the same rule manually: a local value wins ONLY for the allowlisted topology keys
+   — `branch.remote`, `branch.base`, `branch.migrationPrefix`, `migration.legacyRepoPath`,
+   `migration.servicesRoot`, `migration.referenceService`. For EVERY other key
+   (gates, thresholds, `loop.*`, `review.*`, `rubric`, `mode`, `capture.*`,
+   `branch.forbiddenRemotes`/`forbiddenRepos`) the committed value ALWAYS wins and a local
+   attempt must be ignored with a warning. A clone may differ on WHERE it pushes — never
+   on HOW strictly it is reviewed. **Honesty label:** the allowlist is enforced
+   mechanically only at seams that resolve through `lib/config-overlay.sh` (the pre-push
+   guard does); for skills that read `config.json` directly it is prose-level — the
+   fail-safe direction being that an un-overlaid read sees only committed values, so a
+   denied local key is never honored, merely invisible. This overlay exists for inverted
+   clones (live SessionToken run: committed `branch.remote=origin` while `origin` was the
+   legacy production repo) — the clone declares its true topology locally instead of
+   committing a clone-specific value to a shared branch.
+
 3. If no config found:
    - Mode: `generic`
    - Rubric: `${FRAMEWORK_ROOT}/examples/rubrics/rubric-generic-dotnet.md` (resolve `FRAMEWORK_ROOT="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/.claude"`)

@@ -14,6 +14,18 @@
 
 set -euo pipefail
 
+# Per-clone topology overlay (issue #6): source the shared resolver so branch.base /
+# branch.remote honor a gitignored .preflight/config.local.json. Best-effort — if the
+# lib is missing (older install), _pfg_branch_field falls back to committed config.
+_PFG_SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+for _pfg_overlay_lib in "$_PFG_SELF_DIR/../lib/config-overlay.sh" "$_PFG_SELF_DIR/../.claude/lib/config-overlay.sh"; do
+  if [ -f "$_pfg_overlay_lib" ]; then
+    # shellcheck source=/dev/null
+    source "$_pfg_overlay_lib" 2>/dev/null || true
+    break
+  fi
+done
+
 STDIN_JSON="$(cat)"
 
 # Primary: extract the command field via jq
@@ -65,9 +77,18 @@ _pfg_config() {  # echo the resolved .preflight/config.json path, or nothing. Al
   if [ -f "$c" ]; then echo "$c"; fi
   return 0
 }
-_pfg_branch_field() {  # $1 = base|remote ; echo value or empty (jq → node → grep)
+_pfg_branch_field() {  # $1 = base|remote ; echo value or empty (overlay → jq → node → grep)
   local cfg="$1" field="$2"
   [ -z "$cfg" ] && return 0
+  # Per-clone topology overlay (issue #6): branch.remote/base may be corrected by a
+  # gitignored .preflight/config.local.json (the inverted-clone fix). The overlay lib
+  # enforces the allowlist — gate thresholds and forbidden-lists are NOT overlayable
+  # (and _pfg_branch_array below deliberately never consults the overlay at all).
+  # Fail-open: lib missing or no jq/node → committed-config path below, unchanged.
+  if declare -F overlay_resolve >/dev/null 2>&1 && { command -v jq &>/dev/null || command -v node &>/dev/null; }; then
+    overlay_resolve "branch.$field" "$cfg" 2>/dev/null || true
+    return 0
+  fi
   if command -v jq &>/dev/null; then
     jq -r ".branch.$field // empty" "$cfg" 2>/dev/null || true
   elif command -v node &>/dev/null; then
@@ -228,16 +249,10 @@ PUSH_CMD="$(printf '%s' "$COMMAND" | grep -oE 'git[[:space:]]+push[^&|;]*' | hea
 CONFIG="$(_pfg_config)"
 BASE=""; REMOTE=""
 if [ -f "$CONFIG" ]; then
-  if command -v jq &>/dev/null; then
-    BASE="$(jq -r '.branch.base // empty' "$CONFIG" 2>/dev/null || true)"
-    REMOTE="$(jq -r '.branch.remote // empty' "$CONFIG" 2>/dev/null || true)"
-  elif command -v node &>/dev/null; then
-    BASE="$(node -e "try{const c=require('$CONFIG');process.stdout.write((c.branch&&c.branch.base)||'')}catch(e){}" 2>/dev/null || true)"
-    REMOTE="$(node -e "try{const c=require('$CONFIG');process.stdout.write((c.branch&&c.branch.remote)||'')}catch(e){}" 2>/dev/null || true)"
-  else
-    BASE="$(grep -oE '"base"[[:space:]]*:[[:space:]]*"[^"]*"' "$CONFIG" | head -1 | sed 's/.*"\([^"]*\)"$/\1/' || true)"
-    REMOTE="$(grep -oE '"remote"[[:space:]]*:[[:space:]]*"[^"]*"' "$CONFIG" | head -1 | sed 's/.*"\([^"]*\)"$/\1/' || true)"
-  fi
+  # Route through _pfg_branch_field (single source): committed config, with the
+  # issue-#6 config.local.json topology overlay applied when the lib is present.
+  BASE="$(_pfg_branch_field "$CONFIG" base)"
+  REMOTE="$(_pfg_branch_field "$CONFIG" remote)"
 fi
 
 # Forbidden destinations (A1): remote NAMES and repo SLUGS that must never be pushed

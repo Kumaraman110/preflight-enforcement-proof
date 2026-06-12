@@ -471,6 +471,18 @@ run_behavioral_tests() {
   else
     yellow "SKIP: null-boundary-lint-test.sh not found"
   fi
+
+  local overlay_test="$SCRIPT_DIR/behavioral/config-local-overlay-test.sh"
+  if [ -f "$overlay_test" ]; then
+    if bash "$overlay_test"; then
+      PASSES=$((PASSES + 10))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: config.local.json overlay tests failed (issue #6 per-clone topology)"
+    fi
+  else
+    yellow "SKIP: config-local-overlay-test.sh not found"
+  fi
 }
 
 # ═══════════════════════════════════════════════════════════════

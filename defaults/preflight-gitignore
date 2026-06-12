@@ -22,6 +22,11 @@
 cache/
 derived/
 
+# Per-clone topology overlay (issue #6) — clone-specific truth (branch.remote on an
+# inverted clone). NEVER commit: it is per-machine by definition, and committing it
+# would push one clone's topology onto every other clone.
+config.local.json
+
 # Mechanical gate evidence (tests-pass, stage1-clean, map-validated, parity-*, *-requested)
 gate/
 
