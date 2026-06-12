@@ -459,6 +459,18 @@ run_behavioral_tests() {
   else
     yellow "SKIP: ci-gate-liveness-template-test.sh not found"
   fi
+
+  local null_lint_test="$SCRIPT_DIR/behavioral/null-boundary-lint-test.sh"
+  if [ -f "$null_lint_test" ]; then
+    if bash "$null_lint_test"; then
+      PASSES=$((PASSES + 11))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: null-boundary lint tests failed (issue #8 fail-open class)"
+    fi
+  else
+    yellow "SKIP: null-boundary-lint-test.sh not found"
+  fi
 }
 
 # ═══════════════════════════════════════════════════════════════
