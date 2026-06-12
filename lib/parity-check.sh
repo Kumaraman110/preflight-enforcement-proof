@@ -151,7 +151,15 @@ def main():
     # error_path remains advisory because migrated-side extraction completeness is
     # not guaranteed (3/5) — violations are real signals but may also reflect
     # extraction gaps. Manual review recommended for error_path findings.
-    BLOCKING_CATEGORIES = {"result_code", "wire_contract", "side_effect", "state_transition"}
+    # wire_format added per issue #5 WIRE-A: runtime-serialization divergence
+    # (naming policy, null-emission) is invisible when both specs are extracted
+    # from their own source unless extraction COMPUTES the serialized name.
+    # HONESTY NOTE: the extraction-side computation is PROMPT-LEVEL/inferred
+    # (spec-analyst applies the captured serializer policy to the declared name);
+    # blocking applies at confidence:high only, via the existing compute_severity
+    # — lower-confidence wire_format entries stay advisory by the same machinery,
+    # which IS the advisory-until-corroborated posture.
+    BLOCKING_CATEGORIES = {"result_code", "wire_contract", "side_effect", "state_transition", "wire_format"}
     ADVISORY_CATEGORIES = {"error_path"}
 
     def compute_severity(category, confidence):

@@ -363,13 +363,16 @@ Each category has REQUIRED keys that must be present. A behavior whose observabl
 
 | Category | Required keys | Optional keys |
 |---|---|---|
-| `result_code` | `result_code`, `http_status` | `response_header`, `body_field`, `result_determination` |
+| `result_code` | `result_code`, `http_status` | `response_header`, `body_field`, `result_determination`, `message_text` |
 | `wire_contract` | `field`, `type` | `required`, `default_value` |
+| `wire_format` | `serialized_name`, `null_emitted`, `context_id` | `naming_policy` |
 | `side_effect` | `target`, `method` | `path`, `condition`, `result_determination` |
 | `state_transition` | `from`, `to` | `trigger_condition` |
 | `error_path` | `trigger`, `result_code` OR `http_status` | `exception_type` |
 
 If you cannot determine a required key's value from the source, mark it `"unknown"` — do NOT omit the key and do NOT invent a value.
+
+**`result_code.message_text`:** when the result code has an associated human-readable message, record `message_text` VERBATIM from the message source (legacy: the `BaseResponse.SetResultMessage` switch or equivalent message map; migrated: `ResultMessages.cs` or equivalent). Exact text, exact punctuation, exact casing — never paraphrase. Record it on BOTH sides when both have a message source, or omit it on both (one-sided recording produces a false CHANGED). Recording it verbatim means a migration that PARAPHRASES a result message surfaces as a CHANGED `result_code` entry in parity — which is the point: callers (IVR prompts, log scrapers) may match on the exact message text.
 
 ### wire_contract Observable — Verbatim Source Rules
 
@@ -382,6 +385,23 @@ If the source genuinely does not unambiguously declare a field's type (dynamic, 
 
 SELF-CHECK for wire_contract: before finishing, confirm each wire_contract behavior's `field` value appears as a property name in one of the scoped source files (grep for `public.*<field>` or `<field>\s*{`). If it doesn't grep-match, you made up the name — fix it.
 </CRITICAL-INSTRUCTION>
+
+### wire_format Observable — Computed Serialization Rules
+
+`wire_contract` records what the source DECLARES; `wire_format` records what actually goes on the WIRE. Both specs are extracted from their own source, so a runtime-serialization divergence (camelCase-vs-PascalCase naming policy, null-emission policy, hand-serialized paths) is invisible to `wire_contract` alone — both sides' declared names are "correct" per their own conventions. `wire_format` closes this gap by COMPUTING the wire-level name per field. (Issue #5 WIRE-A.)
+
+**Step 1 — capture serializer config per context (wire_format_config):**
+- Legacy (Newtonsoft/Web API): `GlobalConfiguration.Configuration.Formatters.JsonFormatter.SerializerSettings` / `FormatterConfig` — record the `ContractResolver` (e.g. `CamelCasePropertyNamesContractResolver` → camelCase policy; default → as-declared) and `NullValueHandling` (default `Include` → nulls emitted; `Ignore` → omitted).
+- Migrated (System.Text.Json/ASP.NET Core): `AddJsonOptions` / `JsonSerializerOptions` — record `PropertyNamingPolicy` (ASP.NET Core DEFAULT is `JsonNamingPolicy.CamelCase` when not configured; `null` → as-declared/PascalCase) and `DefaultIgnoreCondition` (default `Never` → nulls emitted; `WhenWritingNull` → omitted).
+- One `context_id` per serialization context: `mvc-pipeline` for the framework pipeline, plus one per HAND-SERIALIZED path. Find hand-serialized paths by grepping `new JsonSerializerOptions`, `JsonSerializer.Serialize`, and `.WriteAsync` in middleware and exception handlers — these often use bare default options that differ from the pipeline config.
+
+**Step 2 — compute the observable per wire field:**
+- `serialized_name`: APPLY the captured naming policy to the VERBATIM declared property name (a `[JsonProperty]`/`[JsonPropertyName]` attribute on the property overrides the policy — use the attribute value verbatim).
+- `null_emitted`: `true`/`false` from the captured null policy (a per-property ignore attribute overrides).
+- `context_id`: the serialization context this computation applies to.
+- id: `wire_format:<direction>.<PropertyName>` using the same VERBATIM declared-name key as the matching `wire_contract` id, so the two categories stay joinable.
+
+**Honesty label:** This computation is INFERRED (prompt-level) — the LLM applies the naming transform; no hook verifies it. Mark confidence accordingly: `high` ONLY when the policy is explicit in config source you cited; otherwise `inferred` (the parity gate then treats it as advisory — advisory-until-corroborated). The transform is non-trivial: `ANI` → `ani` under Newtonsoft's camelCase resolver but `aNI` under System.Text.Json's `JsonNamingPolicy.CamelCase` — do not eyeball it; reason per-serializer.
 
 ---
 
@@ -407,7 +427,7 @@ Write to `.preflight/<service>/behavior-spec.json` in the target repo:
   "extracted_at": "<ISO8601 timestamp>",
   "extracted_from": ["<file1>", "<file2>"],
   "comparison_surfaces": ["Auth / channel gate", "Request validation & normalization", "Business logic / orchestration", "Data access", "Result-code definitions", "Wire format"],
-  "category_vocabulary": ["result_code", "wire_contract", "error_path", "side_effect", "state_transition"],
+  "category_vocabulary": ["result_code", "wire_contract", "wire_format", "error_path", "side_effect", "state_transition"],
   "behaviors": [
     {
       "id": "result_code:E0001",

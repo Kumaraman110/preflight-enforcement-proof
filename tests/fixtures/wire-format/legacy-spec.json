@@ -1,0 +1,96 @@
+{
+  "service": "wire-format-fixture",
+  "extracted_at": "2026-06-11T00:00:00Z",
+  "extracted_from": ["Legacy/Response.cs", "Legacy/BaseResponse.cs", "Legacy/Global.asax.cs"],
+  "comparison_surfaces": ["Result-code definitions", "Wire format"],
+  "category_vocabulary": ["result_code", "wire_contract", "wire_format", "error_path", "side_effect", "state_transition"],
+  "behaviors": [
+    {
+      "id": "wire_format:response.ResultCode",
+      "name": "ResultCode serialized name on the wire (legacy camelCase contract resolver)",
+      "category": "wire_format",
+      "confidence": "high",
+      "citations": [
+        {
+          "file": "Legacy/Global.asax.cs",
+          "line": 31,
+          "snippet": "ContractResolver = new CamelCasePropertyNamesContractResolver()"
+        }
+      ],
+      "trigger": "Any response serialized through the MVC pipeline",
+      "response": "Declared property ResultCode is emitted as resultCode; nulls are emitted",
+      "observable": {
+        "serialized_name": "resultCode",
+        "null_emitted": true,
+        "context_id": "mvc-pipeline"
+      }
+    },
+    {
+      "id": "wire_format:response.SessionToken",
+      "name": "SessionToken serialized name on the wire",
+      "category": "wire_format",
+      "confidence": "high",
+      "citations": [
+        {
+          "file": "Legacy/Global.asax.cs",
+          "line": 31,
+          "snippet": "ContractResolver = new CamelCasePropertyNamesContractResolver()"
+        }
+      ],
+      "trigger": "Any response serialized through the MVC pipeline",
+      "response": "Declared property SessionToken is emitted as sessionToken",
+      "observable": {
+        "serialized_name": "sessionToken",
+        "null_emitted": true,
+        "context_id": "mvc-pipeline"
+      }
+    },
+    {
+      "id": "result_code:E0001",
+      "name": "Auth failure — invalid channel",
+      "category": "result_code",
+      "confidence": "high",
+      "citations": [
+        {
+          "file": "Legacy/BaseResponse.cs",
+          "line": 47,
+          "snippet": "case \"E0001\": ResultMessage = \"Invalid Channel Identifier.\"; break;"
+        }
+      ],
+      "trigger": "Channel authorization fails — unrecognized channel ID",
+      "response": "Caller receives ResultCode E0001 with HTTP 401",
+      "observable": {
+        "result_code": "E0001",
+        "http_status": 401,
+        "message_text": "Invalid Channel Identifier."
+      }
+    },
+    {
+      "id": "wire_contract:response.ResultCode",
+      "name": "ResultCode field on response",
+      "category": "wire_contract",
+      "confidence": "high",
+      "citations": [
+        {
+          "file": "Legacy/Response.cs",
+          "line": 12,
+          "snippet": "public string ResultCode { get; set; }"
+        }
+      ],
+      "trigger": "Any request to the service",
+      "response": "Response always contains a ResultCode string field",
+      "observable": {
+        "field": "ResultCode",
+        "type": "string",
+        "required": true
+      }
+    }
+  ],
+  "completeness_check": {
+    "pattern": "[EWS]\\d{4}",
+    "scanned_files": ["Legacy/Response.cs", "Legacy/BaseResponse.cs", "Legacy/Global.asax.cs"],
+    "matches_found": ["E0001"],
+    "matches_in_spec": ["E0001"],
+    "missing": []
+  }
+}

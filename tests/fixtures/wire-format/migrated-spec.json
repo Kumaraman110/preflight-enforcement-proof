@@ -1,0 +1,96 @@
+{
+  "service": "wire-format-fixture",
+  "extracted_at": "2026-06-11T00:00:00Z",
+  "extracted_from": ["Migrated/Response.cs", "Migrated/ResultMessages.cs", "Migrated/Program.cs"],
+  "comparison_surfaces": ["Result-code definitions", "Wire format"],
+  "category_vocabulary": ["result_code", "wire_contract", "wire_format", "error_path", "side_effect", "state_transition"],
+  "behaviors": [
+    {
+      "id": "wire_format:response.ResultCode",
+      "name": "ResultCode serialized name on the wire (migrated PropertyNamingPolicy = null → PascalCase)",
+      "category": "wire_format",
+      "confidence": "high",
+      "citations": [
+        {
+          "file": "Migrated/Program.cs",
+          "line": 18,
+          "snippet": "options.JsonSerializerOptions.PropertyNamingPolicy = null; options.JsonSerializerOptions.DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull;"
+        }
+      ],
+      "trigger": "Any response serialized through the MVC pipeline",
+      "response": "Declared property ResultCode is emitted as ResultCode; nulls are omitted",
+      "observable": {
+        "serialized_name": "ResultCode",
+        "null_emitted": false,
+        "context_id": "mvc-pipeline"
+      }
+    },
+    {
+      "id": "wire_format:response.SessionToken",
+      "name": "SessionToken serialized name on the wire",
+      "category": "wire_format",
+      "confidence": "high",
+      "citations": [
+        {
+          "file": "Migrated/Program.cs",
+          "line": 17,
+          "snippet": "options.JsonSerializerOptions.PropertyNamingPolicy = JsonNamingPolicy.CamelCase"
+        }
+      ],
+      "trigger": "Any response serialized through the MVC pipeline",
+      "response": "Declared property SessionToken is emitted as sessionToken",
+      "observable": {
+        "serialized_name": "sessionToken",
+        "null_emitted": true,
+        "context_id": "mvc-pipeline"
+      }
+    },
+    {
+      "id": "result_code:E0001",
+      "name": "Auth failure — invalid channel",
+      "category": "result_code",
+      "confidence": "high",
+      "citations": [
+        {
+          "file": "Migrated/ResultMessages.cs",
+          "line": 9,
+          "snippet": "{ \"E0001\", \"Channel identifier is not valid.\" }"
+        }
+      ],
+      "trigger": "Channel authorization fails — unrecognized channel ID",
+      "response": "Caller receives ResultCode E0001 with HTTP 401",
+      "observable": {
+        "result_code": "E0001",
+        "http_status": 401,
+        "message_text": "Channel identifier is not valid."
+      }
+    },
+    {
+      "id": "wire_contract:response.ResultCode",
+      "name": "ResultCode field on response",
+      "category": "wire_contract",
+      "confidence": "high",
+      "citations": [
+        {
+          "file": "Migrated/Response.cs",
+          "line": 12,
+          "snippet": "public string ResultCode { get; set; }"
+        }
+      ],
+      "trigger": "Any request to the service",
+      "response": "Response always contains a ResultCode string field",
+      "observable": {
+        "field": "ResultCode",
+        "type": "string",
+        "required": true
+      }
+    }
+  ],
+  "completeness_check": {
+    "pattern": "[EWS]\\d{4}",
+    "scanned_files": ["Migrated/Response.cs", "Migrated/ResultMessages.cs", "Migrated/Program.cs"],
+    "matches_found": ["E0001"],
+    "matches_in_spec": ["E0001"],
+    "missing": []
+  }
+}
