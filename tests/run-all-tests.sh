@@ -531,6 +531,54 @@ run_behavioral_tests() {
   else
     yellow "SKIP: selfcheck-liveness-test.sh not found"
   fi
+
+  local wire_format_test="$SCRIPT_DIR/behavioral/wire-format-parity-test.sh"
+  if [ -f "$wire_format_test" ]; then
+    if bash "$wire_format_test"; then
+      PASSES=$((PASSES + 13))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: wire-format parity tests failed (issue #5 WIRE-A serialized-name dimension)"
+    fi
+  else
+    yellow "SKIP: wire-format-parity-test.sh not found"
+  fi
+
+  local tripwire_test="$SCRIPT_DIR/behavioral/sentinel-tripwire-test.sh"
+  if [ -f "$tripwire_test" ]; then
+    if bash "$tripwire_test"; then
+      PASSES=$((PASSES + 8))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: sentinel-tripwire tests failed (gap #5 self-approval hardening)"
+    fi
+  else
+    yellow "SKIP: sentinel-tripwire-test.sh not found"
+  fi
+
+  local registration_test="$SCRIPT_DIR/behavioral/registration-check-test.sh"
+  if [ -f "$registration_test" ]; then
+    if bash "$registration_test"; then
+      PASSES=$((PASSES + 8))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: registration-check tests failed (issue #10 file-level registration liveness)"
+    fi
+  else
+    yellow "SKIP: registration-check-test.sh not found"
+  fi
+
+  local coverage_default_test="$SCRIPT_DIR/behavioral/coverage-default-consistency-test.sh"
+  if [ -f "$coverage_default_test" ]; then
+    if bash "$coverage_default_test"; then
+      PASSES=$((PASSES + 11))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: coverage-default consistency tests failed (gap #29 80-vs-85 reconciliation)"
+    fi
+  else
+    yellow "SKIP: coverage-default-consistency-test.sh not found"
+  fi
 }
 
 # ═══════════════════════════════════════════════════════════════

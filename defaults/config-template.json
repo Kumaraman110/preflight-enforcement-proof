@@ -42,6 +42,7 @@
   "test": {
     "_comment": "Command to run tests. Auto-detected if null (dotnet test for .NET, npm test for Node).",
     "command": null,
+    "_comment_coverageBaseline": "null = no hard numeric gate pinned in config; during migration runs the migrate skill applies its documented 85% fallback floor (Check 5). Set an explicit number (e.g. 96.0) to pin the gate for your team. Lowering a configured baseline is a reviewed change — and NOT overridable via config.local.json (the overlay allowlist in lib/config-overlay.sh excludes test.*).",
     "coverageBaseline": null
   },
 

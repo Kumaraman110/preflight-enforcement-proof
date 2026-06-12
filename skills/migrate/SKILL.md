@@ -307,7 +307,7 @@ This gate exists because the prior SessionToken migration bypassed it — the ag
 
 2. **Modernization:** Modern hosting patterns, async I/O end-to-end, modern serialization, configuration management (secrets + parameters), structured logging with sanitization, observability instrumentation.
 
-3. **Test migration:** Match the reference service test project layout and framework. Coverage baseline from config (`test.coverageBaseline`) is the floor. If `test.coverageBaseline` is not configured, default to 80% (or team standard documented in CLAUDE.md).
+3. **Test migration:** Match the reference service test project layout and framework. Coverage baseline from config (`test.coverageBaseline`) is the floor. If `test.coverageBaseline` is not configured, default to 85% (or the team standard documented in CLAUDE.md, if higher). This number must match the canonical default stated in the "Coverage discipline" section below — Check 5 executes the same 85% fallback.
 
 4. **Infrastructure:** Cloud infrastructure as code matching the reference service pattern. Compute, networking, container registry, auto-scaling, secrets management.
 
@@ -1026,7 +1026,7 @@ This checkpoint is local-only — `.preflight/migrate-checkpoint.json` is in `.g
 ## Coverage discipline — no behavior changes for metrics
 
 <CRITICAL-INSTRUCTION>
-The coverage floor (from `test.coverageBaseline` in config, default 85%) is reached by ADDING TESTS ONLY. Production/service code MUST NOT be modified, weakened, or restructured to raise coverage. Specifically:
+The coverage floor (from `test.coverageBaseline` in config, default 85% when null — this is the canonical statement of the default; the "Test migration" phase step and the Check 5 fallback must match it) is reached by ADDING TESTS ONLY. Production/service code MUST NOT be modified, weakened, or restructured to raise coverage. Specifically:
 
 - Do not remove validation attributes, guards, or checks to avoid uncovered branches.
 - Do not change method visibility, add parameters, or refactor production logic solely to make it testable.
