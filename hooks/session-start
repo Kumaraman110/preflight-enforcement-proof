@@ -75,13 +75,38 @@ if [ -f "$ROUTING_FILE" ]; then
   ROUTING_CONTENT=$(sed -n '/^---$/,/^---$/!p' "$ROUTING_FILE" | sed '/^$/N;/^\n$/d')
 fi
 
+# ── E2 silent-load probe: run file-level registration check at session-start ─────
+# This runs the file-level check (tools/preflight-registration-check.sh) which
+# proves the consumer's .claude/settings.json carries every hooks.json registration
+# and every hook file exists. Silent registration rot (merge skipped, settings
+# clobbered, hook file pruned with registration left) degrades the framework to
+# plain-agent behavior with NO error. This probe surfaces it immediately at
+# session-start without blocking (the runtime-invocation slice — settings parse,
+# shim, $TOOL_INPUT plumbing — needs a live Claude Code session and is NOT
+# code-closable here).
+REG_WARN=""
+if [ -n "$CONFIG_FILE" ]; then
+  REG_TOOL="$PLUGIN_ROOT/tools/preflight-registration-check.sh"
+  if [ -f "$REG_TOOL" ] && command -v jq >/dev/null 2>&1; then
+    # Run in the repo root (where CONFIG_FILE lives)
+    REPO_ROOT="$(dirname "$CONFIG_FILE")"
+    REG_OUT=$(bash "$REG_TOOL" "$REPO_ROOT" 2>&1) || REG_RC=$?
+    if [ "${REG_RC:-0}" -ne 0 ]; then
+      REG_WARN="⚠ REGISTRATION ISSUES DETECTED (silent-load risk):\\n$REG_OUT"
+    fi
+  fi
+fi
+
 # Combine status + routing into additionalContext
 # The status line gives metadata. The routing content gives behavioral rules.
 FULL_CONTEXT="$STATUS"
+if [ -n "$REG_WARN" ]; then
+  FULL_CONTEXT="$FULL_CONTEXT\\n\\n$REG_WARN"
+fi
 if [ -n "$ROUTING_CONTENT" ]; then
   # Escape for JSON: newlines, quotes, backslashes
-  ESCAPED_ROUTING=$(echo "$ROUTING_CONTENT" | sed 's/\\/\\\\/g' | sed 's/"/\\"/g' | sed ':a;N;$!ba;s/\n/\\n/g')
-  FULL_CONTEXT="$STATUS\\n\\n$ESCAPED_ROUTING"
+  ESCAPED_ROUTING=$(echo "$ROUTING_CONTENT" | sed 's/\\\\/\\\\\\\\/g' | sed 's/\"/\\\\\"/g' | sed ':a;N;$!ba;s/\\n/\\\\n/g')
+  FULL_CONTEXT="$FULL_CONTEXT\\n\\n$ESCAPED_ROUTING"
 fi
 
 # Output in Claude Code hook format
