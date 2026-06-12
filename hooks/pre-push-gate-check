@@ -84,8 +84,31 @@ if printf '%s' "$COMMAND" | grep -qE "$_TRIP_SENT"; then
   fi
 fi
 # (d) write-gate-evidence invoked with the human-only gate name, any path form
-if printf '%s' "$COMMAND" | grep -qE "write-gate-evidence[\"']?[[:space:]]+[\"']?parity-clean"; then
+if printf '%s' "$COMMAND" | grep -qE "write-gate-evidence[\\\\\\\"]?[[:space:]]+[\\\\\\\"]?parity-clean"; then
   _trip_block "'write-gate-evidence parity-clean' — parity-clean is human-only"
+fi
+# (e) OBVIOUS OBFUSCATION PATTERNS targeting sentinel paths (raise-the-bar layer).
+# An agent that already knows the sentinel format can still mint it via shell
+# obfuscation; this catches the plain-shaped obfuscations without raising
+# false positives on legitimate commands. HEURISTIC — bypassable by determined
+# obfuscation; the mechanical ceiling remains server-side.
+if printf '%s' "$COMMAND" | grep -qE "$_TRIP_SENT"; then
+  # base64 decode into sentinel
+  if printf '%s' "$COMMAND" | grep -qE "(base64[[:space:]]+(-d|--decode)|python[[:space:]]+-c[[:space:]]*[\\\\\\\"]*base64).*${_TRIP_SENT}"; then
+    _trip_block "obfuscated base64 decode into protected sentinel path"
+  fi
+  # variable/parameter expansion writing sentinel
+  if printf '%s' "$COMMAND" | grep -qE "(\\$[A-Za-z_][A-Za-z0-9_]*|\\$\\{[A-Za-z_][A-Za-z0-9_]*\\})[[:space:]]*>[[:space:]]*[\\\\\\\"]?[^[:space:]\\\\\\\"]*${_TRIP_SENT}"; then
+    _trip_block "variable-expanded write into protected sentinel path"
+  fi
+  # python -c / eval with explicit sentinel path string
+  if printf '%s' "$COMMAND" | grep -qE "(python[[:space:]]+-c|perl[[:space:]]+-e|node[[:space:]]+-e)[[:space:]]*[\\\\\\\"][^\\\\\\\"]*${_TRIP_SENT}"; then
+    _trip_block "script-eval write into protected sentinel path"
+  fi
+  # command substitution writing sentinel
+  if printf '%s' "$COMMAND" | grep -qE "(\\$\\([^)]*\\)|\\\`[^\\\`]*\\\`)[[:space:]]*>[[:space:]]*[\\\\\\\"]?[^[:space:]\\\\\\\"]*${_TRIP_SENT}"; then
+    _trip_block "command-substitution write into protected sentinel path"
+  fi
 fi
 # ── end sentinel-mint tripwire ────────────────────────────────────────────────
 

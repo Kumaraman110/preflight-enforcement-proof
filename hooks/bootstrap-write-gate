@@ -39,7 +39,7 @@ set -uo pipefail
 STDIN_JSON="$(cat)"
 SENTINEL=".preflight/gate/bootstrap-write-approved"
 
-PROTECTED_FILES="CLAUDE.md .preflight/config.json"
+PROTECTED_FILES="CLAUDE.md .preflight/config.json .preflight/gate/bootstrap-write-approved"
 
 # ─── Extract file_path from stdin JSON ───────────────────────
 
@@ -96,7 +96,18 @@ if [ ! -f "$FILE_PATH" ]; then
   # Also check relative form in case absolute path doesn't match
   RELATIVE_PATH="$PROTECTED_NAME"
   if [ ! -f "$RELATIVE_PATH" ]; then
-    # File doesn't exist — this is creation, not clobber. Allow.
+    # File doesn't exist — this is creation, not clobber.
+    # SPECIAL CASE: the approval sentinel must NEVER be created by the agent.
+    # Only a human lead may mint it from their own shell.
+    if [ "$PROTECTED_NAME" = ".preflight/gate/bootstrap-write-approved" ]; then
+      cat >&2 <<EOF
+BLOCKED: Agent must not create the approval sentinel ($PROTECTED_NAME).
+This file must be written by a HUMAN lead from their own shell.
+See docs/parity-gate-limitations.md.
+EOF
+      exit 2
+    fi
+    # For CLAUDE.md and config.json, new-file creation is allowed (first-time setup).
     exit 0
   fi
 fi
