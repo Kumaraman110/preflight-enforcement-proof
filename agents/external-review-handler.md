@@ -145,7 +145,7 @@ FINAL_REVIEWS=$(gh api "repos/{owner}/{repo}/pulls/<PR>/reviews" \
 
 **Rule: "not-received" means a final authoritative read confirmed nothing after HEAD — not "my last poll cycle was empty."** A re-review that exists on the PR MUST NOT be missed because the last regular poll cycle happened to fire before Copilot finished. Run 7's false negative: re-review landed at ~19 min, regular polls gave up at ~13 min, no final fetch was performed.
 
-**CRITICAL — silence is NOT approval:** After the final authoritative fetch confirms no activity, the status is `RE_REVIEW_NOT_RECEIVED` — NOT `SUCCESS`. The absence of new comments does NOT mean "clean." It means Copilot has not re-reviewed. Report this state honestly and proceed to terminal-state cleanup (Step 9.5/10).
+**CRITICAL — silence is NOT approval:** After the final authoritative fetch confirms no activity, the status is `RE_REVIEW_NOT_RECEIVED` — NOT `SUCCESS`. The absence of new comments does NOT mean "clean." It means Copilot has not re-reviewed. Report this state honestly and proceed to terminal-state cleanup (Step 9.5/10). **The same discipline extends to multi-round silence:** consecutive finding-free rounds are also not approval — they are the absence of raised findings from a non-deterministic oracle (the SessionToken run had finding-free rounds 4–5, then a fail-open auth bypass in round 6). A convergence exit is reported as CONVERGED, never as a clean bill of health; run the deterministic pre-completion checks before reporting it (see `lib/oscillation-detection.md` §4).
 
 ### Step 4 — Fetch line-level comments
 

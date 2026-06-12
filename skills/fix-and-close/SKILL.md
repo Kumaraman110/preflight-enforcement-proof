@@ -249,7 +249,12 @@ These values come from config (`review.*`). If config is absent, use these defau
 
     - `RE_REVIEW_NOT_RECEIVED` → Copilot did not re-review after the fix push. The polling window expired with no review event dated after the HEAD commit. This is NOT success — it means confirmation is absent. Surface to user: "Copilot has not re-reviewed. Re-request review or wait longer." Do NOT declare done.
 
-    - `SUCCESS` → final summary, exit.
+    - `SUCCESS` → final summary, exit. **Word the summary as CONVERGED, NOT certified clean:**
+      "all findings terminal; no NEW findings in the last N rounds (NOT certified clean — the
+      external reviewer is a non-deterministic oracle; see `lib/oscillation-detection.md` §4)."
+      Never describe the service as "clean", "verified", or "secure" on the basis of reviewer
+      silence — the SessionToken run had finding-free rounds 4–5 and a fail-open auth bypass in
+      round 6.
     
     - `NEEDS_PARENT_FIXES` → **Apply the same Coupled-Group Fix Protocol (step 6 above).** Group Copilot's findings by coupling. Fix coupled groups as single coherent changes. Then: run tests → invoke Stage 1 → when clean → commit + push → re-invoke Stage 2. **Track Stage 2 iteration count separately. Cap at 3.**
     
@@ -433,7 +438,7 @@ This trades "learnings take effect next invocation" for conflict-free parallel e
 ## Structured Status
 
 At any point, if you cannot proceed:
-- **DONE** — all findings in terminal state (fixed or defended-with-reply), PR ready for human merge
+- **DONE** — all findings in terminal state (fixed or defended-with-reply); no NEW findings in the last N rounds (NOT certified clean — reviewer silence is not evidence); PR ready for human merge
 - **CAPPED-RESOLVING** — hit iteration limit; remaining findings being decided (context-before-fix → fix or defend) without further push/poll rounds. NOT a resting state — resolution continues until all findings are terminal.
 - **BLOCKED** — external dependency (Copilot timeout, auth expired, rate limit)
 - **DIVERGING** — findings not converging; cap triggered. Remaining findings still must reach terminal state via defend-with-rationale.

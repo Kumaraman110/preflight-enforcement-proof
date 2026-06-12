@@ -483,6 +483,18 @@ run_behavioral_tests() {
   else
     yellow "SKIP: config-local-overlay-test.sh not found"
   fi
+
+  local convergence_test="$SCRIPT_DIR/behavioral/convergence-semantics-test.sh"
+  if [ -f "$convergence_test" ]; then
+    if bash "$convergence_test"; then
+      PASSES=$((PASSES + 7))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: convergence-semantics tests failed (issue #8 CONVERGED != clean)"
+    fi
+  else
+    yellow "SKIP: convergence-semantics-test.sh not found"
+  fi
 }
 
 # ═══════════════════════════════════════════════════════════════

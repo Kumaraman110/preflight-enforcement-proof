@@ -47,13 +47,21 @@ The original analysis (70+ round migration, pre-stability-filter) placed the cap
 - All remaining unresolved findings
 - A recommendation to the user: "Remaining findings are likely architecturally coupled. Consider: (1) addressing them as a group in a fresh context, (2) accepting tech debt with an explicit plan, or (3) rethinking the approach."
 
-### 4. Success (loop terminates normally)
+### 4. Convergence (loop terminates normally — reported as CONVERGED, never "clean")
 
 **Definition:** External reviewer returns no actionable findings.
 - Review state is `APPROVED`, or
 - Zero unresolved comments newer than last push
 
-**Action:** Report `SUCCESS`.
+**Action:** Report `SUCCESS` (the wire token is unchanged for interface stability), but the
+human-facing outcome wording is **CONVERGED**, defined as: *no NEW actionable findings in the
+last N rounds from the external reviewer.* It does NOT mean the service is clean or secure.
+The external reviewer is a non-deterministic oracle; its silence is never evidence of cleanliness —
+only the absence of a raised finding. The SessionToken live run proved this concretely:
+rounds 4–5 were finding-free, round 6 surfaced a fail-open auth bypass. Finding-free rounds
+are not a clean bill of health — run the deterministic pre-completion checks (e.g.
+`lib/null-boundary-lint.sh`, issue #8) before reporting CONVERGED, and word the final
+summary as "converged (no new findings in N rounds)", never "clean" or "verified".
 
 ## State Tracking
 
