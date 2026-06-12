@@ -591,6 +591,18 @@ run_behavioral_tests() {
   else
     yellow "SKIP: wire-golden-test.sh not found"
   fi
+
+  local branch_cut_test="$SCRIPT_DIR/behavioral/pre-branch-cut-test.sh"
+  if [ -f "$branch_cut_test" ]; then
+    if bash "$branch_cut_test"; then
+      PASSES=$((PASSES + 8))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: pre-branch-cut cleanliness tests failed (G4 branch-crossover drift)"
+    fi
+  else
+    yellow "SKIP: pre-branch-cut-test.sh not found"
+  fi
 }
 
 # ═══════════════════════════════════════════════════════════════
