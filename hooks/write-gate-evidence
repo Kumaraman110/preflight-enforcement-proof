@@ -19,7 +19,13 @@
 set -euo pipefail
 
 GATE_NAME="${1:-}"
-GATE_DIR=".preflight/gate"
+# Session-root scoping (NEW-3 / gap #28): anchor the evidence dir at the REPO
+# ROOT, never the caller's cwd. A cwd-relative path stranded evidence under
+# <subdir>/.preflight/gate/ when invoked from a subdirectory — where the
+# pre-push gate (also now root-anchored) never looks → false block. Outside a
+# git repo, fall back to pwd (previous behavior, unchanged).
+REPO_TOP="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+GATE_DIR="$REPO_TOP/.preflight/gate"
 
 if [ -z "$GATE_NAME" ]; then
   echo "Usage: write-gate-evidence <gate-name>" >&2
