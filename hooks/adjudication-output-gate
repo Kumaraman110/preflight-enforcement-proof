@@ -125,7 +125,11 @@ const ALLOW = new Set(["commentId","threadNodeId","path","parentVerdict","citedE
 const CITES = /\.[A-Za-z0-9]+:[0-9]+|§[0-9]+|MIGRATION_PATTERNS\.md|behavior-spec[A-Za-z0-9._-]*|name-contract|dependency-map\.json|legacy-db-name-contract/;
 const DEFENDED = new Set(["DEFENDED","AMBIGUOUS-DEFENDED"]);
 
-const entries = Array.isArray(raw.adjudications) ? raw.adjudications : [];
+const entries = Array.isArray(raw.adjudications) ? raw.adjudications : null;
+if (entries === null){
+  console.error("BLOCKED: adjudication record has no top-level \"adjudications\" array. The verdict-of-record schema is {\"adjudications\":[...]} (lib/adjudication-record.md); any other top-level shape would let entries evade the schema walk. Failing closed.");
+  process.exit(2);
+}
 for (let i=0;i<entries.length;i++){
   const e = entries[i] || {};
   // Target 1: forbidden keys
