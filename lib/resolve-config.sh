@@ -53,9 +53,13 @@ _resolve_field_type() {
 # ─── Unset sentinel ──────────────────────────────────────────
 # This token disambiguates "field missing from JSON" from "field present with
 # value null or empty." It is chosen to be impossible to collide with any real
-# config value: it contains control characters and a UUID-like suffix that no
-# human would write and no generator would produce.
-_RESOLVE_UNSET_SENTINEL="__RESOLVE_UNSET_\x00_7f3a9c2e__"
+# config value: a double-underscore frame and UUID-like suffix no human would
+# write and no generator would produce. (It previously embedded a literal \x00
+# escape — MSYS/Windows jq rejects \x escapes inside jq-program string literals
+# with "Invalid escape", which errored EVERY config read into the unresolved
+# fallback. Fail direction was CLOSED — dependent skills halt — but it degraded
+# all three resolution layers on this platform.)
+_RESOLVE_UNSET_SENTINEL="__RESOLVE_UNSET__7f3a9c2e__"
 
 # ─── Per-type "is unset" predicates ──────────────────────────
 # Return 0 (true) if the value should be treated as "unset" for this type.
@@ -179,8 +183,9 @@ _resolve_read_field() {
       return
     elif [ "$source_type" = "derived" ]; then
       if [ "$field" = "projectFiles" ] || [ "$field_type" = "array" ]; then
-        # Array fields: return JSON array representation for type checking
-        result=$(jq -r "if .[\"$field\"] == null then \"$_RESOLVE_UNSET_SENTINEL\" elif .[\"$field\"] | type == \"array\" then (.[\"$field\"] | join(\"\\n\")) else .[\"$field\"] // \"$_RESOLVE_UNSET_SENTINEL\" end" "$file" 2>/dev/null) || result="$_RESOLVE_UNSET_SENTINEL"
+        # Array fields: return JSON array representation for type checking.
+        # tr -d '\r': Windows jq emits CRLF on every line of a multi-line join.
+        result=$(jq -r "if .[\"$field\"] == null then \"$_RESOLVE_UNSET_SENTINEL\" elif .[\"$field\"] | type == \"array\" then (.[\"$field\"] | join(\"\\n\")) else .[\"$field\"] // \"$_RESOLVE_UNSET_SENTINEL\" end" "$file" 2>/dev/null | tr -d '\r') || result="$_RESOLVE_UNSET_SENTINEL"
       else
         result=$(jq -r "if .[\"$field\"] == null then \"$_RESOLVE_UNSET_SENTINEL\" elif .[\"$field\"] | type == \"object\" then (.[\"$field\"].value // \"$_RESOLVE_UNSET_SENTINEL\" | if . == null then \"$_RESOLVE_UNSET_SENTINEL\" else tostring end) else (.[\"$field\"] | tostring) end" "$file" 2>/dev/null) || result="$_RESOLVE_UNSET_SENTINEL"
       fi
