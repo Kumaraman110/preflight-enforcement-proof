@@ -76,9 +76,15 @@ the hook and assert the exit code, e.g.
 — exit 2 = block, 0 = allow.
 
 **Known environment caveat:** the test suite has pre-existing failures on this Windows/Git-Bash setup
-(`resolve-config`, `extract-overrides`, `drift-detector` tempdir, `bootstrap-write-gate` sentinel) —
-verify any "new" failure against a clean baseline worktree of the prior tag before attributing it to
-your change. Most are jq/CRLF/path-quirk environmental, not regressions.
+— 6 suites: `resolve-config` + `tdd-skill-resolution` (the `\x00` in `_RESOLVE_UNSET_SENTINEL`
+at lib/resolve-config.sh:58 is an invalid jq escape on this jq build, so every config read falls
+back to `|unresolved`; fail direction is CLOSED — the TDD skill HALTs), `drift-detector` (tempdir),
+`bootstrap-write-gate` (the test still drives the hook via argv + flat JSON; the hook reads stdin
++ tool_input wrapper since the input-contract fix — the HOOK fail-closes correctly on the real
+interface, the TEST is stale), `rubric-validity-gate` (same stale argv-interface test),
+`run-coupled-group` (drives coupled-edit-gate with a bare file path, not tool JSON). Verify any
+"new" failure against a clean baseline worktree of the prior tag before attributing it to your
+change. Most are jq/CRLF/path-quirk environmental or stale-test-interface, not regressions.
 
 ---
 

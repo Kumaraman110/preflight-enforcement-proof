@@ -63,7 +63,7 @@ preflight installs from a **pinned git ref** into a consumer repo's `.claude/` t
 
 ```bash
 # From the preflight repo, install into your service repo at a pinned version:
-./tools/preflight-install.sh /path/to/your-repo v0.8.0
+./tools/preflight-install.sh /path/to/your-repo v0.9.0
 
 # Verify the install is intact (manifest present, zero drift):
 ./tools/preflight-verify.sh /path/to/your-repo
@@ -111,7 +111,7 @@ This is the discipline that a failed real-world migration (an agent that invente
 
 ## Status & maturity
 
-preflight is in **active development** (latest release `v0.8.0`; releases are annotated tags on `feature/preflight-framework`). The architecture is built and its gates are behaviorally tested; the self-improvement loop is proven in design and exercised internally, **not yet validated across a large public track record** — so we describe what it *does*, and where it's *going*, without inflating a history it hasn't earned yet. See [`FRAMEWORK.md`](FRAMEWORK.md) for the architecture and honest maturity assessment.
+preflight is in **active development** (latest release `v0.9.0`; releases are annotated tags on `feature/preflight-framework`). The architecture is built and its gates are behaviorally tested; the self-improvement loop is proven in design and exercised internally, **not yet validated across a large public track record** — so we describe what it *does*, and where it's *going*, without inflating a history it hasn't earned yet. See [`FRAMEWORK.md`](FRAMEWORK.md) for the architecture and honest maturity assessment.
 
 ---
 
