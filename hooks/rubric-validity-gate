@@ -88,7 +88,10 @@ read_rubric_field() {
     return
   fi
   if command -v jq &>/dev/null; then
-    jq -r '.rubric // ""' "$file" 2>/dev/null || echo ""
+    # Arrays print one path per line (same contract as the python fallback below);
+    # the raw-JSON form ("[", quoted elements) false-blocked valid array rubrics.
+    # tr -d '\r': Windows jq emits CRLF in -r mode; a trailing \r breaks [ -f ].
+    jq -r '(.rubric // "") | if type == "array" then .[] else . end' "$file" 2>/dev/null | tr -d '\r' || echo ""
   elif [ -n "$PYTHON_CMD" ]; then
     $PYTHON_CMD -c "
 import json

@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 # Tests for the rubric-validity-gate hook.
 # Validates: Stage 1 (code-reviewer) is blocked when rubric is invalid/missing.
+#
+# INTERFACE: the hook reads a JSON object from STDIN (the real Claude Code
+# PreToolUse interface): {"tool_name":"Task","tool_input":{"subagent_type":
+# "code-reviewer","prompt":"..."}}. Block = exit 2 (stderr carries the reason).
 
-set -euo pipefail
+set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -12,6 +16,20 @@ PASSES=0
 
 red() { printf "\033[31m%s\033[0m\n" "$1"; }
 green() { printf "\033[32m%s\033[0m\n" "$1"; }
+
+# run_task_hook <subagent_type> → sets RC and OUT (stdout+stderr merged).
+# Feeds Task tool JSON on stdin — the hook's real input contract.
+# Pass "" to omit the subagent_type field entirely.
+run_task_hook() {
+  local st="$1" json
+  if [ -n "$st" ]; then
+    json="{\"tool_name\":\"Task\",\"tool_input\":{\"subagent_type\":\"$st\",\"prompt\":\"review the diff\"}}"
+  else
+    json='{"tool_name":"Task","tool_input":{"prompt":"do something","description":"general task"}}'
+  fi
+  RC=0
+  OUT="$(printf '%s' "$json" | bash "$HOOK" 2>&1)" || RC=$?
+}
 
 # ─── Setup temp workspace ─────────────────────────────────────
 
@@ -28,15 +46,13 @@ setup_workspace() {
 echo "Test 1: Agent call with subagent_type != code-reviewer"
 setup_workspace
 
-INPUT='{"prompt":"explore the codebase","subagent_type":"Explore"}'
-EXIT_CODE=0
-bash "$HOOK" "$INPUT" 2>/dev/null || EXIT_CODE=$?
+run_task_hook "Explore"
 
-if [ "$EXIT_CODE" -eq 0 ]; then
+if [ "$RC" -eq 0 ]; then
   green "PASS: non-code-reviewer agent call allowed"
   PASSES=$((PASSES + 1))
 else
-  red "FAIL: non-code-reviewer should pass through (exit $EXIT_CODE)"
+  red "FAIL: non-code-reviewer should pass through (exit $RC)"
   FAILURES=$((FAILURES + 1))
 fi
 
@@ -45,15 +61,13 @@ fi
 echo "Test 2: code-reviewer spawn, no config file"
 setup_workspace
 
-INPUT='{"prompt":"review the diff","subagent_type":"code-reviewer"}'
-EXIT_CODE=0
-OUTPUT=$(bash "$HOOK" "$INPUT" 2>&1) || EXIT_CODE=$?
+run_task_hook "code-reviewer"
 
-if [ "$EXIT_CODE" -eq 1 ] && echo "$OUTPUT" | grep -q "BLOCKED"; then
+if [ "$RC" -eq 2 ] && echo "$OUT" | grep -q "BLOCKED"; then
   green "PASS: no config file blocks code-reviewer"
   PASSES=$((PASSES + 1))
 else
-  red "FAIL: expected block (exit 1), got exit $EXIT_CODE"
+  red "FAIL: expected block (exit 2), got exit $RC"
   FAILURES=$((FAILURES + 1))
 fi
 
@@ -64,15 +78,13 @@ setup_workspace
 mkdir -p .preflight
 echo '{"mode":"generic"}' > .preflight/config.json
 
-INPUT='{"prompt":"review the diff","subagent_type":"code-reviewer"}'
-EXIT_CODE=0
-OUTPUT=$(bash "$HOOK" "$INPUT" 2>&1) || EXIT_CODE=$?
+run_task_hook "code-reviewer"
 
-if [ "$EXIT_CODE" -eq 1 ] && echo "$OUTPUT" | grep -q "no.*rubric"; then
+if [ "$RC" -eq 2 ] && echo "$OUT" | grep -q "no.*rubric"; then
   green "PASS: config without rubric key blocks"
   PASSES=$((PASSES + 1))
 else
-  red "FAIL: expected block for missing rubric key (exit $EXIT_CODE, output: $OUTPUT)"
+  red "FAIL: expected block for missing rubric key (exit $RC, output: $OUT)"
   FAILURES=$((FAILURES + 1))
 fi
 
@@ -84,15 +96,13 @@ mkdir -p .preflight
 echo "# My rubric" > rubric.md
 echo '{"rubric":"rubric.md"}' > .preflight/config.json
 
-INPUT='{"prompt":"review the diff","subagent_type":"code-reviewer"}'
-EXIT_CODE=0
-bash "$HOOK" "$INPUT" 2>/dev/null || EXIT_CODE=$?
+run_task_hook "code-reviewer"
 
-if [ "$EXIT_CODE" -eq 0 ]; then
+if [ "$RC" -eq 0 ]; then
   green "PASS: valid rubric path allows code-reviewer"
   PASSES=$((PASSES + 1))
 else
-  red "FAIL: valid rubric should allow (exit $EXIT_CODE)"
+  red "FAIL: valid rubric should allow (exit $RC, output: $OUT)"
   FAILURES=$((FAILURES + 1))
 fi
 
@@ -106,15 +116,13 @@ setup_workspace
 mkdir -p .preflight
 echo '{"rubric":"nonexistent/rubric.md"}' > .preflight/config.json
 
-INPUT='{"prompt":"review the diff","subagent_type":"code-reviewer"}'
-EXIT_CODE=0
-OUTPUT=$(bash "$HOOK" "$INPUT" 2>&1) || EXIT_CODE=$?
+run_task_hook "code-reviewer"
 
-if [ "$EXIT_CODE" -eq 1 ] && echo "$OUTPUT" | grep -q "not found"; then
+if [ "$RC" -eq 2 ] && echo "$OUT" | grep -q "not found"; then
   green "PASS: invalid rubric path blocks"
   PASSES=$((PASSES + 1))
 else
-  red "FAIL: expected block for bad rubric path (exit $EXIT_CODE, output: $OUTPUT)"
+  red "FAIL: expected block for bad rubric path (exit $RC, output: $OUT)"
   FAILURES=$((FAILURES + 1))
 fi
 
@@ -129,15 +137,13 @@ EXAMPLE_RUBRIC="examples/rubrics/rubric-generic-dotnet.md"
 if [ -f "$PLUGIN_ROOT/$EXAMPLE_RUBRIC" ]; then
   echo "{\"rubric\":\"$EXAMPLE_RUBRIC\"}" > .preflight/config.json
 
-  INPUT='{"prompt":"review the diff","subagent_type":"code-reviewer"}'
-  EXIT_CODE=0
-  bash "$HOOK" "$INPUT" 2>/dev/null || EXIT_CODE=$?
+  run_task_hook "code-reviewer"
 
-  if [ "$EXIT_CODE" -eq 0 ]; then
+  if [ "$RC" -eq 0 ]; then
     green "PASS: plugin-relative rubric path allows"
     PASSES=$((PASSES + 1))
   else
-    red "FAIL: plugin-relative rubric should allow (exit $EXIT_CODE)"
+    red "FAIL: plugin-relative rubric should allow (exit $RC)"
     FAILURES=$((FAILURES + 1))
   fi
 else
@@ -158,15 +164,13 @@ cat > .preflight/config.json <<'CONF'
 {"rubric":["migration-rubric.md","generic-rubric.md"]}
 CONF
 
-INPUT='{"prompt":"review the diff","subagent_type":"code-reviewer"}'
-EXIT_CODE=0
-bash "$HOOK" "$INPUT" 2>/dev/null || EXIT_CODE=$?
+run_task_hook "code-reviewer"
 
-if [ "$EXIT_CODE" -eq 0 ]; then
+if [ "$RC" -eq 0 ]; then
   green "PASS: array rubric (all valid) allows"
   PASSES=$((PASSES + 1))
 else
-  red "FAIL: array rubric (all valid) should allow (exit $EXIT_CODE)"
+  red "FAIL: array rubric (all valid) should allow (exit $RC, output: $OUT)"
   FAILURES=$((FAILURES + 1))
 fi
 
@@ -181,15 +185,13 @@ cat > .preflight/config.json <<'CONF'
 {"rubric":["good-rubric.md","missing-rubric.md"]}
 CONF
 
-INPUT='{"prompt":"review the diff","subagent_type":"code-reviewer"}'
-EXIT_CODE=0
-OUTPUT=$(bash "$HOOK" "$INPUT" 2>&1) || EXIT_CODE=$?
+run_task_hook "code-reviewer"
 
-if [ "$EXIT_CODE" -eq 1 ] && echo "$OUTPUT" | grep -q "missing-rubric.md"; then
+if [ "$RC" -eq 2 ] && echo "$OUT" | grep -q "missing-rubric.md"; then
   green "PASS: array rubric (one invalid) blocks"
   PASSES=$((PASSES + 1))
 else
-  red "FAIL: expected block for partial-invalid array (exit $EXIT_CODE, output: $OUTPUT)"
+  red "FAIL: expected block for partial-invalid array (exit $RC, output: $OUT)"
   FAILURES=$((FAILURES + 1))
 fi
 
@@ -198,15 +200,13 @@ fi
 echo "Test 9: Agent call with no subagent_type field"
 setup_workspace
 
-INPUT='{"prompt":"do something","description":"general task"}'
-EXIT_CODE=0
-bash "$HOOK" "$INPUT" 2>/dev/null || EXIT_CODE=$?
+run_task_hook ""
 
-if [ "$EXIT_CODE" -eq 0 ]; then
+if [ "$RC" -eq 0 ]; then
   green "PASS: no subagent_type passes through"
   PASSES=$((PASSES + 1))
 else
-  red "FAIL: missing subagent_type should pass (exit $EXIT_CODE)"
+  red "FAIL: missing subagent_type should pass (exit $RC)"
   FAILURES=$((FAILURES + 1))
 fi
 
@@ -218,15 +218,13 @@ mkdir -p .cpsl
 echo "# rubric" > my-rubric.md
 echo '{"rubric":"my-rubric.md"}' > .cpsl/config.json
 
-INPUT='{"prompt":"review","subagent_type":"code-reviewer"}'
-EXIT_CODE=0
-bash "$HOOK" "$INPUT" 2>/dev/null || EXIT_CODE=$?
+run_task_hook "code-reviewer"
 
-if [ "$EXIT_CODE" -eq 0 ]; then
+if [ "$RC" -eq 0 ]; then
   green "PASS: .cpsl/config.json fallback works"
   PASSES=$((PASSES + 1))
 else
-  red "FAIL: .cpsl/config.json should be found (exit $EXIT_CODE)"
+  red "FAIL: .cpsl/config.json should be found (exit $RC, output: $OUT)"
   FAILURES=$((FAILURES + 1))
 fi
 
