@@ -6,6 +6,10 @@
 # blocks or doesn't. If the gate works, then even if the LLM tries to fix
 # coupled findings independently, the Edit will be blocked.
 #
+# INTERFACE: the gate reads a JSON object from STDIN (the real Claude Code
+# PreToolUse interface): {"tool_name":"Edit","tool_input":{"file_path":"...",
+# "old_string":"...","new_string":"..."}}. Block = exit 2.
+#
 # Test scenarios:
 #   1. Edit to a file in an unacknowledged group → BLOCKED
 #   2. Edit to a file NOT in any group → ALLOWED
@@ -13,7 +17,7 @@
 #   4. Edit when no groups file exists → ALLOWED
 #   5. Edit after groups cleared (empty array) → ALLOWED
 
-set -euo pipefail
+set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -27,6 +31,14 @@ TEMP_DIR=""
 
 red() { printf "\033[31m%s\033[0m\n" "$1"; }
 green() { printf "\033[32m%s\033[0m\n" "$1"; }
+
+# run_gate <file_path> → sets RC and OUT (stdout+stderr merged).
+# Feeds Edit tool JSON on stdin — the gate's real input contract.
+run_gate() {
+  local fp="$1"
+  RC=0
+  OUT="$(printf '%s' "{\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"$fp\",\"old_string\":\"a\",\"new_string\":\"b\"}}" | bash "$GATE_SCRIPT" 2>&1)" || RC=$?
+}
 
 setup() {
   TEMP_DIR=$(mktemp -d)
@@ -49,13 +61,14 @@ test_unacked_blocked() {
   # Create active groups with TokenProvider.cs and AccountClient.cs coupled
   bash "$WRITE_GROUPS" '[{"files":["Services/TokenProvider.cs","Clients/AccountClient.cs"],"findings":["§4.2 on TokenProvider:18","§4.3 on AccountClient:25"],"acknowledged":false}]'
 
-  # Try to edit TokenProvider.cs — should be BLOCKED
-  if bash "$GATE_SCRIPT" "Services/TokenProvider.cs" 2>/dev/null; then
-    red "FAIL: Test 1 — edit to unacknowledged group file should be BLOCKED but was ALLOWED"
-    FAILURES=$((FAILURES + 1))
-  else
-    green "PASS: Test 1 — unacknowledged group file correctly BLOCKED"
+  # Try to edit TokenProvider.cs — should be BLOCKED (exit 2)
+  run_gate "Services/TokenProvider.cs"
+  if [ "$RC" -eq 2 ]; then
+    green "PASS: Test 1 — unacknowledged group file correctly BLOCKED (exit 2)"
     PASSES=$((PASSES + 1))
+  else
+    red "FAIL: Test 1 — edit to unacknowledged group file should be BLOCKED (exit 2) but got exit $RC"
+    FAILURES=$((FAILURES + 1))
   fi
 
   teardown
@@ -69,11 +82,12 @@ test_untracked_allowed() {
   bash "$WRITE_GROUPS" '[{"files":["Services/TokenProvider.cs","Clients/AccountClient.cs"],"findings":["§4.2"],"acknowledged":false}]'
 
   # Edit Dockerfile — not in any group
-  if bash "$GATE_SCRIPT" "Dockerfile" 2>/dev/null; then
+  run_gate "Dockerfile"
+  if [ "$RC" -eq 0 ]; then
     green "PASS: Test 2 — file not in any group correctly ALLOWED"
     PASSES=$((PASSES + 1))
   else
-    red "FAIL: Test 2 — file not in any group should be ALLOWED but was BLOCKED"
+    red "FAIL: Test 2 — file not in any group should be ALLOWED but got exit $RC"
     FAILURES=$((FAILURES + 1))
   fi
 
@@ -91,11 +105,12 @@ test_acked_allowed() {
   bash "$ACK_SCRIPT" "0"
 
   # Now edit should be allowed
-  if bash "$GATE_SCRIPT" "Services/TokenProvider.cs" 2>/dev/null; then
+  run_gate "Services/TokenProvider.cs"
+  if [ "$RC" -eq 0 ]; then
     green "PASS: Test 3 — acknowledged group file correctly ALLOWED"
     PASSES=$((PASSES + 1))
   else
-    red "FAIL: Test 3 — acknowledged group file should be ALLOWED but was BLOCKED"
+    red "FAIL: Test 3 — acknowledged group file should be ALLOWED but got exit $RC ($OUT)"
     FAILURES=$((FAILURES + 1))
   fi
 
@@ -108,11 +123,12 @@ test_no_groups_file() {
   setup
 
   # Don't create any groups file
-  if bash "$GATE_SCRIPT" "Services/TokenProvider.cs" 2>/dev/null; then
+  run_gate "Services/TokenProvider.cs"
+  if [ "$RC" -eq 0 ]; then
     green "PASS: Test 4 — no groups file, correctly ALLOWED"
     PASSES=$((PASSES + 1))
   else
-    red "FAIL: Test 4 — no groups file should mean ALLOWED"
+    red "FAIL: Test 4 — no groups file should mean ALLOWED (got exit $RC)"
     FAILURES=$((FAILURES + 1))
   fi
 
@@ -126,11 +142,12 @@ test_empty_groups() {
 
   bash "$WRITE_GROUPS" '[]'
 
-  if bash "$GATE_SCRIPT" "Services/TokenProvider.cs" 2>/dev/null; then
+  run_gate "Services/TokenProvider.cs"
+  if [ "$RC" -eq 0 ]; then
     green "PASS: Test 5 — empty groups array, correctly ALLOWED"
     PASSES=$((PASSES + 1))
   else
-    red "FAIL: Test 5 — empty groups should mean ALLOWED"
+    red "FAIL: Test 5 — empty groups should mean ALLOWED (got exit $RC)"
     FAILURES=$((FAILURES + 1))
   fi
 
@@ -145,21 +162,23 @@ test_multi_group_partial_ack() {
   bash "$WRITE_GROUPS" '[{"files":["Services/TokenProvider.cs"],"findings":["§4.2"],"acknowledged":true},{"files":["Clients/AccountClient.cs"],"findings":["§4.3"],"acknowledged":false}]'
 
   # TokenProvider is in group 0 (acknowledged) — should be allowed
-  if bash "$GATE_SCRIPT" "Services/TokenProvider.cs" 2>/dev/null; then
+  run_gate "Services/TokenProvider.cs"
+  if [ "$RC" -eq 0 ]; then
     green "PASS: Test 6a — file in acknowledged group ALLOWED"
     PASSES=$((PASSES + 1))
   else
-    red "FAIL: Test 6a — file in acknowledged group should be ALLOWED"
+    red "FAIL: Test 6a — file in acknowledged group should be ALLOWED (got exit $RC)"
     FAILURES=$((FAILURES + 1))
   fi
 
-  # AccountClient is in group 1 (unacknowledged) — should be blocked
-  if bash "$GATE_SCRIPT" "Clients/AccountClient.cs" 2>/dev/null; then
-    red "FAIL: Test 6b — file in unacknowledged group should be BLOCKED"
-    FAILURES=$((FAILURES + 1))
-  else
-    green "PASS: Test 6b — file in unacknowledged group correctly BLOCKED"
+  # AccountClient is in group 1 (unacknowledged) — should be blocked (exit 2)
+  run_gate "Clients/AccountClient.cs"
+  if [ "$RC" -eq 2 ]; then
+    green "PASS: Test 6b — file in unacknowledged group correctly BLOCKED (exit 2)"
     PASSES=$((PASSES + 1))
+  else
+    red "FAIL: Test 6b — file in unacknowledged group should be BLOCKED (exit 2) but got exit $RC"
+    FAILURES=$((FAILURES + 1))
   fi
 
   teardown

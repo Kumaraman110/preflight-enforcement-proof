@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 # Tests for the bootstrap-write-gate hook.
 # Validates: clobber protection for CLAUDE.md and .preflight/config.json.
+#
+# INTERFACE: the hook reads a JSON object from STDIN (the real Claude Code
+# PreToolUse interface): {"tool_name":"Write","tool_input":{"file_path":"...",
+# "content":"..."}}. Block = exit 2 (stderr carries the reason).
 
-set -euo pipefail
+set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -12,6 +16,14 @@ PASSES=0
 
 red() { printf "\033[31m%s\033[0m\n" "$1"; }
 green() { printf "\033[32m%s\033[0m\n" "$1"; }
+
+# run_write_hook <file_path> → sets RC and OUT (stdout+stderr merged).
+# Feeds Write tool JSON on stdin — the hook's real input contract.
+run_write_hook() {
+  local fp="$1"
+  RC=0
+  OUT="$(printf '%s' "{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$fp\",\"content\":\"x\"}}" | bash "$HOOK" 2>&1)" || RC=$?
+}
 
 # ─── Setup temp workspace ─────────────────────────────────────
 
@@ -34,15 +46,13 @@ echo "Test 1: Write to NEW CLAUDE.md (no existing file)"
 setup_git_repo
 
 # CLAUDE.md does NOT exist; tool input targets it
-INPUT='{"file_path":"'"$TMPDIR/CLAUDE.md"'","content":"# New"}'
-EXIT_CODE=0
-bash "$HOOK" "$INPUT" 2>/dev/null || EXIT_CODE=$?
+run_write_hook "$TMPDIR/CLAUDE.md"
 
-if [ "$EXIT_CODE" -eq 0 ]; then
+if [ "$RC" -eq 0 ]; then
   green "PASS: new file creation allowed"
   PASSES=$((PASSES + 1))
 else
-  red "FAIL: new file creation blocked (exit $EXIT_CODE)"
+  red "FAIL: new file creation blocked (exit $RC)"
   FAILURES=$((FAILURES + 1))
 fi
 
@@ -52,15 +62,13 @@ echo "Test 2: Write to EXISTING CLAUDE.md, no sentinel"
 setup_git_repo
 echo "# Existing" > CLAUDE.md
 
-INPUT='{"file_path":"'"$TMPDIR/CLAUDE.md"'","content":"# Overwrite"}'
-EXIT_CODE=0
-OUTPUT=$(bash "$HOOK" "$INPUT" 2>&1) || EXIT_CODE=$?
+run_write_hook "$TMPDIR/CLAUDE.md"
 
-if [ "$EXIT_CODE" -eq 1 ] && echo "$OUTPUT" | grep -q "BLOCKED"; then
+if [ "$RC" -eq 2 ] && echo "$OUT" | grep -q "BLOCKED"; then
   green "PASS: existing file without sentinel blocked"
   PASSES=$((PASSES + 1))
 else
-  red "FAIL: expected block (exit 1), got exit $EXIT_CODE"
+  red "FAIL: expected block (exit 2), got exit $RC"
   FAILURES=$((FAILURES + 1))
 fi
 
@@ -77,15 +85,13 @@ cat > .preflight/gate/bootstrap-write-approved <<SENTINEL
 {"approvedAtHEAD":"$HEAD","approvedFiles":["CLAUDE.md",".preflight/config.json"],"approvedAt":"2026-05-28T10:00:00Z"}
 SENTINEL
 
-INPUT='{"file_path":"'"$TMPDIR/CLAUDE.md"'","content":"# Updated"}'
-EXIT_CODE=0
-bash "$HOOK" "$INPUT" 2>/dev/null || EXIT_CODE=$?
+run_write_hook "$TMPDIR/CLAUDE.md"
 
-if [ "$EXIT_CODE" -eq 0 ]; then
+if [ "$RC" -eq 0 ]; then
   green "PASS: existing file with fresh sentinel allowed"
   PASSES=$((PASSES + 1))
 else
-  red "FAIL: fresh sentinel should allow (exit $EXIT_CODE)"
+  red "FAIL: fresh sentinel should allow (exit $RC, output: $OUT)"
   FAILURES=$((FAILURES + 1))
 fi
 
@@ -105,15 +111,13 @@ SENTINEL
 # Move HEAD forward
 echo "more" > extra.txt && git add extra.txt && git commit -q -m "move head"
 
-INPUT='{"file_path":"'"$TMPDIR/CLAUDE.md"'","content":"# Clobber"}'
-EXIT_CODE=0
-OUTPUT=$(bash "$HOOK" "$INPUT" 2>&1) || EXIT_CODE=$?
+run_write_hook "$TMPDIR/CLAUDE.md"
 
-if [ "$EXIT_CODE" -eq 1 ] && echo "$OUTPUT" | grep -q "stale"; then
+if [ "$RC" -eq 2 ] && echo "$OUT" | grep -q "stale"; then
   green "PASS: stale sentinel blocks"
   PASSES=$((PASSES + 1))
 else
-  red "FAIL: stale sentinel should block (exit $EXIT_CODE)"
+  red "FAIL: stale sentinel should block (exit $RC)"
   FAILURES=$((FAILURES + 1))
 fi
 
@@ -131,15 +135,13 @@ cat > .preflight/gate/bootstrap-write-approved <<SENTINEL
 {"approvedAtHEAD":"$HEAD","approvedFiles":["CLAUDE.md"],"approvedAt":"2026-05-28T10:00:00Z"}
 SENTINEL
 
-INPUT='{"file_path":"'"$TMPDIR/.preflight/config.json"'","content":"{}"}'
-EXIT_CODE=0
-OUTPUT=$(bash "$HOOK" "$INPUT" 2>&1) || EXIT_CODE=$?
+run_write_hook "$TMPDIR/.preflight/config.json"
 
-if [ "$EXIT_CODE" -eq 1 ] && echo "$OUTPUT" | grep -q "does not cover"; then
+if [ "$RC" -eq 2 ] && echo "$OUT" | grep -q "does not cover"; then
   green "PASS: sentinel not covering target blocks"
   PASSES=$((PASSES + 1))
 else
-  red "FAIL: uncovered file should block (exit $EXIT_CODE, output: $OUTPUT)"
+  red "FAIL: uncovered file should block (exit $RC, output: $OUT)"
   FAILURES=$((FAILURES + 1))
 fi
 
@@ -149,15 +151,13 @@ echo "Test 6: Write to unrelated file (not protected)"
 setup_git_repo
 echo "class Foo {}" > src.cs
 
-INPUT='{"file_path":"'"$TMPDIR/src.cs"'","content":"class Bar {}"}'
-EXIT_CODE=0
-bash "$HOOK" "$INPUT" 2>/dev/null || EXIT_CODE=$?
+run_write_hook "$TMPDIR/src.cs"
 
-if [ "$EXIT_CODE" -eq 0 ]; then
+if [ "$RC" -eq 0 ]; then
   green "PASS: unrelated file allowed"
   PASSES=$((PASSES + 1))
 else
-  red "FAIL: unrelated file should pass (exit $EXIT_CODE)"
+  red "FAIL: unrelated file should pass (exit $RC)"
   FAILURES=$((FAILURES + 1))
 fi
 
@@ -171,15 +171,13 @@ git add CLAUDE.md && git commit -q -m "add claude"
 mkdir -p .preflight/gate
 echo "NOT VALID JSON" > .preflight/gate/bootstrap-write-approved
 
-INPUT='{"file_path":"'"$TMPDIR/CLAUDE.md"'","content":"# Clobber"}'
-EXIT_CODE=0
-OUTPUT=$(bash "$HOOK" "$INPUT" 2>&1) || EXIT_CODE=$?
+run_write_hook "$TMPDIR/CLAUDE.md"
 
-if [ "$EXIT_CODE" -eq 1 ]; then
+if [ "$RC" -eq 2 ]; then
   green "PASS: malformed sentinel fails closed (blocks)"
   PASSES=$((PASSES + 1))
 else
-  red "FAIL: malformed sentinel should fail closed (exit $EXIT_CODE)"
+  red "FAIL: malformed sentinel should fail closed (exit $RC)"
   FAILURES=$((FAILURES + 1))
 fi
 
