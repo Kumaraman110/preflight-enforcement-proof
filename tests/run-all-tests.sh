@@ -603,6 +603,30 @@ run_behavioral_tests() {
   else
     yellow "SKIP: pre-branch-cut-test.sh not found"
   fi
+
+  local adjudication_shape_test="$SCRIPT_DIR/behavioral/adjudication-shape-test.sh"
+  if [ -f "$adjudication_shape_test" ]; then
+    if bash "$adjudication_shape_test"; then
+      PASSES=$((PASSES + 7))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: adjudication-shape tests failed (L2 fail-closed on unexpected top-level shape)"
+    fi
+  else
+    yellow "SKIP: adjudication-shape-test.sh not found"
+  fi
+
+  local coupled_failclosed_test="$SCRIPT_DIR/behavioral/coupled-gate-failclosed-test.sh"
+  if [ -f "$coupled_failclosed_test" ]; then
+    if bash "$coupled_failclosed_test"; then
+      PASSES=$((PASSES + 8))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: coupled-gate fail-closed tests failed (L1 unreadable groups file)"
+    fi
+  else
+    yellow "SKIP: coupled-gate-failclosed-test.sh not found"
+  fi
 }
 
 # ═══════════════════════════════════════════════════════════════
