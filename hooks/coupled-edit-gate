@@ -65,6 +65,40 @@ if [ ! -f "$GROUPS_FILE" ]; then
   exit 0
 fi
 
+# FAIL CLOSED on unreadable state (L1): the groups file EXISTS (coupling
+# enforcement is active) but may be corrupt or wrong-shape. The old
+# `jq ... || echo "0"` turned any parse failure into count-zero-and-ALLOW —
+# a malformed groups file silently disabled coupling enforcement. The file's
+# schema is a BARE ARRAY of group objects (written by hooks/write-active-groups);
+# anything else is unreadable state and must block, never pass. Validated HERE,
+# before the basename fast-path below — a corrupt file that happens not to
+# contain the edited file's basename must not slip through the fast-path.
+_groups_unreadable_block() {
+  cat >&2 <<EOF
+BLOCKED: coupling enforcement is active but the groups file is unreadable.
+
+$GROUPS_FILE exists but is not the expected bare JSON array of group objects
+(written by hooks/write-active-groups). A corrupt or wrong-shape groups file
+must not silently disable coupling enforcement — failing closed.
+
+To proceed: regenerate the file (bash hooks/write-active-groups '<json-array>')
+or clear enforcement explicitly (bash hooks/write-active-groups '[]').
+EOF
+  exit 2
+}
+if command -v jq &>/dev/null; then
+  jq -e 'type == "array"' "$GROUPS_FILE" >/dev/null 2>&1 || _groups_unreadable_block
+elif python3 -c "pass" &>/dev/null || python -c "pass" &>/dev/null; then
+  _PY=$(python3 -c "pass" 2>/dev/null && echo "python3" || echo "python")
+  $_PY -c "
+import json,sys
+g=json.load(open('$GROUPS_FILE'))
+sys.exit(0 if isinstance(g,list) else 1)
+" 2>/dev/null || _groups_unreadable_block
+fi
+# (no jq and no python → the grep last-resort below is the only reader; it is
+# imprecise-but-safe in the blocking direction and cannot validate shape)
+
 # If the file isn't tracked at all, allow (it's outside any coupling group)
 if ! grep -q "$(basename "$FILE_PATH")" "$GROUPS_FILE" 2>/dev/null; then
   exit 0
@@ -73,10 +107,11 @@ fi
 # Find which group this file belongs to and check acknowledgment
 # Claude Code sends Windows paths with backslashes; active-groups.json may have
 # either separator. Normalize both to forward slashes inside comparison.
+# (Shape already validated above; a parse failure here is still unreadable state.)
 if command -v jq &>/dev/null; then
   UNACKED=$(jq -r --arg fp "$FILE_PATH" '
     [.[] | select(.acknowledged == false) | select(.files[] | gsub("\\\\"; "/") == ($fp | gsub("\\\\"; "/")))] | length
-  ' "$GROUPS_FILE" 2>/dev/null || echo "0")
+  ' "$GROUPS_FILE" 2>/dev/null) || _groups_unreadable_block
 elif python3 -c "pass" &>/dev/null || python -c "pass" &>/dev/null; then
   PY=$(python3 -c "pass" 2>/dev/null && echo "python3" || echo "python")
   UNACKED=$($PY -c "
@@ -85,7 +120,7 @@ fp='$FILE_PATH'.replace('\\\\','/')
 groups=json.load(open('$GROUPS_FILE'))
 count=sum(1 for g in groups if not g.get('acknowledged',False) and any(f.replace('\\\\','/')==fp for f in g.get('files',[])))
 print(count)
-" 2>/dev/null || echo "0")
+" 2>/dev/null) || _groups_unreadable_block
 else
   # Last resort: grep for the file + check if "acknowledged": false nearby
   # Imprecise but safe (false positives = extra blocks, never false negatives = missed blocks)
