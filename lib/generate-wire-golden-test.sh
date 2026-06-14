@@ -29,9 +29,10 @@
 # If the golden was captured wrong (e.g. from a stale legacy build), the test
 # faithfully enforces the wrong bytes; golden capture provenance is recorded in
 # the contract file ("captured_from") and is a human-verified input, not
-# something this generator can authenticate. SURFACE-ONLY: nothing wires this
-# into a blocking gate — the migrate skill emits it as a Phase-2 deliverable
-# and `dotnet test`/CI run it; promotion to a required check is a human call.
+# something this generator can authenticate. The migrate skill emits this as a
+# Phase-2 deliverable; the shipped CI template runs it as a BLOCKING step
+# (wire-fidelity failure fails the build). Promotion to required is a human
+# call (Class-B); generation itself is Class-A.
 #
 # ── wire-golden.json shape ───────────────────────────────────────────────────
 # {
