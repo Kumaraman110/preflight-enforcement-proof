@@ -95,9 +95,13 @@ import json,sys
 g=json.load(open('$GROUPS_FILE'))
 sys.exit(0 if isinstance(g,list) else 1)
 " 2>/dev/null || _groups_unreadable_block
+else
+  # No JSON parser available — cannot validate shape. The groups file EXISTS
+  # (coupling enforcement is active) but we cannot verify it is the expected
+  # bare-array shape. A garbage file that happens to mention a filename would
+  # bypass enforcement via the grep fallback below. Fail CLOSED.
+  _groups_unreadable_block
 fi
-# (no jq and no python → the grep last-resort below is the only reader; it is
-# imprecise-but-safe in the blocking direction and cannot validate shape)
 
 # If the file isn't tracked at all, allow (it's outside any coupling group)
 if ! grep -q "$(basename "$FILE_PATH")" "$GROUPS_FILE" 2>/dev/null; then
