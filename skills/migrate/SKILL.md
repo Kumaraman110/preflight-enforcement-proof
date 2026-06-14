@@ -309,6 +309,38 @@ This gate exists because the prior SessionToken migration bypassed it — the ag
 
 3. **Test migration:** Match the reference service test project layout and framework. Coverage baseline from config (`test.coverageBaseline`) is the floor. If `test.coverageBaseline` is not configured, default to 85% (or the team standard documented in CLAUDE.md, if higher). This number must match the canonical default stated in the "Coverage discipline" section below — Check 5 executes the same 85% fallback.
 
+   3b. **Wire-fidelity golden test (WIRE-B integration):** For every response/model type the service serializes to callers, emit a WIRE-B golden test wired to the service's **real DI-resolved** `JsonSerializerOptions` — not a hand-built options object. This is the mechanical close for runtime-serialization divergence that WIRE-A (spec-level inference) cannot catch.
+
+   **Steps:**
+   1. Identify the service's configured `JsonSerializerOptions` accessor. This is the options instance that `AddJsonOptions` / `builder.Services.Configure<JsonOptions>` builds — the very same options the pipeline uses at runtime. Typical accessor: `WireGolden.ServiceWireOptions.Options` (a class you create in the test project that mirrors the service's DI wiring).
+   2. For each response type with a known legacy wire format, capture the legacy wire string (from legacy traffic captures, integration tests, or documentation). Build a `wire-golden.json` contract at `.preflight/<service>/wire-golden.json` with shape:
+      ```json
+      {
+        "captured_from": "legacy <source> @ <sha-or-build>, endpoint <route>",
+        "options_accessor": "<Namespace>.ServiceWireOptions.Options",
+        "cases": [
+          {
+            "name": "<TypeName>_<scenario>",
+            "type": "<FullyQualifiedTypeName>",
+            "sample": { "camelCaseField": "value" },
+            "golden": "{\"camelCaseField\":\"value\"}"
+          }
+        ]
+      }
+      ```
+   3. Run the generator:
+      ```bash
+      bash "${FRAMEWORK_ROOT}/lib/generate-wire-golden-test.sh" \
+        ".preflight/${SERVICE_NAME}/wire-golden.json" \
+        "${SERVICE_DIR}.Tests/WireGoldenTests.cs" \
+        --runner xunit
+      ```
+   4. Wire the `ServiceWireOptions` class in the test project to resolve the **same** `JsonSerializerOptions` the migrated service uses in production (read it from `IOptions<JsonOptions>` or replicate the `AddJsonOptions` configuration). Do NOT point it at `new JsonSerializerOptions()` — that tests a fiction.
+
+   **HONESTY LABEL:** The generator is MECHANICAL (byte-compare) but STACK-BOUND (.NET/System.Text.Json) and GOLDEN-BOUND (proves parity against captured strings only). Golden capture provenance is a human-verified input recorded in `captured_from`.
+
+   If no wire-format contract can be captured (no legacy traffic, no integration tests), log this as a COMPLETION-BUG: "wire-fidelity golden test NOT emitted — no legacy wire strings available. WIRE-B is not protecting this service until a golden is captured."
+
 4. **Infrastructure:** Cloud infrastructure as code matching the reference service pattern. Compute, networking, container registry, auto-scaling, secrets management.
 
 5. **Container:** Secure container image — non-root user, fixed port, health check defined in orchestrator config (not in container image).
@@ -475,6 +507,37 @@ jobs:
             exit 1
           fi
           exit $PARITY_EXIT
+
+      - name: Wire-fidelity golden test (WIRE-B)
+        run: |
+          # WIRE-B: byte-compare against captured legacy wire strings.
+          # Runs the generated golden test against the service's REAL serializer
+          # options. A naming/null-policy divergence FAILS THE BUILD.
+          WIRE_CONTRACT=".preflight/{ServiceName}/wire-golden.json"
+          if [ ! -f "$WIRE_CONTRACT" ]; then
+            echo "No wire-golden contract found — WIRE-B skipped (no legacy wire strings captured)"
+            exit 0
+          fi
+          echo "BLOCKED: wire-fidelity golden test is a REQUIRED blocking step."
+          echo "Wire divergence means the migrated service serializes differently from"
+          echo "legacy — callers depending on the legacy wire format will break."
+          # Build and run the wire-golden test via dotnet test
+          TEST_PROJECT="CTIAPI-DEV_Work/CTI.MicroService.IVR.{ServiceName}.Tests/CTI.MicroService.IVR.{ServiceName}.Tests.csproj"
+          if [ ! -f "$TEST_PROJECT" ]; then
+            echo "Test project not found: $TEST_PROJECT"
+            exit 1
+          fi
+          set +e
+          dotnet test "$TEST_PROJECT" --filter "FullyQualifiedName~WireGolden" --no-restore --nologo 2>&1
+          WIRE_EXIT=$?
+          set -e
+          if [ $WIRE_EXIT -ne 0 ]; then
+            echo "BLOCKED: Wire-fidelity golden test failed (exit $WIRE_EXIT)."
+            echo "The migrated service's runtime serialization diverges from legacy wire format."
+            echo "Check JsonSerializerOptions configuration (naming policy, null handling)."
+            exit 1
+          fi
+          echo "Wire-fidelity: PASS (all cases byte-equal to golden)"
 ```
 
 ### Vendoring the parity scripts
@@ -882,6 +945,45 @@ A human reviews the rationale in `parity-override-requested` and, if they agree,
 ---
 
 **All six checks must print PASS.** Only then proceed to the handoff below.
+
+### Check 7 — Wire-fidelity golden test wired to real serializer
+
+```bash
+# Check 7 verifies the WIRE-B golden test was emitted and wired correctly
+WIRE_CONTRACT=".preflight/${SERVICE_NAME}/wire-golden.json"
+WIRE_TEST="${SERVICE_DIR}.Tests/WireGoldenTests.cs"
+
+if [ ! -f "$WIRE_CONTRACT" ]; then
+  echo "CHECK 7 FAIL: wire-golden.json contract missing."
+  echo "Phase 2 step 3b (wire-fidelity) did not produce its output."
+  echo "If no legacy wire strings are available, this is a COMPLETION-BUG —"
+  echo "log it and surface to the user."
+  exit 1
+fi
+
+if [ ! -f "$WIRE_TEST" ]; then
+  echo "CHECK 7 FAIL: WireGoldenTests.cs not found in test project."
+  echo "generate-wire-golden-test.sh did not run or the output path is wrong."
+  exit 1
+fi
+
+# Verify the test is wired to the SERVICE's real options, not a hand-built object.
+# The generated test references the options_accessor from the contract.
+# A "new JsonSerializerOptions()" without the service's naming/null policy would
+# test a fiction — the exact false-green this check exists to prevent.
+if grep -q 'new JsonSerializerOptions()' "$WIRE_TEST" && \
+   ! grep -q 'ServiceWireOptions\|options_accessor\|IOptions<JsonOptions>' "$WIRE_TEST"; then
+  echo "CHECK 7 FAIL: WireGoldenTests.cs appears to use default JsonSerializerOptions()."
+  echo "The test MUST be wired to the service's REAL configured serializer options"
+  echo "(the DI-resolved IOptions<JsonOptions> from AddJsonOptions)."
+  echo "A hand-built options object tests a fiction — casing/null-policy breaks sail through."
+  exit 1
+fi
+
+echo "CHECK 7 PASS: wire-fidelity golden test exists and references a service options accessor"
+```
+
+**All seven checks must print PASS.** Only then proceed to the handoff below.
 
 ## Handoff to /preflight:fix-and-close
 
