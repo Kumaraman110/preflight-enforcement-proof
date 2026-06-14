@@ -115,11 +115,29 @@ GEN_SPEC=""
 if [ -n "$CONFIG_FILE" ]; then
   CURRENT_CONFIG_EXISTS="true"
 
-  # Read all config fields in one call
-  mapfile -t CONFIG_VALS < <(read_json_fields "$CONFIG_FILE" "rubric" "scanProfile" "generation-spec")
-  RUBRIC_PATH="${CONFIG_VALS[0]:-}"
-  SCAN_PROFILE="${CONFIG_VALS[1]:-}"
-  GEN_SPEC="${CONFIG_VALS[2]:-}"
+  # Read rubric separately — it may be an ARRAY (one path per line);
+  # reading it with read_json_fields' batch mapfile misaligns indices
+  # when the array has >1 element (element [1] lands in the scanProfile
+  # slot, [2] in generation-spec). Mirror the proven rubric-validity-gate
+  # pattern: jq with //"" guard, array expansion, tr -d '\r'.
+  if command -v jq &>/dev/null; then
+    RUBRIC_PATH=$(jq -r '(.rubric // "") | if type == "array" then .[] else . end' "$CONFIG_FILE" 2>/dev/null | tr -d '\r' || echo "")
+  elif [ -n "$PYTHON_CMD" ]; then
+    RUBRIC_PATH=$($PYTHON_CMD -c "
+import json
+d=json.load(open('$CONFIG_FILE'))
+v=d.get('rubric','')
+if isinstance(v,list): print('\n'.join(v) if v else '')
+else: print(v if v else '')
+" 2>/dev/null | tr -d '\r' || echo "")
+  else
+    RUBRIC_PATH=$(grep -oP '"rubric"\s*:\s*"\K[^"]+' "$CONFIG_FILE" 2>/dev/null || echo "")
+  fi
+
+  # scanProfile and generation-spec are always scalars — safe to batch-read
+  mapfile -t CONFIG_VALS < <(read_json_fields "$CONFIG_FILE" "scanProfile" "generation-spec")
+  SCAN_PROFILE="${CONFIG_VALS[0]:-}"
+  GEN_SPEC="${CONFIG_VALS[1]:-}"
 
   # Validate rubric paths — if array, ALL elements must resolve
   if [ -z "$RUBRIC_PATH" ]; then

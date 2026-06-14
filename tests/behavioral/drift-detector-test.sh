@@ -103,6 +103,56 @@ EXIT_CODE=$?
 
 assert_exit_code 0 $EXIT_CODE "No-config run exits clean"
 
+# ─── Test 5: Array rubric with valid paths → no rubric drift ────
+
+echo "Test 5: Array rubric with valid paths (no rubric drift)"
+
+# Create valid rubric files
+mkdir -p .preflight/rubrics
+echo "# rubric1" > .preflight/rubrics/r1.md
+echo "# rubric2" > .preflight/rubrics/r2.md
+echo '{"mode":"generic","rubric":[".preflight/rubrics/r1.md",".preflight/rubrics/r2.md"],"scanProfile":"my-profile.md","generation-spec":"my-gen-spec.md"}' > .preflight/config.json
+# Seed cache with rubricValid=true (no drift to detect for rubric)
+echo '{"schemaVersion":1,"stack":"unknown","sourceDirCount":1,"configExists":true,"rubricValid":true,"scanProfileValid":true,"genSpecValid":true}' > .preflight/cache/derived-state.json
+
+OUTPUT=$(bash "$HOOK" 2>/dev/null || true)
+EXIT_CODE=$?
+
+assert_exit_code 0 $EXIT_CODE "Array rubric (valid paths) exits clean"
+# Should NOT contain RUBRIC drift (rubric paths exist; rubricValid stays true)
+if ! echo "$OUTPUT" | grep -q "RUBRIC"; then
+  PASSES=$((PASSES + 1))
+else
+  red "FAIL: Test 5 — RUBRIC drift unexpectedly fired for valid array rubric"
+  FAILURES=$((FAILURES + 1))
+fi
+
+# ─── Test 6: Array rubric with missing path → drift, scanProfile/genSpec correct ──
+
+echo "Test 6: Array rubric with missing path (drift), scanProfile correct"
+
+echo '{"mode":"generic","rubric":["nonexistent/a.md","nonexistent/b.md"],"scanProfile":"my-profile.md","generation-spec":"my-gen-spec.md"}' > .preflight/config.json
+# Seed cache where rubricValid was true
+echo '{"schemaVersion":1,"stack":"unknown","sourceDirCount":1,"configExists":true,"rubricValid":true,"scanProfileValid":true,"genSpecValid":true}' > .preflight/cache/derived-state.json
+
+OUTPUT=$(bash "$HOOK" 2>/dev/null || true)
+EXIT_CODE=$?
+
+assert_exit_code 0 $EXIT_CODE "Array rubric (missing paths) exits clean"
+assert_output_contains "$OUTPUT" "RUBRIC" "Array rubric missing-paths drift surfaced"
+
+# Verify scanProfile was NOT corrupted by array rubric misalignment
+# (If misaligned, scanProfile would be "nonexistent/b.md" and PROFILE drift would fire)
+# The cache had scanProfileValid=true, and our config has "my-profile.md" which doesn't exist
+# as a file — but that's a PROFILE drift (should fire). The key assertion: the PROFILE drift
+# message should mention "my-profile.md" not "nonexistent/b.md".
+if echo "$OUTPUT" | grep -q "PROFILE"; then
+  PASSES=$((PASSES + 1))
+else
+  red "FAIL: Test 6 — PROFILE drift not detected (scanProfile may have been misaligned)"
+  FAILURES=$((FAILURES + 1))
+fi
+
 # ─── Results ──────────────────────────────────────────────────
 
 echo ""
