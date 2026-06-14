@@ -1,188 +1,196 @@
-#!/usr/bin/env bash
-# PreToolUse hook for Write and Edit. Blocks overwrites of an existing
-# CLAUDE.md or .preflight/config.json unless an approval sentinel is
-# present and fresh (HEAD-stamped).
-#
-# New-file creation always passes. Unrelated files always pass.
-#
-# FAIL BEHAVIOR:
-#   On well-formed JSON (the only input Claude Code produces), the gate
-#   fails CLOSED for the two protected files: a write to an existing
-#   CLAUDE.md or .preflight/config.json without a fresh approval sentinel
-#   is BLOCKED. On malformed JSON (which Claude Code does not produce),
-#   the gate passes through. A substring fallback was deliberately rejected
-#   because "CLAUDE.md" appears in legitimate file contents constantly and
-#   would cause false blocks of normal edits. The existing fail-closed
-#   branches for well-formed-but-problematic cases (unparseable sentinel,
-#   not-in-git-repo) remain unchanged.
-#
-# INPUT CONTRACT:
-#   Claude Code pipes a JSON object to stdin: {"tool_name":"Write",
-#   "tool_input":{"file_path":"...", "content":"..."}, ...}. We read
-#   stdin and extract tool_input.file_path via jq (or node/grep fallback).
-#
-# Exit 0 = allow
-# Exit 2 = block (reason on stderr; Claude Code blocks on exit 2)
-#
-# DE-STEER (gap #5, Option A): the no-sentinel block message used to PRINT the
-# exact mkdir+echo command that mints the approval sentinel — handing the blocked
-# actor its own bypass (observed live: an agent ran the printed recipe and the
-# next write passed). Same defect class as the A1 steering fix: a block message
-# must never recommend the action that defeats the block. The message now tells
-# the agent to surface to a HUMAN, who runs the approval step from their own
-# shell. NOTE this is a de-steer, not a mechanical close — an agent that already
-# knows the sentinel format can still mint it via shell (see the heuristic
-# tripwire in pre-push-gate-check and docs/parity-gate-limitations.md).
+1|#!/usr/bin/env bash
+2|# PreToolUse hook for Write and Edit. Blocks overwrites of an existing
+3|# CLAUDE.md or .preflight/config.json unless an approval sentinel is
+4|# present and fresh (HEAD-stamped).
+5|#
+6|# New-file creation always passes. Unrelated files always pass.
+7|#
+8|# FAIL BEHAVIOR:
+9|#   On well-formed JSON (the only input Claude Code produces), the gate
+10|#   fails CLOSED for the two protected files: a write to an existing
+11|#   CLAUDE.md or .preflight/config.json without a fresh approval sentinel
+12|#   is BLOCKED. On malformed JSON (which Claude Code does not produce),
+13|#   the gate passes through. A substring fallback was deliberately rejected
+14|#   because "CLAUDE.md" appears in legitimate file contents constantly and
+15|#   would cause false blocks of normal edits. The existing fail-closed
+16|#   branches for well-formed-but-problematic cases (unparseable sentinel,
+17|#   not-in-git-repo) remain unchanged.
+18|#
+19|# INPUT CONTRACT:
+20|#   Claude Code pipes a JSON object to stdin: {"tool_name":"Write",
+21|#   "tool_input":{"file_path":"...", "content":"..."}, ...}. We read
+22|#   stdin and extract tool_input.file_path via jq (or node/grep fallback).
+23|#
+24|# Exit 0 = allow
+25|# Exit 2 = block (reason on stderr; Claude Code blocks on exit 2)
+26|#
+27|# DE-STEER (gap #5, Option A): the no-sentinel block message used to PRINT the
+28|# exact mkdir+echo command that mints the approval sentinel — handing the blocked
+29|# actor its own bypass (observed live: an agent ran the printed recipe and the
+30|# next write passed). Same defect class as the A1 steering fix: a block message
+31|# must never recommend the action that defeats the block. The message now tells
+32|# the agent to surface to a HUMAN, who runs the approval step from their own
+33|# shell. NOTE this is a de-steer, not a mechanical close — an agent that already
+34|# knows the sentinel format can still mint it via shell (see the heuristic
+35|# tripwire in pre-push-gate-check and docs/parity-gate-limitations.md).
+36|
+37|set -uo pipefail
 
-set -uo pipefail
+# --- Heartbeat (passive liveness self-evidencing) ---
+_hb_self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_hb_plugin_root="$(cd "$_hb_self_dir/.." && pwd)"
+[ -f "$_hb_plugin_root/lib/heartbeat.sh" ] && source "$_hb_plugin_root/lib/heartbeat.sh"
+_write_heartbeat "bootstrap-write-gate"
 
-STDIN_JSON="$(cat)"
-SENTINEL=".preflight/gate/bootstrap-write-approved"
-
-PROTECTED_FILES="CLAUDE.md .preflight/config.json .preflight/gate/bootstrap-write-approved"
-
-# ─── Extract file_path from stdin JSON ───────────────────────
-
-FILE_PATH=""
-if command -v jq &>/dev/null; then
-  FILE_PATH=$(printf '%s' "$STDIN_JSON" | jq -r '.tool_input.file_path // empty' 2>/dev/null || echo "")
-elif command -v node &>/dev/null; then
-  FILE_PATH=$(printf '%s' "$STDIN_JSON" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const j=JSON.parse(d);process.stdout.write((j.tool_input&&j.tool_input.file_path)||'')}catch(e){}})" 2>/dev/null || echo "")
-else
-  FILE_PATH=$(printf '%s' "$STDIN_JSON" | grep -o '"file_path"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"file_path"[[:space:]]*:[[:space:]]*"//;s/"$//' || echo "")
-fi
-
-# If extraction yielded nothing (malformed JSON), FILE_PATH stays empty,
-# is_protected returns nothing, and the gate passes through. See FAIL
-# BEHAVIOR in the header comment for rationale.
-
-# ─── Determine if target is protected ────────────────────────
-
-# Normalize: extract just the basename or relative path for comparison
-# Tool input uses absolute paths; we check if it ends with a protected name
-is_protected() {
-  local target="$1"
-  for pf in $PROTECTED_FILES; do
-    # Match: exact filename at end of path (with / or \ separator)
-    if [ "$(basename "$target")" = "$(basename "$pf")" ]; then
-      # For config.json, also verify it's under .preflight/
-      if [ "$pf" = ".preflight/config.json" ]; then
-        if echo "$target" | grep -qE '(^|[/\\])\.preflight[/\\]config\.json$'; then
-          echo "$pf"
-          return 0
-        fi
-      else
-        echo "$pf"
-        return 0
-      fi
-    fi
-  done
-  return 1
-}
-
-PROTECTED_NAME=""
-PROTECTED_NAME=$(is_protected "$FILE_PATH") || true
-
-# Not a protected file → allow immediately
-if [ -z "$PROTECTED_NAME" ]; then
-  exit 0
-fi
-
-# ─── Protected file — check if it already exists ─────────────
-
-# Resolve the path relative to cwd for the existence check
-# The file_path from tool input is absolute; check it directly
-if [ ! -f "$FILE_PATH" ]; then
-  # Also check relative form in case absolute path doesn't match
-  RELATIVE_PATH="$PROTECTED_NAME"
-  if [ ! -f "$RELATIVE_PATH" ]; then
-    # File doesn't exist — this is creation, not clobber.
-    # SPECIAL CASE: the approval sentinel must NEVER be created by the agent.
-    # Only a human lead may mint it from their own shell.
-    if [ "$PROTECTED_NAME" = ".preflight/gate/bootstrap-write-approved" ]; then
-      cat >&2 <<EOF
-BLOCKED: Agent must not create the approval sentinel ($PROTECTED_NAME).
-This file must be written by a HUMAN lead from their own shell.
-See docs/parity-gate-limitations.md.
-EOF
-      exit 2
-    fi
-    # For CLAUDE.md and config.json, new-file creation is allowed (first-time setup).
-    exit 0
-  fi
-fi
-
-# ─── File exists — require approval sentinel ─────────────────
-
-if [ ! -f "$SENTINEL" ]; then
-  cat >&2 <<EOF
-BLOCKED: Refusing to overwrite existing $PROTECTED_NAME.
-Overwriting this file requires explicit HUMAN lead approval.
-(No approval sentinel present at $SENTINEL.)
-
-Do NOT create the approval sentinel yourself — that would be self-approval.
-Surface this block to a human lead; the human runs the approval step from
-their own shell. See docs/parity-gate-limitations.md.
-EOF
-  exit 2
-fi
-
-# ─── Sentinel exists — validate freshness ────────────────────
-
-CURRENT_HEAD=$(git rev-parse HEAD 2>/dev/null || echo "")
-if [ -z "$CURRENT_HEAD" ]; then
-  cat >&2 <<EOF
-BLOCKED: Cannot verify approval sentinel — not in a git repository.
-EOF
-  exit 2
-fi
-
-# Parse sentinel
-SENTINEL_HEAD=""
-SENTINEL_FILES=""
-if command -v jq &>/dev/null; then
-  SENTINEL_HEAD=$(jq -r '.approvedAtHEAD // empty' "$SENTINEL" 2>/dev/null || echo "")
-  SENTINEL_FILES=$(jq -r '.approvedFiles[]? // empty' "$SENTINEL" 2>/dev/null || echo "")
-elif command -v node &>/dev/null; then
-  SENTINEL_HEAD=$(node -e "const d=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'));process.stdout.write(d.approvedAtHEAD||'')" "$SENTINEL" 2>/dev/null || echo "")
-  SENTINEL_FILES=$(node -e "const d=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'));(d.approvedFiles||[]).forEach(f=>console.log(f))" "$SENTINEL" 2>/dev/null || echo "")
-else
-  # Cannot parse sentinel — fail closed for protected files
-  cat >&2 <<EOF
-BLOCKED: Cannot parse approval sentinel (no jq or node available).
-Failing closed for protected file $PROTECTED_NAME.
-EOF
-  exit 2
-fi
-
-# Validate HEAD freshness
-if [ -z "$SENTINEL_HEAD" ]; then
-  cat >&2 <<EOF
-BLOCKED: Approval sentinel is malformed (no approvedAtHEAD field).
-EOF
-  exit 2
-fi
-
-if [ "$SENTINEL_HEAD" != "$CURRENT_HEAD" ]; then
-  cat >&2 <<EOF
-BLOCKED: Approval sentinel is stale (HEAD moved since approval).
-Sentinel HEAD: $SENTINEL_HEAD
-Current HEAD:  $CURRENT_HEAD
-Re-confirm with the lead before overwriting $PROTECTED_NAME.
-EOF
-  exit 2
-fi
-
-# Validate file coverage
-if [ -n "$SENTINEL_FILES" ]; then
-  if ! echo "$SENTINEL_FILES" | grep -qF "$PROTECTED_NAME"; then
-    cat >&2 <<EOF
-BLOCKED: Approval sentinel does not cover $PROTECTED_NAME.
-Approved files: $(echo "$SENTINEL_FILES" | tr '\n' ' ')
-EOF
-    exit 2
-  fi
-fi
-
-# All checks pass — allow the write
-exit 0
+38|
+39|STDIN_JSON="$(cat)"
+40|SENTINEL=".preflight/gate/bootstrap-write-approved"
+41|
+42|PROTECTED_FILES="CLAUDE.md .preflight/config.json .preflight/gate/bootstrap-write-approved"
+43|
+44|# ─── Extract file_path from stdin JSON ───────────────────────
+45|
+46|FILE_PATH=""
+47|if command -v jq &>/dev/null; then
+48|  FILE_PATH=$(printf '%s' "$STDIN_JSON" | jq -r '.tool_input.file_path // empty' 2>/dev/null || echo "")
+49|elif command -v node &>/dev/null; then
+50|  FILE_PATH=$(printf '%s' "$STDIN_JSON" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const j=JSON.parse(d);process.stdout.write((j.tool_input&&j.tool_input.file_path)||'')}catch(e){}})" 2>/dev/null || echo "")
+51|else
+52|  FILE_PATH=$(printf '%s' "$STDIN_JSON" | grep -o '"file_path"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"file_path"[[:space:]]*:[[:space:]]*"//;s/"$//' || echo "")
+53|fi
+54|
+55|# If extraction yielded nothing (malformed JSON), FILE_PATH stays empty,
+56|# is_protected returns nothing, and the gate passes through. See FAIL
+57|# BEHAVIOR in the header comment for rationale.
+58|
+59|# ─── Determine if target is protected ────────────────────────
+60|
+61|# Normalize: extract just the basename or relative path for comparison
+62|# Tool input uses absolute paths; we check if it ends with a protected name
+63|is_protected() {
+64|  local target="$1"
+65|  for pf in $PROTECTED_FILES; do
+66|    # Match: exact filename at end of path (with / or \ separator)
+67|    if [ "$(basename "$target")" = "$(basename "$pf")" ]; then
+68|      # For config.json, also verify it's under .preflight/
+69|      if [ "$pf" = ".preflight/config.json" ]; then
+70|        if echo "$target" | grep -qE '(^|[/\\])\.preflight[/\\]config\.json$'; then
+71|          echo "$pf"
+72|          return 0
+73|        fi
+74|      else
+75|        echo "$pf"
+76|        return 0
+77|      fi
+78|    fi
+79|  done
+80|  return 1
+81|}
+82|
+83|PROTECTED_NAME=""
+84|PROTECTED_NAME=$(is_protected "$FILE_PATH") || true
+85|
+86|# Not a protected file → allow immediately
+87|if [ -z "$PROTECTED_NAME" ]; then
+88|  exit 0
+89|fi
+90|
+91|# ─── Protected file — check if it already exists ─────────────
+92|
+93|# Resolve the path relative to cwd for the existence check
+94|# The file_path from tool input is absolute; check it directly
+95|if [ ! -f "$FILE_PATH" ]; then
+96|  # Also check relative form in case absolute path doesn't match
+97|  RELATIVE_PATH="$PROTECTED_NAME"
+98|  if [ ! -f "$RELATIVE_PATH" ]; then
+99|    # File doesn't exist — this is creation, not clobber.
+100|    # SPECIAL CASE: the approval sentinel must NEVER be created by the agent.
+101|    # Only a human lead may mint it from their own shell.
+102|    if [ "$PROTECTED_NAME" = ".preflight/gate/bootstrap-write-approved" ]; then
+103|      cat >&2 <<EOF
+104|BLOCKED: Agent must not create the approval sentinel ($PROTECTED_NAME).
+105|This file must be written by a HUMAN lead from their own shell.
+106|See docs/parity-gate-limitations.md.
+107|EOF
+108|      exit 2
+109|    fi
+110|    # For CLAUDE.md and config.json, new-file creation is allowed (first-time setup).
+111|    exit 0
+112|  fi
+113|fi
+114|
+115|# ─── File exists — require approval sentinel ─────────────────
+116|
+117|if [ ! -f "$SENTINEL" ]; then
+118|  cat >&2 <<EOF
+119|BLOCKED: Refusing to overwrite existing $PROTECTED_NAME.
+120|Overwriting this file requires explicit HUMAN lead approval.
+121|(No approval sentinel present at $SENTINEL.)
+122|
+123|Do NOT create the approval sentinel yourself — that would be self-approval.
+124|Surface this block to a human lead; the human runs the approval step from
+125|their own shell. See docs/parity-gate-limitations.md.
+126|EOF
+127|  exit 2
+128|fi
+129|
+130|# ─── Sentinel exists — validate freshness ────────────────────
+131|
+132|CURRENT_HEAD=$(git rev-parse HEAD 2>/dev/null || echo "")
+133|if [ -z "$CURRENT_HEAD" ]; then
+134|  cat >&2 <<EOF
+135|BLOCKED: Cannot verify approval sentinel — not in a git repository.
+136|EOF
+137|  exit 2
+138|fi
+139|
+140|# Parse sentinel
+141|SENTINEL_HEAD=""
+142|SENTINEL_FILES=""
+143|if command -v jq &>/dev/null; then
+144|  SENTINEL_HEAD=$(jq -r '.approvedAtHEAD // empty' "$SENTINEL" 2>/dev/null || echo "")
+145|  SENTINEL_FILES=$(jq -r '.approvedFiles[]? // empty' "$SENTINEL" 2>/dev/null || echo "")
+146|elif command -v node &>/dev/null; then
+147|  SENTINEL_HEAD=$(node -e "const d=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'));process.stdout.write(d.approvedAtHEAD||'')" "$SENTINEL" 2>/dev/null || echo "")
+148|  SENTINEL_FILES=$(node -e "const d=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8'));(d.approvedFiles||[]).forEach(f=>console.log(f))" "$SENTINEL" 2>/dev/null || echo "")
+149|else
+150|  # Cannot parse sentinel — fail closed for protected files
+151|  cat >&2 <<EOF
+152|BLOCKED: Cannot parse approval sentinel (no jq or node available).
+153|Failing closed for protected file $PROTECTED_NAME.
+154|EOF
+155|  exit 2
+156|fi
+157|
+158|# Validate HEAD freshness
+159|if [ -z "$SENTINEL_HEAD" ]; then
+160|  cat >&2 <<EOF
+161|BLOCKED: Approval sentinel is malformed (no approvedAtHEAD field).
+162|EOF
+163|  exit 2
+164|fi
+165|
+166|if [ "$SENTINEL_HEAD" != "$CURRENT_HEAD" ]; then
+167|  cat >&2 <<EOF
+168|BLOCKED: Approval sentinel is stale (HEAD moved since approval).
+169|Sentinel HEAD: $SENTINEL_HEAD
+170|Current HEAD:  $CURRENT_HEAD
+171|Re-confirm with the lead before overwriting $PROTECTED_NAME.
+172|EOF
+173|  exit 2
+174|fi
+175|
+176|# Validate file coverage
+177|if [ -n "$SENTINEL_FILES" ]; then
+178|  if ! echo "$SENTINEL_FILES" | grep -qF "$PROTECTED_NAME"; then
+179|    cat >&2 <<EOF
+180|BLOCKED: Approval sentinel does not cover $PROTECTED_NAME.
+181|Approved files: $(echo "$SENTINEL_FILES" | tr '\n' ' ')
+182|EOF
+183|    exit 2
+184|  fi
+185|fi
+186|
+187|# All checks pass — allow the write
+188|exit 0
+189|

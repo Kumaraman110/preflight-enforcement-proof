@@ -97,11 +97,39 @@ if [ -n "$CONFIG_FILE" ]; then
   fi
 fi
 
+# ── E3 heartbeat freshness probe: check that every registered PreToolUse gate ──
+# has fired recently (recorded via passive heartbeat side-effect). A gate with
+# no heartbeat or a stale one is flagged — it may be registered-but-dead.
+# This is PASSIVE: the heartbeat is written as a side-effect of the gate doing
+# its normal job; this check reads those files. ZERO user action.
+HB_WARN=""
+HB_LIB="$PLUGIN_ROOT/lib/heartbeat.sh"
+if [ -f "$HB_LIB" ] && [ -f "$PLUGIN_ROOT/hooks/hooks.json" ]; then
+  source "$HB_LIB"
+  HB_DEAD=""
+  if command -v jq >/dev/null 2>&1; then
+    GATE_NAMES=$(jq -r '.hooks.PreToolUse[]?.hooks[]?.command // empty' "$PLUGIN_ROOT/hooks/hooks.json" 2>/dev/null \
+      | sed 's/.*run-hook.cmd" //' | sed 's/ .*//' | sort -u)
+    for gn in $GATE_NAMES; do
+      [ -z "$gn" ] && continue
+      if ! _check_heartbeat_fresh "$gn" 86400 2>/dev/null; then
+        HB_DEAD="$HB_DEAD $gn"
+      fi
+    done
+  fi
+  if [ -n "$HB_DEAD" ]; then
+    HB_WARN="⚠ GATE LIVENESS: no recent heartbeat for:$HB_DEAD\\\\nThese gates may be registered-but-dead. Run 'bash tools/preflight-selftest.sh' to diagnose.\\\\nHeartbeats are passive — no action needed if gates have not yet fired in this session."
+  fi
+fi
+
 # Combine status + routing into additionalContext
 # The status line gives metadata. The routing content gives behavioral rules.
 FULL_CONTEXT="$STATUS"
 if [ -n "$REG_WARN" ]; then
-  FULL_CONTEXT="$FULL_CONTEXT\\n\\n$REG_WARN"
+  FULL_CONTEXT="$FULL_CONTEXT\\\\n\\\\n$REG_WARN"
+fi
+if [ -n "$HB_WARN" ]; then
+  FULL_CONTEXT="$FULL_CONTEXT\\\\n\\\\n$HB_WARN"
 fi
 if [ -n "$ROUTING_CONTENT" ]; then
   # Escape for JSON: newlines, quotes, backslashes

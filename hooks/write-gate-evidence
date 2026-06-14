@@ -8,6 +8,14 @@
 # NOTE: parity-clean is HUMAN-ONLY by convention (see skills/migrate/SKILL.md /
 # docs/parity-gate-limitations.md). This script enforces NO actor check — the
 # restriction is prompt-level, not mechanical.
+
+set -euo pipefail
+
+# --- Heartbeat (passive liveness self-evidencing) ---
+_hb_self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_hb_plugin_root="$(cd "$_hb_self_dir/.." && pwd)"
+[ -f "$_hb_plugin_root/lib/heartbeat.sh" ] && source "$_hb_plugin_root/lib/heartbeat.sh"
+_write_heartbeat "write-gate-evidence"
 #
 # Writes a file to .preflight/gate/<gate-name> with:
 #   - Current timestamp
