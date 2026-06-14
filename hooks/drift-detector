@@ -63,7 +63,11 @@ read_json_fields() {
   fi
   if command -v jq &>/dev/null; then
     for f in "${fields[@]}"; do
-      jq -r ".[\"$f\"] // \"\"" "$file" 2>/dev/null || echo ""
+      # Array fields: one element per line (mirrors python fallback contract).
+      # tr -d '\r': MSYS jq -r emits CRLF; trailing \r breaks every downstream
+      # comparison and mapfile element (was: CACHED_SCHEMA=$'\r' triggered
+      # false schema-mismatch → overwrite-and-exit before drift checks ran).
+      jq -r "(.[\"$f\"] // \"\") | if type == \"array\" then .[] else . end" "$file" 2>/dev/null | tr -d '\r' || echo ""
     done
   elif [ -n "$PYTHON_CMD" ]; then
     local field_list=""
