@@ -275,6 +275,12 @@ tc=$(python -c "import json,sys; d=json.load(open(sys.argv[1])); print(d['overri
 
 assert_eq "$tc" "make test" "Trailing whitespace in heading works"
 
+# Test 11: _extract_json_escape handles double quotes
+echo "Test 11: _extract_json_escape escapes double quotes"
+setup_workspace
+result=$(_extract_json_escape 'hello"world')
+assert_eq "$result" 'hello\"world' "_extract_json_escape escapes double quotes"
+
 # ─── Results ──────────────────────────────────────────────────
 
 echo ""
