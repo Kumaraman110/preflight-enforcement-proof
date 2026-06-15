@@ -49,7 +49,6 @@ REPO=""
 BRANCH="main"
 ACTION="dry-run"  # dry-run | apply | verify
 AGENT_IDENTITY="${GITHUB_ACTOR:-github-actions[bot]}"
-RULESET_NAME="preflight-protected-${BRANCH}"
 
 # ─── Parse args ──────────────────────────────────────────────────
 while [ $# -gt 0 ]; do
@@ -70,6 +69,13 @@ while [ $# -gt 0 ]; do
     *) echo "Unknown arg: $1"; exit 2 ;;
   esac
 done
+
+# Derive the ruleset name AFTER parsing so --branch is reflected. Slashes in a
+# branch (feature/preflight-framework) are not valid in a ruleset name, so map
+# them to '-'. Computed here, not in the defaults block, because $BRANCH is only
+# final once args are parsed (a stale "preflight-protected-main" would otherwise
+# mislabel a feature-branch ruleset and break idempotent lookup).
+RULESET_NAME="preflight-protected-${BRANCH//\//-}"
 
 if [ -z "$REPO" ]; then
   echo "ERROR: --repo is required (e.g., --repo United-Airlines-Org/preflight)" >&2
