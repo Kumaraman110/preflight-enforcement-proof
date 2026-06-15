@@ -14,6 +14,13 @@
 # FAIL BEHAVIOR:
 #   On well-formed JSON (the only input Claude Code produces), the gate
 #   blocks edits to files in unacknowledged coupling groups. On malformed
+
+# --- Heartbeat (passive liveness self-evidencing) ---
+_hb_self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_hb_plugin_root="$(cd "$_hb_self_dir/.." && pwd)"
+[ -f "$_hb_plugin_root/lib/heartbeat.sh" ] && source "$_hb_plugin_root/lib/heartbeat.sh"
+_write_heartbeat "coupled-edit-gate"
+
 #   JSON (which Claude Code does not produce), extraction yields empty,
 #   and the gate passes through. A grep-blob fallback was deliberately
 #   rejected because file_path appears in EVERY Edit tool call — grepping
@@ -33,12 +40,6 @@
 # Exit 2 = block the edit (outputs reason to stderr; Claude Code blocks on exit 2)
 
 set -euo pipefail
-
-# --- Heartbeat (passive liveness self-evidencing) ---
-_hb_self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-_hb_plugin_root="$(cd "$_hb_self_dir/.." && pwd)"
-[ -f "$_hb_plugin_root/lib/heartbeat.sh" ] && source "$_hb_plugin_root/lib/heartbeat.sh"
-_write_heartbeat "coupled-edit-gate"
 
 STDIN_JSON="$(cat)"
 GATE_DIR=".preflight/gate"

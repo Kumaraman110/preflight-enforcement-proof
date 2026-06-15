@@ -1,47 +1,19 @@
-1|#!/usr/bin/env bash
-2|# PreToolUse hook for subagent-spawn calls. Only activates when spawning a
-3|# code-reviewer sub-agent. Blocks if no valid rubric can be resolved.
-4|#
-5|# MATCHER NOTE: registered in hooks.json with matcher "Agent|Task" (exact-token
-6|# alternation, supported by Claude Code's matcher syntax). The tool that spawns a
-7|# sub-agent is named "Agent" in current Claude Code; it was historically "Task"
-8|# (and the SubagentStart event is yet another surface). Matching BOTH tokens keeps
-9|# this gate live across versions instead of going silently dead if the token differs
-10|# from whatever a given Claude Code build emits. The body below is matcher-agnostic:
-11|# it reads tool_input.subagent_type and only acts on a code-reviewer spawn, so a
-12|# false match on the other token is harmless (subagent_type != code-reviewer -> exit 0).
-13|#
-14|# INPUT CONTRACT:
-15|#   Claude Code pipes a JSON object to stdin: {"tool_name":"Agent",
-16|#   "tool_input":{"prompt":"...","subagent_type":"code-reviewer",...}}.
-17|#   We read stdin and extract tool_input.subagent_type via jq (or
-18|#   node/grep fallback).
-19|#
-20|# FAIL BEHAVIOR:
-21|#   On well-formed JSON (the only input Claude Code produces), the gate
-22|#   blocks code-reviewer spawns when no valid rubric resolves. On malformed
-23|#   JSON (which Claude Code does not produce), extraction yields empty,
-24|#   SUBAGENT_TYPE is "" which != "code-reviewer", so the gate passes
-25|#   through (exit 0). A grep-blob fallback was deliberately rejected
-26|#   because "code-reviewer" can appear in Agent prompt text without
-27|#   subagent_type being set to it — grepping the blob would false-block
-28|#   Agent calls that merely MENTION code-reviewer in their prompt.
-29|#
-30|# Gate semantics (differ from drift-detector's informational signal):
-31|#   - No config file found         → BLOCK (Stage 1 without rubric has no value)
-32|#   - Config found, no rubric key  → BLOCK (same reason)
-33|#   - Rubric paths don't resolve   → BLOCK (review against phantom rubric is worse than no review)
-34|#   - All rubric paths resolve     → ALLOW
-35|#
-36|# Path reachability is delegated to the OS's existence check. Any unreachable
-37|# path — missing file, broken symlink, permission-denied, unmounted volume —
-38|# blocks identically. Platform-specific resolution behavior (e.g., Windows
-39|# symlink permissions) is the OS's contract, not this gate's.
-40|#
-41|# Exit 0 = allow the tool call
-42|# Exit 2 = block the tool call (stderr fed back to Claude; Claude Code blocks on exit 2)
-43|
-44|set -euo pipefail
+#!/usr/bin/env bash
+# PreToolUse hook for subagent-spawn calls. Only activates when spawning a
+# code-reviewer sub-agent. Blocks if no valid rubric can be resolved.
+#
+# MATCHER NOTE: registered in hooks.json with matcher "Agent|Task" (exact-token
+# alternation, supported by Claude Code's matcher syntax). The tool that spawns a
+# sub-agent is named "Agent" in current Claude Code; it was historically "Task"
+# (and the SubagentStart event is yet another surface). Matching BOTH tokens keeps
+# this gate live across versions instead of going silently dead if the token differs
+# from whatever a given Claude Code build emits. The body below is matcher-agnostic:
+# it reads tool_input.subagent_type and only acts on a code-reviewer spawn, so a
+# false match on the other token is harmless (subagent_type != code-reviewer -> exit 0).
+#
+# INPUT CONTRACT:
+#   Claude Code pipes a JSON object to stdin: {"tool_name":"Agent",
+#   "tool_input":{"prompt":"...","subagent_type":"code-reviewer",...}}.
 
 # --- Heartbeat (passive liveness self-evidencing) ---
 _hb_self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -49,106 +21,133 @@ _hb_plugin_root="$(cd "$_hb_self_dir/.." && pwd)"
 [ -f "$_hb_plugin_root/lib/heartbeat.sh" ] && source "$_hb_plugin_root/lib/heartbeat.sh"
 _write_heartbeat "rubric-validity-gate"
 
-45|
-46|STDIN_JSON="$(cat)"
-47|
-48|# ─── Extract subagent_type from stdin JSON ────────────────────
-49|
-50|SUBAGENT_TYPE=""
-51|if command -v jq &>/dev/null; then
-52|  SUBAGENT_TYPE=$(printf '%s' "$STDIN_JSON" | jq -r '.tool_input.subagent_type // ""' 2>/dev/null || echo "")
-53|elif command -v node &>/dev/null; then
-54|  SUBAGENT_TYPE=$(printf '%s' "$STDIN_JSON" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const j=JSON.parse(d);process.stdout.write((j.tool_input&&j.tool_input.subagent_type)||'')}catch(e){}})" 2>/dev/null || echo "")
-55|else
-56|  SUBAGENT_TYPE=$(printf '%s' "$STDIN_JSON" | grep -o '"subagent_type"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"subagent_type"[[:space:]]*:[[:space:]]*"//;s/"$//' || echo "")
-57|fi
-58|
-59|# Only gate on code-reviewer invocations. The framework namespaces subagent_type
-60|# with the plugin prefix (e.g., "preflight:code-reviewer"). Match bare or any
-61|# "<prefix>:code-reviewer" form. The colon prevents false-positives like
-62|# "not-a-code-reviewer" or "code-reviewer-helper".
-63|if ! { [ "$SUBAGENT_TYPE" = "code-reviewer" ] || [[ "$SUBAGENT_TYPE" == *":code-reviewer" ]]; }; then
-64|  exit 0
-65|fi
-66|
-67|# ─── This IS a code-reviewer spawn — validate rubric ─────────
-68|
-69|SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-70|PLUGIN_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-71|
-72|# Detect a working Python interpreter (handles Windows Store stubs)
-73|PYTHON_CMD=""
-74|for py_candidate in python python3; do
-75|  if command -v "$py_candidate" &>/dev/null; then
-76|    if "$py_candidate" -c "pass" &>/dev/null 2>&1; then
-77|      PYTHON_CMD="$py_candidate"
-78|      break
-79|    fi
-80|  fi
-81|done
-82|
-83|# Read a JSON field from a file (supports string and array values)
-84|read_rubric_field() {
-85|  local file="$1"
-86|  if [ ! -f "$file" ]; then
-87|    echo ""
-88|    return
-89|  fi
-90|  if command -v jq &>/dev/null; then
-91|    # Arrays print one path per line (same contract as the python fallback below);
-92|    # the raw-JSON form ("[", quoted elements) false-blocked valid array rubrics.
-93|    # tr -d '\r': Windows jq emits CRLF in -r mode; a trailing \r breaks [ -f ].
-94|    jq -r '(.rubric // "") | if type == "array" then .[] else . end' "$file" 2>/dev/null | tr -d '\r' || echo ""
-95|  elif [ -n "$PYTHON_CMD" ]; then
-96|    $PYTHON_CMD -c "
-97|import json
-98|d=json.load(open('$file'))
-99|v=d.get('rubric', '')
-100|if isinstance(v, list): print('\n'.join(v) if v else '')
-101|else: print(v if v else '')
-102|" 2>/dev/null | tr -d '\r' || echo ""
-103|  else
-104|    grep -oP '"rubric"\s*:\s*"\K[^"]+' "$file" 2>/dev/null || echo ""
-105|  fi
-106|}
-107|
-108|# ─── Locate config ───────────────────────────────────────────
-109|
-110|CONFIG_FILE=""
-111|for candidate in ".preflight/config.json" ".cpsl/config.json" ".forge.json"; do
-112|  if [ -f "$candidate" ]; then
-113|    CONFIG_FILE="$candidate"
-114|    break
-115|  fi
-116|done
-117|
-118|if [ -z "$CONFIG_FILE" ]; then
-119|  echo "BLOCKED: No preflight config found (.preflight/config.json, .cpsl/config.json, .forge.json)." >&2
-120|  echo "Stage 1 review requires a rubric. Configure one via .preflight/config.json." >&2
-121|  exit 2
-122|fi
-123|
-124|# ─── Extract and validate rubric paths ───────────────────────
-125|
-126|RUBRIC_PATH=$(read_rubric_field "$CONFIG_FILE")
-127|
-128|if [ -z "$RUBRIC_PATH" ]; then
-129|  echo "BLOCKED: Config ($CONFIG_FILE) has no 'rubric' field." >&2
-130|  echo "Stage 1 review requires a rubric path. Add a \"rubric\" key to your config." >&2
-131|  exit 2
-132|fi
-133|
-134|# Validate all rubric paths (supports array — one path per line)
-135|while IFS= read -r rp; do
-136|  [ -z "$rp" ] && continue
-137|  if [ ! -f "$rp" ] && [ ! -f "$PLUGIN_ROOT/$rp" ]; then
-138|    echo "BLOCKED: Rubric path not found: $rp" >&2
-139|    echo "Checked: $rp (absolute/relative to cwd) and $PLUGIN_ROOT/$rp (relative to plugin)" >&2
-140|    echo "Fix the 'rubric' path in $CONFIG_FILE or create the missing file." >&2
-141|    exit 2
-142|  fi
-143|done <<< "$RUBRIC_PATH"
-144|
-145|# All rubric paths resolve — allow the code-reviewer to proceed
-146|exit 0
-147|
+#   We read stdin and extract tool_input.subagent_type via jq (or
+#   node/grep fallback).
+#
+# FAIL BEHAVIOR:
+#   On well-formed JSON (the only input Claude Code produces), the gate
+#   blocks code-reviewer spawns when no valid rubric resolves. On malformed
+#   JSON (which Claude Code does not produce), extraction yields empty,
+#   SUBAGENT_TYPE is "" which != "code-reviewer", so the gate passes
+#   through (exit 0). A grep-blob fallback was deliberately rejected
+#   because "code-reviewer" can appear in Agent prompt text without
+#   subagent_type being set to it — grepping the blob would false-block
+#   Agent calls that merely MENTION code-reviewer in their prompt.
+#
+# Gate semantics (differ from drift-detector's informational signal):
+#   - No config file found         → BLOCK (Stage 1 without rubric has no value)
+#   - Config found, no rubric key  → BLOCK (same reason)
+#   - Rubric paths don't resolve   → BLOCK (review against phantom rubric is worse than no review)
+#   - All rubric paths resolve     → ALLOW
+#
+# Path reachability is delegated to the OS's existence check. Any unreachable
+# path — missing file, broken symlink, permission-denied, unmounted volume —
+# blocks identically. Platform-specific resolution behavior (e.g., Windows
+# symlink permissions) is the OS's contract, not this gate's.
+#
+# Exit 0 = allow the tool call
+# Exit 2 = block the tool call (stderr fed back to Claude; Claude Code blocks on exit 2)
+
+set -euo pipefail
+
+STDIN_JSON="$(cat)"
+
+# ─── Extract subagent_type from stdin JSON ────────────────────
+
+SUBAGENT_TYPE=""
+if command -v jq &>/dev/null; then
+  SUBAGENT_TYPE=$(printf '%s' "$STDIN_JSON" | jq -r '.tool_input.subagent_type // ""' 2>/dev/null || echo "")
+elif command -v node &>/dev/null; then
+  SUBAGENT_TYPE=$(printf '%s' "$STDIN_JSON" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const j=JSON.parse(d);process.stdout.write((j.tool_input&&j.tool_input.subagent_type)||'')}catch(e){}})" 2>/dev/null || echo "")
+else
+  SUBAGENT_TYPE=$(printf '%s' "$STDIN_JSON" | grep -o '"subagent_type"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"subagent_type"[[:space:]]*:[[:space:]]*"//;s/"$//' || echo "")
+fi
+
+# Only gate on code-reviewer invocations. The framework namespaces subagent_type
+# with the plugin prefix (e.g., "preflight:code-reviewer"). Match bare or any
+# "<prefix>:code-reviewer" form. The colon prevents false-positives like
+# "not-a-code-reviewer" or "code-reviewer-helper".
+if ! { [ "$SUBAGENT_TYPE" = "code-reviewer" ] || [[ "$SUBAGENT_TYPE" == *":code-reviewer" ]]; }; then
+  exit 0
+fi
+
+# ─── This IS a code-reviewer spawn — validate rubric ─────────
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PLUGIN_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# Detect a working Python interpreter (handles Windows Store stubs)
+PYTHON_CMD=""
+for py_candidate in python python3; do
+  if command -v "$py_candidate" &>/dev/null; then
+    if "$py_candidate" -c "pass" &>/dev/null 2>&1; then
+      PYTHON_CMD="$py_candidate"
+      break
+    fi
+  fi
+done
+
+# Read a JSON field from a file (supports string and array values)
+read_rubric_field() {
+  local file="$1"
+  if [ ! -f "$file" ]; then
+    echo ""
+    return
+  fi
+  if command -v jq &>/dev/null; then
+    # Arrays print one path per line (same contract as the python fallback below);
+    # the raw-JSON form ("[", quoted elements) false-blocked valid array rubrics.
+    # tr -d '\r': Windows jq emits CRLF in -r mode; a trailing \r breaks [ -f ].
+    jq -r '(.rubric // "") | if type == "array" then .[] else . end' "$file" 2>/dev/null | tr -d '\r' || echo ""
+  elif [ -n "$PYTHON_CMD" ]; then
+    $PYTHON_CMD -c "
+import json
+d=json.load(open('$file'))
+v=d.get('rubric', '')
+if isinstance(v, list): print('\n'.join(v) if v else '')
+else: print(v if v else '')
+" 2>/dev/null | tr -d '\r' || echo ""
+  else
+    grep -oP '"rubric"\s*:\s*"\K[^"]+' "$file" 2>/dev/null || echo ""
+  fi
+}
+
+# ─── Locate config ───────────────────────────────────────────
+
+CONFIG_FILE=""
+for candidate in ".preflight/config.json" ".cpsl/config.json" ".forge.json"; do
+  if [ -f "$candidate" ]; then
+    CONFIG_FILE="$candidate"
+    break
+  fi
+done
+
+if [ -z "$CONFIG_FILE" ]; then
+  echo "BLOCKED: No preflight config found (.preflight/config.json, .cpsl/config.json, .forge.json)." >&2
+  echo "Stage 1 review requires a rubric. Configure one via .preflight/config.json." >&2
+  exit 2
+fi
+
+# ─── Extract and validate rubric paths ───────────────────────
+
+RUBRIC_PATH=$(read_rubric_field "$CONFIG_FILE")
+
+if [ -z "$RUBRIC_PATH" ]; then
+  echo "BLOCKED: Config ($CONFIG_FILE) has no 'rubric' field." >&2
+  echo "Stage 1 review requires a rubric path. Add a \"rubric\" key to your config." >&2
+  exit 2
+fi
+
+# Validate all rubric paths (supports array — one path per line)
+while IFS= read -r rp; do
+  [ -z "$rp" ] && continue
+  if [ ! -f "$rp" ] && [ ! -f "$PLUGIN_ROOT/$rp" ]; then
+    echo "BLOCKED: Rubric path not found: $rp" >&2
+    echo "Checked: $rp (absolute/relative to cwd) and $PLUGIN_ROOT/$rp (relative to plugin)" >&2
+    echo "Fix the 'rubric' path in $CONFIG_FILE or create the missing file." >&2
+    exit 2
+  fi
+done <<< "$RUBRIC_PATH"
+
+# All rubric paths resolve — allow the code-reviewer to proceed
+exit 0

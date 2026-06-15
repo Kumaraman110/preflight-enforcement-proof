@@ -1,18 +1,19 @@
-1|#!/usr/bin/env bash
-2|# PreToolUse hook for Bash commands. Only activates the gate when
-3|# the command is a git push. All other bash commands pass through.
-4|#
-5|# INPUT CONTRACT (corrected):
-6|#   Claude Code pipes a JSON object to stdin: {"tool_name":"Bash",
-7|#   "tool_input":{"command":"..."}, ...}. We read stdin and extract
-8|#   tool_input.command via jq. As a fallback (if jq fails or JSON is
-9|#   malformed), we grep the raw stdin blob for 'git push' so a push is
-10|#   never silently allowed.
-11|#
-12|# Exit 0 = allow the tool call
-13|# Exit 2 = block the tool call (stderr fed back to Claude; Claude Code blocks on exit 2)
-14|
-15|set -euo pipefail
+#!/usr/bin/env bash
+# PreToolUse hook for Bash commands. Only activates the gate when
+# the command is a git push. All other bash commands pass through.
+#
+# INPUT CONTRACT (corrected):
+#   Claude Code pipes a JSON object to stdin: {"tool_name":"Bash",
+#   "tool_input":{"command":"..."}, ...}. We read stdin and extract
+#   tool_input.command via jq. As a fallback (if jq fails or JSON is
+#   malformed), we grep the raw stdin blob for 'git push' so a push is
+#   never silently allowed.
+#
+# Exit 0 = allow the tool call
+# Exit 2 = block the tool call (stderr fed back to Claude; Claude Code blocks on exit 2)
+
+set -euo pipefail
+
 
 # --- Heartbeat (passive liveness self-evidencing) ---
 _hb_self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -20,405 +21,410 @@ _hb_plugin_root="$(cd "$_hb_self_dir/.." && pwd)"
 [ -f "$_hb_plugin_root/lib/heartbeat.sh" ] && source "$_hb_plugin_root/lib/heartbeat.sh"
 _write_heartbeat "pre-push-gate-check"
 
-16|
-17|# Per-clone topology overlay (issue #6): source the shared resolver so branch.base /
-18|# branch.remote honor a gitignored .preflight/config.local.json. Best-effort — if the
-19|# lib is missing (older install), _pfg_branch_field falls back to committed config.
-20|_PFG_SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-21|for _pfg_overlay_lib in "$_PFG_SELF_DIR/../lib/config-overlay.sh" "$_PFG_SELF_DIR/../.claude/lib/config-overlay.sh"; do
-22|  if [ -f "$_pfg_overlay_lib" ]; then
-23|    # shellcheck source=/dev/null
-24|    source "$_pfg_overlay_lib" 2>/dev/null || true
-25|    break
-26|  fi
-27|done
-28|
-29|STDIN_JSON="$(cat)"
-30|
-31|# Primary: extract the command field via jq
-32|COMMAND="$(printf '%s' "$STDIN_JSON" | jq -r '.tool_input.command // empty' 2>/dev/null || true)"
-33|
-34|# Fallback: if extraction yielded nothing, use the raw blob so a push
-35|# is still detected (fail-safe for the push case; non-pushes still pass).
-36|if [ -z "$COMMAND" ]; then
-37|  COMMAND="$STDIN_JSON"
-38|fi
-39|
-40|# ── SENTINEL-MINT TRIPWIRE (gap #5) ───────────────────────────────────────────
-41|# Blocks, for the AGENT's Bash tool, shell commands that MINT the two protected
-42|# gate-clearance sentinels:
-43|#   .preflight/gate/bootstrap-write-approved  (human lead approval to overwrite
-44|#                                              CLAUDE.md/.preflight/config.json)
-45|#   .preflight/gate/parity-clean              (human-only parity clearance —
-46|#                                              by convention, see
-47|#                                              docs/parity-gate-limitations.md)
-48|# Write-shaped references trip it: redirection into the sentinel path; a write
-49|# verb (tee/touch/cp/mv/install/dd/truncate) taking the path as an argument;
-50|# sed -i on the path; and ANY `write-gate-evidence parity-clean` invocation
-51|# (parity-clean is the one evidence name an agent must never write — tests-pass/
-52|# stage1-clean/map-validated remain legitimate agent evidence and pass).
-53|# Read-shaped references (cat/ls/grep on the paths) pass.
-54|#
-55|# HONESTY LABEL: this is a HEURISTIC pattern tripwire on the agent Bash tool
-56|# only — bypassable via obfuscation (variables, base64, python -c, etc.); it
-57|# raises effort, not impossibility. The mechanical ceiling remains server-side
-58|# (required reviewers / branch protection) — see docs/parity-gate-limitations.md.
-59|# ADDITIVE + EARLY by design: runs before all push/pr-create routing and never
-60|# touches the config-overlay/guard logic below.
-61|_TRIP_SENT='\.preflight[/\\]+gate[/\\]+(bootstrap-write-approved|parity-clean)'
-62|_TRIP_PRE='(^|[;&|([:space:]`])'
-63|_trip_block() {
-64|  echo "BLOCKED: agent must not mint gate-clearance evidence ($1)." >&2
-65|  echo "  Bootstrap approval and parity-clean are HUMAN-ONLY — do not create, copy, or edit these" >&2
-66|  echo "  sentinel files from the agent. Surface to a human, who runs the approval/clearance step" >&2
-67|  echo "  from their own shell. See docs/parity-gate-limitations.md." >&2
-68|  echo "  (HEURISTIC agent Bash-tool tripwire only — not server-side protection.)" >&2
-69|  exit 2
-70|}
-71|if printf '%s' "$COMMAND" | grep -qE "$_TRIP_SENT"; then
-72|  # (a) redirection (> or >>) targeting a protected sentinel path
-73|  if printf '%s' "$COMMAND" | grep -qE ">>?[[:space:]]*[\"']?[^[:space:]\"';|&]*${_TRIP_SENT}"; then
-74|    _trip_block "shell redirection into a protected sentinel path"
-75|  fi
-76|  # (b) write verb taking the sentinel path as an argument
-77|  if printf '%s' "$COMMAND" | grep -qE "${_TRIP_PRE}(tee|touch|cp|mv|install|dd|truncate)[[:space:]][^;|&]*${_TRIP_SENT}"; then
-78|    _trip_block "write command targeting a protected sentinel path"
-79|  fi
-80|  # (c) in-place sed on the sentinel path
-81|  if printf '%s' "$COMMAND" | grep -qE "${_TRIP_PRE}sed[[:space:]][^;|&]*${_TRIP_SENT}" \
-82|     && printf '%s' "$COMMAND" | grep -qE "sed[[:space:]][^;|&]*(-[a-zA-Z]*i|--in-place)"; then
-83|    _trip_block "in-place sed on a protected sentinel path"
-84|  fi
-85|fi
-86|# (d) write-gate-evidence invoked with the human-only gate name, any path form
-87|if printf '%s' "$COMMAND" | grep -qE "write-gate-evidence[\\\\\\\"]?[[:space:]]+[\\\\\\\"]?parity-clean"; then
-88|  _trip_block "'write-gate-evidence parity-clean' — parity-clean is human-only"
-89|fi
-90|# (e) OBVIOUS OBFUSCATION PATTERNS targeting sentinel paths (raise-the-bar layer).
-91|# An agent that already knows the sentinel format can still mint it via shell
-92|# obfuscation; this catches the plain-shaped obfuscations without raising
-93|# false positives on legitimate commands. HEURISTIC — bypassable by determined
-94|# obfuscation; the mechanical ceiling remains server-side.
-95|if printf '%s' "$COMMAND" | grep -qE "$_TRIP_SENT"; then
-96|  # base64 decode into sentinel
-97|  if printf '%s' "$COMMAND" | grep -qE "(base64[[:space:]]+(-d|--decode)|python[[:space:]]+-c[[:space:]]*[\\\\\\\"]*base64).*${_TRIP_SENT}"; then
-98|    _trip_block "obfuscated base64 decode into protected sentinel path"
-99|  fi
-100|  # variable/parameter expansion writing sentinel
-101|  if printf '%s' "$COMMAND" | grep -qE "(\\$[A-Za-z_][A-Za-z0-9_]*|\\$\\{[A-Za-z_][A-Za-z0-9_]*\\})[[:space:]]*>[[:space:]]*[\\\\\\\"]?[^[:space:]\\\\\\\"]*${_TRIP_SENT}"; then
-102|    _trip_block "variable-expanded write into protected sentinel path"
-103|  fi
-104|  # python -c / eval with explicit sentinel path string
-105|  if printf '%s' "$COMMAND" | grep -qE "(python[[:space:]]+-c|perl[[:space:]]+-e|node[[:space:]]+-e)[[:space:]]*[\\\\\\\"][^\\\\\\\"]*${_TRIP_SENT}"; then
-106|    _trip_block "script-eval write into protected sentinel path"
-107|  fi
-108|  # command substitution writing sentinel
-109|  if printf '%s' "$COMMAND" | grep -qE "(\\$\\([^)]*\\)|\\\`[^\\\`]*\\\`)[[:space:]]*>[[:space:]]*[\\\\\\\"]?[^[:space:]\\\\\\\"]*${_TRIP_SENT}"; then
-110|    _trip_block "command-substitution write into protected sentinel path"
-111|  fi
-112|fi
-113|# ── end sentinel-mint tripwire ────────────────────────────────────────────────
-114|
-115|# ── REPO-AWARENESS (NEW-2 fix) ────────────────────────────────────────────────
-116|# This guard must resolve config + canonical remote from the repo the push
-117|# ACTUALLY targets, NOT the session root. A session rooted in repo A (e.g. a
-118|# consumer with config.branch.remote=poc) that pushes repo B (e.g. the framework
-119|# source repo, whose canonical origin differs) must read B's config — otherwise A's
-120|# config false-blocks B's legitimate push (the observed NEW-2 over-block: it blocked
-121|# a verified-safe `cd <framework-repo> && git push origin <branch>`).
-122|#
-123|# Signal: honor a leading `cd <dir>` in the command (the compound `cd X && git push`
-124|# pattern the agent commonly emits — and exactly the shape that was false-blocked),
-125|# else fall back to the hook's own cwd (= session root, which is correct for an
-126|# in-repo push: a consumer pushing its own `origin`=legacy-prod SHOULD still block).
-127|# A repo with no .preflight/config.json → fail-open (unchanged additive posture).
-128|_pfg_target_cwd() {  # $1 = command string; echo the cwd the git command runs in. Always returns 0.
-129|  local cmd="$1" cwd cd_dir
-130|  cwd="$(pwd)"
-131|  if printf '%s' "$cmd" | grep -qE '(^|;|&&|\|)[[:space:]]*cd[[:space:]]'; then
-132|    cd_dir="$(printf '%s' "$cmd" | grep -oE '(^|;|&&|\|)[[:space:]]*cd[[:space:]]+[^&|;]+' | head -1 | sed -E 's/.*cd[[:space:]]+//; s/[[:space:]]+$//')"
-133|    # strip one layer of surrounding quotes
-134|    cd_dir="${cd_dir%[\"\']}"; cd_dir="${cd_dir#[\"\']}"
-135|    if [ -n "$cd_dir" ] && [ -d "$cd_dir" ]; then cwd="$cd_dir"; fi
-136|  fi
-137|  printf '%s' "$cwd"
-138|  return 0
-139|}
-140|# The cwd the push/pr-create command will execute in (repo-aware anchor for ALL
-141|# config + git resolution below). Computed ONCE from the command string.
-142|PFG_TARGET_CWD="$(_pfg_target_cwd "$COMMAND")"
-143|
-144|# ── Resolve canonical repo (owner/repo) from config.branch.remote. Fail-open. ─
-145|# Shared by the #3a pr-create guard below and reused by the #6b push guard.
-146|# REPO-AWARE: reads config from the PUSH-TARGET repo (PFG_TARGET_CWD), not the session root.
-147|_pfg_config() {  # echo the resolved .preflight/config.json path, or nothing. Always returns 0.
-148|  local top
-149|  top="$(git -C "$PFG_TARGET_CWD" rev-parse --show-toplevel 2>/dev/null || echo "")"
-150|  [ -z "$top" ] && top="$PFG_TARGET_CWD"
-151|  local c="$top/.preflight/config.json"
-152|  if [ -f "$c" ]; then echo "$c"; fi
-153|  return 0
-154|}
-155|_pfg_branch_field() {  # $1 = base|remote ; echo value or empty (overlay → jq → node → grep)
-156|  local cfg="$1" field="$2"
-157|  [ -z "$cfg" ] && return 0
-158|  # Per-clone topology overlay (issue #6): branch.remote/base may be corrected by a
-159|  # gitignored .preflight/config.local.json (the inverted-clone fix). The overlay lib
-160|  # enforces the allowlist — gate thresholds and forbidden-lists are NOT overlayable
-161|  # (and _pfg_branch_array below deliberately never consults the overlay at all).
-162|  # Fail-open: lib missing or no jq/node → committed-config path below, unchanged.
-163|  if declare -F overlay_resolve >/dev/null 2>&1 && { command -v jq &>/dev/null || command -v node &>/dev/null; }; then
-164|    overlay_resolve "branch.$field" "$cfg" 2>/dev/null || true
-165|    return 0
-166|  fi
-167|  if command -v jq &>/dev/null; then
-168|    jq -r ".branch.$field // empty" "$cfg" 2>/dev/null || true
-169|  elif command -v node &>/dev/null; then
-170|    node -e "try{const c=require('$cfg');process.stdout.write((c.branch&&c.branch.$field)||'')}catch(e){}" 2>/dev/null || true
-171|  else
-172|    grep -oE "\"$field\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" "$cfg" | head -1 | sed 's/.*"\([^"]*\)"$/\1/' || true
-173|  fi
-174|}
-175|# Normalize a git remote URL (https or ssh) to "owner/repo" (strip .git).
-176|_pfg_url_to_slug() {
-177|  printf '%s' "$1" | sed -E 's#^git@[^:]+:#https://x/#; s#^https?://[^/]+/##; s#\.git$##' | sed -E 's#^/+##'
-178|}
-179|
-180|# ── Forbidden-destination denylist (A1 fix) ───────────────────────────────────
-181|# The two guards below historically derived their SINGLE notion of "safe target"
-182|# from config.branch.remote ("anything != the configured remote is bad"). That is
-183|# exactly backwards on an INVERTED clone where the configured remote IS the
-184|# dangerous one (observed live: branch.remote=origin, but origin=legacy prod that
-185|# must never be touched; the real target is a DIFFERENT remote). The guard then
-186|# blocked the correct push AND recommended pushing to the legacy repo.
-187|#
-188|# Fix: an EXPLICIT denylist the guard checks the RESOLVED target against, REGARDLESS
-189|# of branch.remote. branch.forbiddenRemotes = remote NAMES that must never be pushed
-190|# to; branch.forbiddenRepos = owner/repo slugs (or URLs) that must never be targeted
-191|# by push or `gh pr create`. Fail-open exactly like the rest of this guard: absent or
-192|# unparseable config → empty lists → inert (never newly blocks an opted-out repo).
-193|_pfg_branch_array() {  # $1 = cfg path ; $2 = field ; echo array values, one per line.
-194|  local cfg="$1" field="$2"
-195|  [ -z "$cfg" ] || [ ! -f "$cfg" ] && return 0
-196|  if command -v jq &>/dev/null; then
-197|    jq -r ".branch.${field}[]? // empty" "$cfg" 2>/dev/null || true
-198|  elif command -v node &>/dev/null; then
-199|    node -e "try{const c=require('$cfg');const a=(c.branch&&c.branch.$field)||[];a.forEach(x=>console.log(x))}catch(e){}" 2>/dev/null || true
-200|  else
-201|    # Best-effort grep fallback (labeled): pull quoted strings from the field's array,
-202|    # dropping the first match (the field name itself). jq is the primary path.
-203|    grep -oE "\"$field\"[[:space:]]*:[[:space:]]*\[[^]]*\]" "$cfg" 2>/dev/null \
-204|      | grep -oE '"[^"]*"' | sed -n '2,$p' | sed 's/^"//; s/"$//' || true
-205|  fi
-206|}
-207|# Is $1 (a remote NAME) on the forbidden-remotes list $2 (newline-separated names)?
-208|_pfg_remote_forbidden() {
-209|  local name="$1" hay="$2" line
-210|  [ -z "$name" ] && return 1
-211|  while IFS= read -r line; do
-212|    [ -z "$line" ] && continue
-213|    [ "$line" = "$name" ] && return 0
-214|  done <<< "$hay"
-215|  return 1
-216|}
-217|# Is $1 (an owner/repo slug) on the forbidden-repos list $2 (entries may be slugs OR URLs)?
-218|_pfg_repo_forbidden() {
-219|  local slug="$1" hay="$2" line
-220|  [ -z "$slug" ] && return 1
-221|  while IFS= read -r line; do
-222|    [ -z "$line" ] && continue
-223|    [ "$(_pfg_url_to_slug "$line")" = "$slug" ] && return 0
-224|  done <<< "$hay"
-225|  return 1
-226|}
-227|
-228|# ── #3a: guard `gh pr create` against a FORBIDDEN or NON-CANONICAL repo ───────
-229|# `gh pr create` with no --repo resolves the repo from the cwd's default remote,
-230|# which on migration clones is often origin = the legacy production repo. Two
-231|# layered checks, FORBIDDEN FIRST:
-232|#   (0) FORBIDDEN-REPO denylist (A1): if the RESOLVED target slug is on
-233|#       config.branch.forbiddenRepos, block — REGARDLESS of branch.remote. This is
-234|#       the check that holds even when branch.remote itself points at the dangerous
-235|#       repo (the inverted-clone case where the canonical comparison is backwards).
-236|#   (1) NON-CANONICAL: target != slug(branch.remote) → block (the original guard).
-237|# Block (exit 2), for the AGENT's Bash tool only. Buildable-LOCAL with a server-side
-238|# CEILING (agent's Bash tool only). FAIL-OPEN: inert if config is absent/unparseable
-239|# — see docs/parity-gate-limitations.md. Block messages DELIBERATELY do NOT recommend
-240|# a specific remote/repo: on an inverted clone the "canonical" value is itself the
-241|# dangerous one, so steering toward it is the original A1 defect. Surface to a human.
-242|if printf '%s' "$COMMAND" | grep -qE '(^|&&|\|\||;|")\s*gh[[:space:]]+pr[[:space:]]+create'; then
-243|  PR_CMD="$(printf '%s' "$COMMAND" | grep -oE 'gh[[:space:]]+pr[[:space:]]+create[^&|;]*' | head -1 || true)"
-244|  CFG="$(_pfg_config)"
-245|  CANON_REMOTE="$(_pfg_branch_field "$CFG" remote)"
-246|  FORBIDDEN_REPOS="$(_pfg_branch_array "$CFG" forbiddenRepos)"
-247|  # Resolve canonical slug from the configured remote's URL (fail-open if unresolvable).
-248|  CANON_SLUG=""
-249|  if [ -n "$CANON_REMOTE" ]; then
-250|    CANON_URL="$(git -C "$PFG_TARGET_CWD" remote get-url "$CANON_REMOTE" 2>/dev/null || true)"
-251|    [ -n "$CANON_URL" ] && CANON_SLUG="$(_pfg_url_to_slug "$CANON_URL")"
-252|  fi
-253|  # Resolve the slug this pr-create would ACTUALLY target: explicit --repo if present,
-254|  # else the cwd default remote (origin) — exactly what gh resolves with no --repo.
-255|  REPO_ARG="$(printf '%s' "$PR_CMD" | grep -oE -- '--repo[=[:space:]]+[^[:space:]]+' | head -1 | sed -E 's/--repo[=[:space:]]+//' || true)"
-256|  TARGET_SLUG=""
-257|  if [ -n "$REPO_ARG" ]; then
-258|    TARGET_SLUG="$(_pfg_url_to_slug "$REPO_ARG")"
-259|  else
-260|    DEFAULT_URL="$(git -C "$PFG_TARGET_CWD" remote get-url origin 2>/dev/null || true)"
-261|    [ -n "$DEFAULT_URL" ] && TARGET_SLUG="$(_pfg_url_to_slug "$DEFAULT_URL")"
-262|  fi
-263|
-264|  # (0) FORBIDDEN-REPO pre-check — fires regardless of branch.remote.
-265|  if [ -n "$TARGET_SLUG" ] && _pfg_repo_forbidden "$TARGET_SLUG" "$FORBIDDEN_REPOS"; then
-266|    echo "BLOCKED: 'gh pr create' targets a FORBIDDEN repo '$TARGET_SLUG' (config.branch.forbiddenRepos)." >&2
-267|    echo "  This destination is explicitly off-limits (e.g. a legacy production repo). Do NOT retarget automatically —" >&2
-268|    echo "  surface to a human; see docs/parity-gate-limitations.md." >&2
-269|    echo "  (Agent Bash-tool guard only; not server-side protection.)" >&2
-270|    exit 2
-271|  fi
-272|
-273|  # (1) NON-CANONICAL check (original behavior; messages de-steered).
-274|  if [ -n "$CANON_SLUG" ]; then
-275|    if [ -n "$REPO_ARG" ]; then
-276|      # (a) explicit --repo present → must equal canonical.
-277|      if [ "$TARGET_SLUG" != "$CANON_SLUG" ]; then
-278|        echo "BLOCKED: 'gh pr create --repo $REPO_ARG' targets a non-canonical repo (expected the configured target from config.branch.remote)." >&2
-279|        echo "  On migration clones the wrong repo is often the legacy production repo. Do NOT assume the configured remote is safe —" >&2
-280|        echo "  if the configured remote is itself wrong, surface to a human; see docs/parity-gate-limitations.md." >&2
-281|        echo "  (Agent Bash-tool guard only; not server-side protection — see docs/parity-gate-limitations.md.)" >&2
-282|        exit 2
-283|      fi
-284|    else
-285|      # (b) no --repo → gh would resolve from the cwd default remote. Compare that to canonical.
-286|      if [ -n "$TARGET_SLUG" ] && [ "$TARGET_SLUG" != "$CANON_SLUG" ]; then
-287|        echo "BLOCKED: 'gh pr create' has no --repo; it would resolve to '$TARGET_SLUG' (cwd default remote), not the configured target." >&2
-288|        echo "  On migration clones the default 'origin' is often the legacy production repo. Confirm the intended repo with a human" >&2
-289|        echo "  before retrying; see docs/parity-gate-limitations.md." >&2
-290|        echo "  (Agent Bash-tool guard only; not server-side protection — see docs/parity-gate-limitations.md.)" >&2
-291|        exit 2
-292|      fi
-293|    fi
-294|  fi
-295|  # Canonical / not-forbidden / fail-open → allow the pr-create. Not a push; nothing more to gate here.
-296|  exit 0
-297|fi
-298|
-299|# Only gate on git push commands
-300|if ! printf '%s' "$COMMAND" | grep -qE '(^|&&|\|\||;|")\s*git\s+push'; then
-301|  exit 0
-302|fi
-303|
-304|# ── #6b: force-push + wrong-remote guard (BEFORE the evidence gate) ───────────
-305|# Block, for the AGENT's Bash tool, two irreversible mistakes prose alone forbids:
-306|#   (A) force-push (--force / -f / --force-with-lease) to a PROTECTED branch
-307|#       (config.branch.base, plus main/master always), and
-308|#   (B) push to a NON-CANONICAL remote (anything other than config.branch.remote —
-309|#       notably `origin`, which on these clones is the legacy CPSL prod repo).
-310|#
-311|# Scope/ceiling (see docs/parity-gate-limitations.md): this guards the agent's Bash
-312|# tool ONLY — not a human shell, a CI token, or another machine. True protection is
-313|# server-side branch protection. It is also FAIL-OPEN: if config is absent/unparseable
-314|# it does NOT block (additive guard; never newly blocks a repo that didn't opt in).
-315|
-316|# Isolate the single `git push …` invocation from any compound command for parsing.
-317|PUSH_CMD="$(printf '%s' "$COMMAND" | grep -oE 'git[[:space:]]+push[^&|;]*' | head -1 || true)"
-318|
-319|# Resolve config (fail-open on any miss). jq → node → grep fallback, same idiom as other hooks.
-320|# REPO-AWARE (NEW-2): config comes from the PUSH-TARGET repo, not the session root — so a
-321|# session rooted in repo A that pushes repo B reads B's config (B's canonical remote), which is
-322|# what makes the wrong-remote comparison correct cross-repo. _pfg_config already anchors on
-323|# PFG_TARGET_CWD; reuse it here so the #6b block and the #3a block resolve identically.
-324|CONFIG="$(_pfg_config)"
-325|BASE=""; REMOTE=""
-326|if [ -f "$CONFIG" ]; then
-327|  # Route through _pfg_branch_field (single source): committed config, with the
-328|  # issue-#6 config.local.json topology overlay applied when the lib is present.
-329|  BASE="$(_pfg_branch_field "$CONFIG" base)"
-330|  REMOTE="$(_pfg_branch_field "$CONFIG" remote)"
-331|fi
-332|
-333|# Forbidden destinations (A1): remote NAMES and repo SLUGS that must never be pushed
-334|# to, REGARDLESS of branch.remote. Read via the shared helpers (jq → node → grep, fail-open).
-335|FORBIDDEN_REMOTES="$(_pfg_branch_array "$CONFIG" forbiddenRemotes)"
-336|FORBIDDEN_REPOS="$(_pfg_branch_array "$CONFIG" forbiddenRepos)"
-337|
-338|# Protected branch names: config base (if any) + main/master always.
-339|PROTECTED_BRANCHES="main master"
-340|[ -n "$BASE" ] && PROTECTED_BRANCHES="$PROTECTED_BRANCHES $BASE"
-341|
-342|# Does the push carry a force flag of any kind?
-343|HAS_FORCE=false
-344|if printf '%s' "$PUSH_CMD" | grep -qE '(^|[[:space:]])(--force-with-lease([=[:space:]]|$)|--force([[:space:]]|$)|-f([[:space:]]|$))'; then
-345|  HAS_FORCE=true
-346|fi
-347|
-348|# Token-scan the push args (drop `git push` and any flags) → [remote] [refspec...].
-349|PUSH_ARGS="$(printf '%s' "$PUSH_CMD" | sed -E 's/^git[[:space:]]+push//')"
-350|POSITIONAL=""
-351|for tok in $PUSH_ARGS; do
-352|  case "$tok" in
-353|    -*) ;;                       # skip flags (--force, -u, --force-with-lease=…, etc.)
-354|    *)  POSITIONAL="$POSITIONAL $tok" ;;
-355|  esac
-356|done
-357|set -- $POSITIONAL
-358|ARG_REMOTE="${1:-}"             # first positional = remote (if named)
-359|ARG_REFSPEC="${2:-}"           # second positional = refspec (if named)
-360|
-361|# (B0) FORBIDDEN-DESTINATION pre-check (A1) — fires REGARDLESS of branch.remote.
-362|# This is the check that holds on an INVERTED clone where branch.remote itself names
-363|# the dangerous remote. Match the named push remote against forbiddenRemotes, AND its
-364|# resolved URL slug against forbiddenRepos (covers `git push <url> …` and a forbidden
-365|# remote reached under a different name). De-steered: never recommends a remote.
-366|if [ -n "$ARG_REMOTE" ]; then
-367|  ARG_REMOTE_SLUG=""
-368|  ARG_REMOTE_URL="$(git -C "$PFG_TARGET_CWD" remote get-url "$ARG_REMOTE" 2>/dev/null || true)"
-369|  if [ -n "$ARG_REMOTE_URL" ]; then
-370|    ARG_REMOTE_SLUG="$(_pfg_url_to_slug "$ARG_REMOTE_URL")"
-371|  else
-372|    # Not a known remote name — it may be an inline URL positional. Normalize it directly.
-373|    case "$ARG_REMOTE" in *://*|*@*:*|*/*) ARG_REMOTE_SLUG="$(_pfg_url_to_slug "$ARG_REMOTE")" ;; esac
-374|  fi
-375|  if _pfg_remote_forbidden "$ARG_REMOTE" "$FORBIDDEN_REMOTES" \
-376|     || { [ -n "$ARG_REMOTE_SLUG" ] && _pfg_repo_forbidden "$ARG_REMOTE_SLUG" "$FORBIDDEN_REPOS"; }; then
-377|    echo "BLOCKED: push targets a FORBIDDEN destination '$ARG_REMOTE' (config.branch.forbiddenRemotes/forbiddenRepos)." >&2
-378|    echo "  This remote is explicitly off-limits (e.g. a legacy production repo). Do NOT retarget automatically —" >&2
-379|    echo "  surface to a human; see docs/parity-gate-limitations.md." >&2
-380|    echo "  (Agent Bash-tool guard only; not server-side protection.)" >&2
-381|    exit 2
-382|  fi
-383|fi
-384|
-385|# (B) wrong-remote: a NAMED remote that isn't the canonical one → block.
-386|if [ -n "$REMOTE" ] && [ -n "$ARG_REMOTE" ] && [ "$ARG_REMOTE" != "$REMOTE" ]; then
-387|  echo "BLOCKED: push targets remote '$ARG_REMOTE', not the configured remote '$REMOTE' (config.branch.remote)." >&2
-388|  echo "  Do NOT assume the configured remote is the safe one — on an inverted clone the configured remote may itself" >&2
-389|  echo "  be the legacy production repo. Confirm the intended remote with a human before retrying; see docs/parity-gate-limitations.md." >&2
-390|  echo "  (Agent Bash-tool guard only; not server-side protection — see docs/parity-gate-limitations.md.)" >&2
-391|  exit 2
-392|fi
-393|
-394|# (A) force to a protected branch → block. Target branch = refspec's destination
-395|# (after a ':' if present, e.g. HEAD:AccountLookUp_POC), else the named ref, else the
-396|# current branch (bare `git push --force`).
-397|if [ "$HAS_FORCE" = true ]; then
-398|  TARGET_BRANCH="${ARG_REFSPEC##*:}"
-399|  if [ -z "$TARGET_BRANCH" ]; then
-400|    # Bare `git push --force`: the current branch OF THE PUSH-TARGET REPO (repo-aware, NEW-2).
-401|    TARGET_BRANCH="$(git -C "$PFG_TARGET_CWD" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
-402|  fi
-403|  for pb in $PROTECTED_BRANCHES; do
-404|    if [ "$TARGET_BRANCH" = "$pb" ]; then
-405|      echo "BLOCKED: force-push (--force/-f/--force-with-lease) to protected branch '$pb'." >&2
-406|      echo "  Shared branches must never be force-pushed — even --force-with-lease rewrites shared history." >&2
-407|      echo "  (Agent Bash-tool guard only; not server-side protection — see docs/parity-gate-limitations.md.)" >&2
-408|      exit 2
-409|    fi
-410|  done
-411|fi
-412|
-413|# Not a blocked operation — fall through to the evidence gate.
-414|# This IS a git push - run the full pre-push gate
-415|SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-416|exec bash "$SCRIPT_DIR/pre-push-gate"
-417|
+
+# --- Heartbeat (passive liveness self-evidencing) ---
+_hb_self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_hb_plugin_root="$(cd "$_hb_self_dir/.." && pwd)"
+[ -f "$_hb_plugin_root/lib/heartbeat.sh" ] && source "$_hb_plugin_root/lib/heartbeat.sh"
+_write_heartbeat "pre-push-gate-check"
+
+# Per-clone topology overlay (issue #6): source the shared resolver so branch.base /
+# branch.remote honor a gitignored .preflight/config.local.json. Best-effort — if the
+# lib is missing (older install), _pfg_branch_field falls back to committed config.
+_PFG_SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+for _pfg_overlay_lib in "$_PFG_SELF_DIR/../lib/config-overlay.sh" "$_PFG_SELF_DIR/../.claude/lib/config-overlay.sh"; do
+  if [ -f "$_pfg_overlay_lib" ]; then
+    # shellcheck source=/dev/null
+    source "$_pfg_overlay_lib" 2>/dev/null || true
+    break
+  fi
+done
+
+STDIN_JSON="$(cat)"
+
+# Primary: extract the command field via jq
+COMMAND="$(printf '%s' "$STDIN_JSON" | jq -r '.tool_input.command // empty' 2>/dev/null || true)"
+
+# Fallback: if extraction yielded nothing, use the raw blob so a push
+# is still detected (fail-safe for the push case; non-pushes still pass).
+if [ -z "$COMMAND" ]; then
+  COMMAND="$STDIN_JSON"
+fi
+
+# ── SENTINEL-MINT TRIPWIRE (gap #5) ───────────────────────────────────────────
+# Blocks, for the AGENT's Bash tool, shell commands that MINT the two protected
+# gate-clearance sentinels:
+#   .preflight/gate/bootstrap-write-approved  (human lead approval to overwrite
+#                                              CLAUDE.md/.preflight/config.json)
+#   .preflight/gate/parity-clean              (human-only parity clearance —
+#                                              by convention, see
+#                                              docs/parity-gate-limitations.md)
+# Write-shaped references trip it: redirection into the sentinel path; a write
+# verb (tee/touch/cp/mv/install/dd/truncate) taking the path as an argument;
+# sed -i on the path; and ANY `write-gate-evidence parity-clean` invocation
+# (parity-clean is the one evidence name an agent must never write — tests-pass/
+# stage1-clean/map-validated remain legitimate agent evidence and pass).
+# Read-shaped references (cat/ls/grep on the paths) pass.
+#
+# HONESTY LABEL: this is a HEURISTIC pattern tripwire on the agent Bash tool
+# only — bypassable via obfuscation (variables, base64, python -c, etc.); it
+# raises effort, not impossibility. The mechanical ceiling remains server-side
+# (required reviewers / branch protection) — see docs/parity-gate-limitations.md.
+# ADDITIVE + EARLY by design: runs before all push/pr-create routing and never
+# touches the config-overlay/guard logic below.
+_TRIP_SENT='\.preflight[/\\]+gate[/\\]+(bootstrap-write-approved|parity-clean)'
+_TRIP_PRE='(^|[;&|([:space:]`])'
+_trip_block() {
+  echo "BLOCKED: agent must not mint gate-clearance evidence ($1)." >&2
+  echo "  Bootstrap approval and parity-clean are HUMAN-ONLY — do not create, copy, or edit these" >&2
+  echo "  sentinel files from the agent. Surface to a human, who runs the approval/clearance step" >&2
+  echo "  from their own shell. See docs/parity-gate-limitations.md." >&2
+  echo "  (HEURISTIC agent Bash-tool tripwire only — not server-side protection.)" >&2
+  exit 2
+}
+if printf '%s' "$COMMAND" | grep -qE "$_TRIP_SENT"; then
+  # (a) redirection (> or >>) targeting a protected sentinel path
+  if printf '%s' "$COMMAND" | grep -qE ">>?[[:space:]]*[\"']?[^[:space:]\"';|&]*${_TRIP_SENT}"; then
+    _trip_block "shell redirection into a protected sentinel path"
+  fi
+  # (b) write verb taking the sentinel path as an argument
+  if printf '%s' "$COMMAND" | grep -qE "${_TRIP_PRE}(tee|touch|cp|mv|install|dd|truncate)[[:space:]][^;|&]*${_TRIP_SENT}"; then
+    _trip_block "write command targeting a protected sentinel path"
+  fi
+  # (c) in-place sed on the sentinel path
+  if printf '%s' "$COMMAND" | grep -qE "${_TRIP_PRE}sed[[:space:]][^;|&]*${_TRIP_SENT}" \
+     && printf '%s' "$COMMAND" | grep -qE "sed[[:space:]][^;|&]*(-[a-zA-Z]*i|--in-place)"; then
+    _trip_block "in-place sed on a protected sentinel path"
+  fi
+fi
+# (d) write-gate-evidence invoked with the human-only gate name, any path form
+if printf '%s' "$COMMAND" | grep -qE "write-gate-evidence[\\\\\\\"]?[[:space:]]+[\\\\\\\"]?parity-clean"; then
+  _trip_block "'write-gate-evidence parity-clean' — parity-clean is human-only"
+fi
+# (e) OBVIOUS OBFUSCATION PATTERNS targeting sentinel paths (raise-the-bar layer).
+# An agent that already knows the sentinel format can still mint it via shell
+# obfuscation; this catches the plain-shaped obfuscations without raising
+# false positives on legitimate commands. HEURISTIC — bypassable by determined
+# obfuscation; the mechanical ceiling remains server-side.
+if printf '%s' "$COMMAND" | grep -qE "$_TRIP_SENT"; then
+  # base64 decode into sentinel
+  if printf '%s' "$COMMAND" | grep -qE "(base64[[:space:]]+(-d|--decode)|python[[:space:]]+-c[[:space:]]*[\\\\\\\"]*base64).*${_TRIP_SENT}"; then
+    _trip_block "obfuscated base64 decode into protected sentinel path"
+  fi
+  # variable/parameter expansion writing sentinel
+  if printf '%s' "$COMMAND" | grep -qE "(\\$[A-Za-z_][A-Za-z0-9_]*|\\$\\{[A-Za-z_][A-Za-z0-9_]*\\})[[:space:]]*>[[:space:]]*[\\\\\\\"]?[^[:space:]\\\\\\\"]*${_TRIP_SENT}"; then
+    _trip_block "variable-expanded write into protected sentinel path"
+  fi
+  # python -c / eval with explicit sentinel path string
+  if printf '%s' "$COMMAND" | grep -qE "(python[[:space:]]+-c|perl[[:space:]]+-e|node[[:space:]]+-e)[[:space:]]*[\\\\\\\"][^\\\\\\\"]*${_TRIP_SENT}"; then
+    _trip_block "script-eval write into protected sentinel path"
+  fi
+  # command substitution writing sentinel
+  if printf '%s' "$COMMAND" | grep -qE "(\\$\\([^)]*\\)|\\\`[^\\\`]*\\\`)[[:space:]]*>[[:space:]]*[\\\\\\\"]?[^[:space:]\\\\\\\"]*${_TRIP_SENT}"; then
+    _trip_block "command-substitution write into protected sentinel path"
+  fi
+fi
+# ── end sentinel-mint tripwire ────────────────────────────────────────────────
+
+# ── REPO-AWARENESS (NEW-2 fix) ────────────────────────────────────────────────
+# This guard must resolve config + canonical remote from the repo the push
+# ACTUALLY targets, NOT the session root. A session rooted in repo A (e.g. a
+# consumer with config.branch.remote=poc) that pushes repo B (e.g. the framework
+# source repo, whose canonical origin differs) must read B's config — otherwise A's
+# config false-blocks B's legitimate push (the observed NEW-2 over-block: it blocked
+# a verified-safe `cd <framework-repo> && git push origin <branch>`).
+#
+# Signal: honor a leading `cd <dir>` in the command (the compound `cd X && git push`
+# pattern the agent commonly emits — and exactly the shape that was false-blocked),
+# else fall back to the hook's own cwd (= session root, which is correct for an
+# in-repo push: a consumer pushing its own `origin`=legacy-prod SHOULD still block).
+# A repo with no .preflight/config.json → fail-open (unchanged additive posture).
+_pfg_target_cwd() {  # $1 = command string; echo the cwd the git command runs in. Always returns 0.
+  local cmd="$1" cwd cd_dir
+  cwd="$(pwd)"
+  if printf '%s' "$cmd" | grep -qE '(^|;|&&|\|)[[:space:]]*cd[[:space:]]'; then
+    cd_dir="$(printf '%s' "$cmd" | grep -oE '(^|;|&&|\|)[[:space:]]*cd[[:space:]]+[^&|;]+' | head -1 | sed -E 's/.*cd[[:space:]]+//; s/[[:space:]]+$//')"
+    # strip one layer of surrounding quotes
+    cd_dir="${cd_dir%[\"\']}"; cd_dir="${cd_dir#[\"\']}"
+    if [ -n "$cd_dir" ] && [ -d "$cd_dir" ]; then cwd="$cd_dir"; fi
+  fi
+  printf '%s' "$cwd"
+  return 0
+}
+# The cwd the push/pr-create command will execute in (repo-aware anchor for ALL
+# config + git resolution below). Computed ONCE from the command string.
+PFG_TARGET_CWD="$(_pfg_target_cwd "$COMMAND")"
+
+# ── Resolve canonical repo (owner/repo) from config.branch.remote. Fail-open. ─
+# Shared by the #3a pr-create guard below and reused by the #6b push guard.
+# REPO-AWARE: reads config from the PUSH-TARGET repo (PFG_TARGET_CWD), not the session root.
+_pfg_config() {  # echo the resolved .preflight/config.json path, or nothing. Always returns 0.
+  local top
+  top="$(git -C "$PFG_TARGET_CWD" rev-parse --show-toplevel 2>/dev/null || echo "")"
+  [ -z "$top" ] && top="$PFG_TARGET_CWD"
+  local c="$top/.preflight/config.json"
+  if [ -f "$c" ]; then echo "$c"; fi
+  return 0
+}
+_pfg_branch_field() {  # $1 = base|remote ; echo value or empty (overlay → jq → node → grep)
+  local cfg="$1" field="$2"
+  [ -z "$cfg" ] && return 0
+  # Per-clone topology overlay (issue #6): branch.remote/base may be corrected by a
+  # gitignored .preflight/config.local.json (the inverted-clone fix). The overlay lib
+  # enforces the allowlist — gate thresholds and forbidden-lists are NOT overlayable
+  # (and _pfg_branch_array below deliberately never consults the overlay at all).
+  # Fail-open: lib missing or no jq/node → committed-config path below, unchanged.
+  if declare -F overlay_resolve >/dev/null 2>&1 && { command -v jq &>/dev/null || command -v node &>/dev/null; }; then
+    overlay_resolve "branch.$field" "$cfg" 2>/dev/null || true
+    return 0
+  fi
+  if command -v jq &>/dev/null; then
+    jq -r ".branch.$field // empty" "$cfg" 2>/dev/null || true
+  elif command -v node &>/dev/null; then
+    node -e "try{const c=require('$cfg');process.stdout.write((c.branch&&c.branch.$field)||'')}catch(e){}" 2>/dev/null || true
+  else
+    grep -oE "\"$field\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" "$cfg" | head -1 | sed 's/.*"\([^"]*\)"$/\1/' || true
+  fi
+}
+# Normalize a git remote URL (https or ssh) to "owner/repo" (strip .git).
+_pfg_url_to_slug() {
+  printf '%s' "$1" | sed -E 's#^git@[^:]+:#https://x/#; s#^https?://[^/]+/##; s#\.git$##' | sed -E 's#^/+##'
+}
+
+# ── Forbidden-destination denylist (A1 fix) ───────────────────────────────────
+# The two guards below historically derived their SINGLE notion of "safe target"
+# from config.branch.remote ("anything != the configured remote is bad"). That is
+# exactly backwards on an INVERTED clone where the configured remote IS the
+# dangerous one (observed live: branch.remote=origin, but origin=legacy prod that
+# must never be touched; the real target is a DIFFERENT remote). The guard then
+# blocked the correct push AND recommended pushing to the legacy repo.
+#
+# Fix: an EXPLICIT denylist the guard checks the RESOLVED target against, REGARDLESS
+# of branch.remote. branch.forbiddenRemotes = remote NAMES that must never be pushed
+# to; branch.forbiddenRepos = owner/repo slugs (or URLs) that must never be targeted
+# by push or `gh pr create`. Fail-open exactly like the rest of this guard: absent or
+# unparseable config → empty lists → inert (never newly blocks an opted-out repo).
+_pfg_branch_array() {  # $1 = cfg path ; $2 = field ; echo array values, one per line.
+  local cfg="$1" field="$2"
+  [ -z "$cfg" ] || [ ! -f "$cfg" ] && return 0
+  if command -v jq &>/dev/null; then
+    jq -r ".branch.${field}[]? // empty" "$cfg" 2>/dev/null || true
+  elif command -v node &>/dev/null; then
+    node -e "try{const c=require('$cfg');const a=(c.branch&&c.branch.$field)||[];a.forEach(x=>console.log(x))}catch(e){}" 2>/dev/null || true
+  else
+    # Best-effort grep fallback (labeled): pull quoted strings from the field's array,
+    # dropping the first match (the field name itself). jq is the primary path.
+    grep -oE "\"$field\"[[:space:]]*:[[:space:]]*\[[^]]*\]" "$cfg" 2>/dev/null \
+      | grep -oE '"[^"]*"' | sed -n '2,$p' | sed 's/^"//; s/"$//' || true
+  fi
+}
+# Is $1 (a remote NAME) on the forbidden-remotes list $2 (newline-separated names)?
+_pfg_remote_forbidden() {
+  local name="$1" hay="$2" line
+  [ -z "$name" ] && return 1
+  while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    [ "$line" = "$name" ] && return 0
+  done <<< "$hay"
+  return 1
+}
+# Is $1 (an owner/repo slug) on the forbidden-repos list $2 (entries may be slugs OR URLs)?
+_pfg_repo_forbidden() {
+  local slug="$1" hay="$2" line
+  [ -z "$slug" ] && return 1
+  while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    [ "$(_pfg_url_to_slug "$line")" = "$slug" ] && return 0
+  done <<< "$hay"
+  return 1
+}
+
+# ── #3a: guard `gh pr create` against a FORBIDDEN or NON-CANONICAL repo ───────
+# `gh pr create` with no --repo resolves the repo from the cwd's default remote,
+# which on migration clones is often origin = the legacy production repo. Two
+# layered checks, FORBIDDEN FIRST:
+#   (0) FORBIDDEN-REPO denylist (A1): if the RESOLVED target slug is on
+#       config.branch.forbiddenRepos, block — REGARDLESS of branch.remote. This is
+#       the check that holds even when branch.remote itself points at the dangerous
+#       repo (the inverted-clone case where the canonical comparison is backwards).
+#   (1) NON-CANONICAL: target != slug(branch.remote) → block (the original guard).
+# Block (exit 2), for the AGENT's Bash tool only. Buildable-LOCAL with a server-side
+# CEILING (agent's Bash tool only). FAIL-OPEN: inert if config is absent/unparseable
+# — see docs/parity-gate-limitations.md. Block messages DELIBERATELY do NOT recommend
+# a specific remote/repo: on an inverted clone the "canonical" value is itself the
+# dangerous one, so steering toward it is the original A1 defect. Surface to a human.
+if printf '%s' "$COMMAND" | grep -qE '(^|&&|\|\||;|")\s*gh[[:space:]]+pr[[:space:]]+create'; then
+  PR_CMD="$(printf '%s' "$COMMAND" | grep -oE 'gh[[:space:]]+pr[[:space:]]+create[^&|;]*' | head -1 || true)"
+  CFG="$(_pfg_config)"
+  CANON_REMOTE="$(_pfg_branch_field "$CFG" remote)"
+  FORBIDDEN_REPOS="$(_pfg_branch_array "$CFG" forbiddenRepos)"
+  # Resolve canonical slug from the configured remote's URL (fail-open if unresolvable).
+  CANON_SLUG=""
+  if [ -n "$CANON_REMOTE" ]; then
+    CANON_URL="$(git -C "$PFG_TARGET_CWD" remote get-url "$CANON_REMOTE" 2>/dev/null || true)"
+    [ -n "$CANON_URL" ] && CANON_SLUG="$(_pfg_url_to_slug "$CANON_URL")"
+  fi
+  # Resolve the slug this pr-create would ACTUALLY target: explicit --repo if present,
+  # else the cwd default remote (origin) — exactly what gh resolves with no --repo.
+  REPO_ARG="$(printf '%s' "$PR_CMD" | grep -oE -- '--repo[=[:space:]]+[^[:space:]]+' | head -1 | sed -E 's/--repo[=[:space:]]+//' || true)"
+  TARGET_SLUG=""
+  if [ -n "$REPO_ARG" ]; then
+    TARGET_SLUG="$(_pfg_url_to_slug "$REPO_ARG")"
+  else
+    DEFAULT_URL="$(git -C "$PFG_TARGET_CWD" remote get-url origin 2>/dev/null || true)"
+    [ -n "$DEFAULT_URL" ] && TARGET_SLUG="$(_pfg_url_to_slug "$DEFAULT_URL")"
+  fi
+
+  # (0) FORBIDDEN-REPO pre-check — fires regardless of branch.remote.
+  if [ -n "$TARGET_SLUG" ] && _pfg_repo_forbidden "$TARGET_SLUG" "$FORBIDDEN_REPOS"; then
+    echo "BLOCKED: 'gh pr create' targets a FORBIDDEN repo '$TARGET_SLUG' (config.branch.forbiddenRepos)." >&2
+    echo "  This destination is explicitly off-limits (e.g. a legacy production repo). Do NOT retarget automatically —" >&2
+    echo "  surface to a human; see docs/parity-gate-limitations.md." >&2
+    echo "  (Agent Bash-tool guard only; not server-side protection.)" >&2
+    exit 2
+  fi
+
+  # (1) NON-CANONICAL check (original behavior; messages de-steered).
+  if [ -n "$CANON_SLUG" ]; then
+    if [ -n "$REPO_ARG" ]; then
+      # (a) explicit --repo present → must equal canonical.
+      if [ "$TARGET_SLUG" != "$CANON_SLUG" ]; then
+        echo "BLOCKED: 'gh pr create --repo $REPO_ARG' targets a non-canonical repo (expected the configured target from config.branch.remote)." >&2
+        echo "  On migration clones the wrong repo is often the legacy production repo. Do NOT assume the configured remote is safe —" >&2
+        echo "  if the configured remote is itself wrong, surface to a human; see docs/parity-gate-limitations.md." >&2
+        echo "  (Agent Bash-tool guard only; not server-side protection — see docs/parity-gate-limitations.md.)" >&2
+        exit 2
+      fi
+    else
+      # (b) no --repo → gh would resolve from the cwd default remote. Compare that to canonical.
+      if [ -n "$TARGET_SLUG" ] && [ "$TARGET_SLUG" != "$CANON_SLUG" ]; then
+        echo "BLOCKED: 'gh pr create' has no --repo; it would resolve to '$TARGET_SLUG' (cwd default remote), not the configured target." >&2
+        echo "  On migration clones the default 'origin' is often the legacy production repo. Confirm the intended repo with a human" >&2
+        echo "  before retrying; see docs/parity-gate-limitations.md." >&2
+        echo "  (Agent Bash-tool guard only; not server-side protection — see docs/parity-gate-limitations.md.)" >&2
+        exit 2
+      fi
+    fi
+  fi
+  # Canonical / not-forbidden / fail-open → allow the pr-create. Not a push; nothing more to gate here.
+  exit 0
+fi
+
+# Only gate on git push commands
+if ! printf '%s' "$COMMAND" | grep -qE '(^|&&|\|\||;|")\s*git\s+push'; then
+  exit 0
+fi
+
+# ── #6b: force-push + wrong-remote guard (BEFORE the evidence gate) ───────────
+# Block, for the AGENT's Bash tool, two irreversible mistakes prose alone forbids:
+#   (A) force-push (--force / -f / --force-with-lease) to a PROTECTED branch
+#       (config.branch.base, plus main/master always), and
+#   (B) push to a NON-CANONICAL remote (anything other than config.branch.remote —
+#       notably `origin`, which on these clones is the legacy CPSL prod repo).
+#
+# Scope/ceiling (see docs/parity-gate-limitations.md): this guards the agent's Bash
+# tool ONLY — not a human shell, a CI token, or another machine. True protection is
+# server-side branch protection. It is also FAIL-OPEN: if config is absent/unparseable
+# it does NOT block (additive guard; never newly blocks a repo that didn't opt in).
+
+# Isolate the single `git push …` invocation from any compound command for parsing.
+PUSH_CMD="$(printf '%s' "$COMMAND" | grep -oE 'git[[:space:]]+push[^&|;]*' | head -1 || true)"
+
+# Resolve config (fail-open on any miss). jq → node → grep fallback, same idiom as other hooks.
+# REPO-AWARE (NEW-2): config comes from the PUSH-TARGET repo, not the session root — so a
+# session rooted in repo A that pushes repo B reads B's config (B's canonical remote), which is
+# what makes the wrong-remote comparison correct cross-repo. _pfg_config already anchors on
+# PFG_TARGET_CWD; reuse it here so the #6b block and the #3a block resolve identically.
+CONFIG="$(_pfg_config)"
+BASE=""; REMOTE=""
+if [ -f "$CONFIG" ]; then
+  # Route through _pfg_branch_field (single source): committed config, with the
+  # issue-#6 config.local.json topology overlay applied when the lib is present.
+  BASE="$(_pfg_branch_field "$CONFIG" base)"
+  REMOTE="$(_pfg_branch_field "$CONFIG" remote)"
+fi
+
+# Forbidden destinations (A1): remote NAMES and repo SLUGS that must never be pushed
+# to, REGARDLESS of branch.remote. Read via the shared helpers (jq → node → grep, fail-open).
+FORBIDDEN_REMOTES="$(_pfg_branch_array "$CONFIG" forbiddenRemotes)"
+FORBIDDEN_REPOS="$(_pfg_branch_array "$CONFIG" forbiddenRepos)"
+
+# Protected branch names: config base (if any) + main/master always.
+PROTECTED_BRANCHES="main master"
+[ -n "$BASE" ] && PROTECTED_BRANCHES="$PROTECTED_BRANCHES $BASE"
+
+# Does the push carry a force flag of any kind?
+HAS_FORCE=false
+if printf '%s' "$PUSH_CMD" | grep -qE '(^|[[:space:]])(--force-with-lease([=[:space:]]|$)|--force([[:space:]]|$)|-f([[:space:]]|$))'; then
+  HAS_FORCE=true
+fi
+
+# Token-scan the push args (drop `git push` and any flags) → [remote] [refspec...].
+PUSH_ARGS="$(printf '%s' "$PUSH_CMD" | sed -E 's/^git[[:space:]]+push//')"
+POSITIONAL=""
+for tok in $PUSH_ARGS; do
+  case "$tok" in
+    -*) ;;                       # skip flags (--force, -u, --force-with-lease=…, etc.)
+    *)  POSITIONAL="$POSITIONAL $tok" ;;
+  esac
+done
+set -- $POSITIONAL
+ARG_REMOTE="${1:-}"             # first positional = remote (if named)
+ARG_REFSPEC="${2:-}"           # second positional = refspec (if named)
+
+# (B0) FORBIDDEN-DESTINATION pre-check (A1) — fires REGARDLESS of branch.remote.
+# This is the check that holds on an INVERTED clone where branch.remote itself names
+# the dangerous remote. Match the named push remote against forbiddenRemotes, AND its
+# resolved URL slug against forbiddenRepos (covers `git push <url> …` and a forbidden
+# remote reached under a different name). De-steered: never recommends a remote.
+if [ -n "$ARG_REMOTE" ]; then
+  ARG_REMOTE_SLUG=""
+  ARG_REMOTE_URL="$(git -C "$PFG_TARGET_CWD" remote get-url "$ARG_REMOTE" 2>/dev/null || true)"
+  if [ -n "$ARG_REMOTE_URL" ]; then
+    ARG_REMOTE_SLUG="$(_pfg_url_to_slug "$ARG_REMOTE_URL")"
+  else
+    # Not a known remote name — it may be an inline URL positional. Normalize it directly.
+    case "$ARG_REMOTE" in *://*|*@*:*|*/*) ARG_REMOTE_SLUG="$(_pfg_url_to_slug "$ARG_REMOTE")" ;; esac
+  fi
+  if _pfg_remote_forbidden "$ARG_REMOTE" "$FORBIDDEN_REMOTES" \
+     || { [ -n "$ARG_REMOTE_SLUG" ] && _pfg_repo_forbidden "$ARG_REMOTE_SLUG" "$FORBIDDEN_REPOS"; }; then
+    echo "BLOCKED: push targets a FORBIDDEN destination '$ARG_REMOTE' (config.branch.forbiddenRemotes/forbiddenRepos)." >&2
+    echo "  This remote is explicitly off-limits (e.g. a legacy production repo). Do NOT retarget automatically —" >&2
+    echo "  surface to a human; see docs/parity-gate-limitations.md." >&2
+    echo "  (Agent Bash-tool guard only; not server-side protection.)" >&2
+    exit 2
+  fi
+fi
+
+# (B) wrong-remote: a NAMED remote that isn't the canonical one → block.
+if [ -n "$REMOTE" ] && [ -n "$ARG_REMOTE" ] && [ "$ARG_REMOTE" != "$REMOTE" ]; then
+  echo "BLOCKED: push targets remote '$ARG_REMOTE', not the configured remote '$REMOTE' (config.branch.remote)." >&2
+  echo "  Do NOT assume the configured remote is the safe one — on an inverted clone the configured remote may itself" >&2
+  echo "  be the legacy production repo. Confirm the intended remote with a human before retrying; see docs/parity-gate-limitations.md." >&2
+  echo "  (Agent Bash-tool guard only; not server-side protection — see docs/parity-gate-limitations.md.)" >&2
+  exit 2
+fi
+
+# (A) force to a protected branch → block. Target branch = refspec's destination
+# (after a ':' if present, e.g. HEAD:AccountLookUp_POC), else the named ref, else the
+# current branch (bare `git push --force`).
+if [ "$HAS_FORCE" = true ]; then
+  TARGET_BRANCH="${ARG_REFSPEC##*:}"
+  if [ -z "$TARGET_BRANCH" ]; then
+    # Bare `git push --force`: the current branch OF THE PUSH-TARGET REPO (repo-aware, NEW-2).
+    TARGET_BRANCH="$(git -C "$PFG_TARGET_CWD" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+  fi
+  for pb in $PROTECTED_BRANCHES; do
+    if [ "$TARGET_BRANCH" = "$pb" ]; then
+      echo "BLOCKED: force-push (--force/-f/--force-with-lease) to protected branch '$pb'." >&2
+      echo "  Shared branches must never be force-pushed — even --force-with-lease rewrites shared history." >&2
+      echo "  (Agent Bash-tool guard only; not server-side protection — see docs/parity-gate-limitations.md.)" >&2
+      exit 2
+    fi
+  done
+fi
+
+# Not a blocked operation — fall through to the evidence gate.
+# This IS a git push - run the full pre-push gate
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+exec bash "$SCRIPT_DIR/pre-push-gate"

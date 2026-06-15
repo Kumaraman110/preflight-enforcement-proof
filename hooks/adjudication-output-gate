@@ -14,6 +14,13 @@
 #   1. Forbidden keys — any per-finding key outside the closed allow-list
 #      (e.g. a smuggled verifiedAgainstSource / isRealBug / legacyConfirmed).
 #   2. No-DEFENDED-without-evidence — a DEFENDED / AMBIGUOUS-DEFENDED entry
+
+# --- Heartbeat (passive liveness self-evidencing) ---
+_hb_self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_hb_plugin_root="$(cd "$_hb_self_dir/.." && pwd)"
+[ -f "$_hb_plugin_root/lib/heartbeat.sh" ] && source "$_hb_plugin_root/lib/heartbeat.sh"
+_write_heartbeat "adjudication-output-gate"
+
 #      whose citedEvidence is not a concrete citation (file:line, §N, or a
 #      named design-doc artifact) — i.e. a bare prose excuse.
 #
@@ -34,12 +41,6 @@
 # Exit 0 = allow      Exit 2 = block (reason on stderr; Claude Code blocks on 2)
 
 set -uo pipefail
-
-# --- Heartbeat (passive liveness self-evidencing) ---
-_hb_self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-_hb_plugin_root="$(cd "$_hb_self_dir/.." && pwd)"
-[ -f "$_hb_plugin_root/lib/heartbeat.sh" ] && source "$_hb_plugin_root/lib/heartbeat.sh"
-_write_heartbeat "adjudication-output-gate"
 
 STDIN_JSON="$(cat)"
 

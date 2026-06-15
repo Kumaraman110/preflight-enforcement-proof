@@ -1,14 +1,19 @@
-1|#!/usr/bin/env bash
-2|# Drift detector hook. Compares current codebase derived state against cached
-3|# state from last session. Surfaces actionable drift warnings.
-4|#
-5|# Runs at session-start (after session-start hook) or on-demand.
-6|# Does NOT block — it surfaces drift as warnings, not errors.
-7|#
-8|# Cached state lives at .preflight/cache/derived-state.json
-9|# If no cache exists (first run), writes initial state and exits clean.
-10|
-11|set -euo pipefail
+#!/usr/bin/env bash
+# Drift detector hook. Compares current codebase derived state against cached
+# state from last session. Surfaces actionable drift warnings.
+#
+# Runs at session-start (after session-start hook) or on-demand.
+# Does NOT block — it surfaces drift as warnings, not errors.
+#
+# Cached state lives at .preflight/cache/derived-state.json
+# If no cache exists (first run), writes initial state and exits clean.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PLUGIN_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+CACHE_DIR=".preflight/cache"
 
 # --- Heartbeat (passive liveness self-evidencing) ---
 _hb_self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -16,270 +21,264 @@ _hb_plugin_root="$(cd "$_hb_self_dir/.." && pwd)"
 [ -f "$_hb_plugin_root/lib/heartbeat.sh" ] && source "$_hb_plugin_root/lib/heartbeat.sh"
 _write_heartbeat "drift-detector"
 
-12|
-13|SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-14|PLUGIN_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-15|
-16|CACHE_DIR=".preflight/cache"
-17|STATE_FILE="$CACHE_DIR/derived-state.json"
-18|DRIFT_WARNINGS=""
-19|
-20|# ─── Helpers ───────────────────────────────────────────────────
-21|
-22|add_warning() {
-23|  local category="$1" message="$2"
-24|  if [ -z "$DRIFT_WARNINGS" ]; then
-25|    DRIFT_WARNINGS="[$category] $message"
-26|  else
-27|    DRIFT_WARNINGS="$DRIFT_WARNINGS\n[$category] $message"
-28|  fi
-29|}
-30|
-31|# Detect a working Python interpreter (handles Windows Store stubs)
-32|PYTHON_CMD=""
-33|for py_candidate in python python3; do
-34|  if command -v "$py_candidate" &>/dev/null; then
-35|    if "$py_candidate" -c "pass" &>/dev/null 2>&1; then
-36|      PYTHON_CMD="$py_candidate"
-37|      break
-38|    fi
-39|  fi
-40|done
-41|
-42|source "${PLUGIN_ROOT}/lib/detect-stack.sh"
-43|
-44|count_source_dirs() {
-45|  # Count unique parent directories containing source files (portable — no GNU -printf)
-46|  local count
-47|  if count=$(find . -maxdepth 3 -type f \( -name "*.cs" -o -name "*.java" -o -name "*.py" -o -name "*.ts" -o -name "*.js" -o -name "*.go" -o -name "*.rs" \) 2>/dev/null | sed 's|/[^/]*$||' | sort -u | wc -l); then
-48|    echo "${count:-0}"
-49|  else
-50|    echo "0"
-51|  fi
-52|}
-53|
-54|# Read multiple fields from a JSON file in a single interpreter call.
-55|# Usage: read_json_fields <file> <field1> <field2> ...
-56|# Output: one value per line, booleans as true/false, missing as empty
-57|read_json_fields() {
-58|  local file="$1"; shift
-59|  local fields=("$@")
-60|  if [ ! -f "$file" ]; then
-61|    for _ in "${fields[@]}"; do echo ""; done
-62|    return
-63|  fi
-64|  if command -v jq &>/dev/null; then
-65|    for f in "${fields[@]}"; do
-66|      # Array fields: one element per line (mirrors python fallback contract).
-67|      # tr -d '\r': MSYS jq -r emits CRLF; trailing \r breaks every downstream
-68|      # comparison and mapfile element (was: CACHED_SCHEMA=$'\r' triggered
-69|      # false schema-mismatch → overwrite-and-exit before drift checks ran).
-70|      jq -r "(.[\"$f\"] // \"\") | if type == \"array\" then .[] else . end" "$file" 2>/dev/null | tr -d '\r' || echo ""
-71|    done
-72|  elif [ -n "$PYTHON_CMD" ]; then
-73|    local field_list=""
-74|    for f in "${fields[@]}"; do
-75|      field_list="${field_list}'${f}',"
-76|    done
-77|    $PYTHON_CMD -c "
-78|import json
-79|d=json.load(open('$file'))
-80|for f in [${field_list}]:
-81|    v=d.get(f, '')
-82|    if isinstance(v, bool): print(str(v).lower())
-83|    elif isinstance(v, (int,float)): print(v)
-84|    elif isinstance(v, list): print('\\n'.join(v) if v else '')
-85|    else: print(v if v else '')
-86|" 2>/dev/null | tr -d '\r' || {
-87|      for _ in "${fields[@]}"; do echo ""; done
-88|    }
-89|  else
-90|    for _ in "${fields[@]}"; do echo ""; done
-91|  fi
-92|}
-93|
-94|# ─── Derive current state ─────────────────────────────────────
-95|
-96|CONFIG_FILE=""
-97|for candidate in ".preflight/config.json" ".cpsl/config.json" ".forge.json"; do
-98|  if [ -f "$candidate" ]; then
-99|    CONFIG_FILE="$candidate"
-100|    break
-101|  fi
-102|done
-103|
-104|detect_stack
-105|CURRENT_STACK="$STACK_VALUE"
-106|CURRENT_SOURCE_DIRS=$(count_source_dirs)
-107|CURRENT_CONFIG_EXISTS="false"
-108|CURRENT_RUBRIC_VALID="false"
-109|CURRENT_SCAN_PROFILE_VALID="false"
-110|CURRENT_GEN_SPEC_VALID="false"
-111|RUBRIC_PATH=""
-112|SCAN_PROFILE=""
-113|GEN_SPEC=""
-114|
-115|if [ -n "$CONFIG_FILE" ]; then
-116|  CURRENT_CONFIG_EXISTS="true"
-117|
-118|  # Read rubric separately — it may be an ARRAY (one path per line);
-119|  # reading it with read_json_fields' batch mapfile misaligns indices
-120|  # when the array has >1 element (element [1] lands in the scanProfile
-121|  # slot, [2] in generation-spec). Mirror the proven rubric-validity-gate
-122|  # pattern: jq with //"" guard, array expansion, tr -d '\r'.
-123|  if command -v jq &>/dev/null; then
-124|    RUBRIC_PATH=$(jq -r '(.rubric // "") | if type == "array" then .[] else . end' "$CONFIG_FILE" 2>/dev/null | tr -d '\r' || echo "")
-125|  elif [ -n "$PYTHON_CMD" ]; then
-126|    RUBRIC_PATH=$($PYTHON_CMD -c "
-127|import json
-128|d=json.load(open('$CONFIG_FILE'))
-129|v=d.get('rubric','')
-130|if isinstance(v,list): print('\n'.join(v) if v else '')
-131|else: print(v if v else '')
-132|" 2>/dev/null | tr -d '\r' || echo "")
-133|  else
-134|    RUBRIC_PATH=$(grep -oP '"rubric"\s*:\s*"\K[^"]+' "$CONFIG_FILE" 2>/dev/null || echo "")
-135|  fi
-136|
-137|  # scanProfile and generation-spec are always scalars — safe to batch-read
-138|  mapfile -t CONFIG_VALS < <(read_json_fields "$CONFIG_FILE" "scanProfile" "generation-spec")
-139|  SCAN_PROFILE="${CONFIG_VALS[0]:-}"
-140|  GEN_SPEC="${CONFIG_VALS[1]:-}"
-141|
-142|  # Validate rubric paths — if array, ALL elements must resolve
-143|  if [ -z "$RUBRIC_PATH" ]; then
-144|    CURRENT_RUBRIC_VALID="true"
-145|  else
-146|    CURRENT_RUBRIC_VALID="true"
-147|    while IFS= read -r rp; do
-148|      [ -z "$rp" ] && continue
-149|      if [ ! -f "$rp" ] && [ ! -f "$PLUGIN_ROOT/$rp" ]; then
-150|        CURRENT_RUBRIC_VALID="false"
-151|        break
-152|      fi
-153|    done <<< "$RUBRIC_PATH"
-154|  fi
-155|
-156|  if [ -n "$SCAN_PROFILE" ] && [ -f "$SCAN_PROFILE" ]; then
-157|    CURRENT_SCAN_PROFILE_VALID="true"
-158|  elif [ -n "$SCAN_PROFILE" ] && [ -f "$PLUGIN_ROOT/$SCAN_PROFILE" ]; then
-159|    CURRENT_SCAN_PROFILE_VALID="true"
-160|  elif [ -z "$SCAN_PROFILE" ]; then
-161|    if [ -f ".preflight/scan-profiles/$CURRENT_STACK.md" ] || [ -f "$PLUGIN_ROOT/examples/scan-profiles/$CURRENT_STACK.md" ]; then
-162|      CURRENT_SCAN_PROFILE_VALID="true"
-163|    fi
-164|  fi
-165|
-166|  if [ -n "$GEN_SPEC" ] && [ -f "$GEN_SPEC" ]; then
-167|    CURRENT_GEN_SPEC_VALID="true"
-168|  elif [ -n "$GEN_SPEC" ] && [ -f "$PLUGIN_ROOT/$GEN_SPEC" ]; then
-169|    CURRENT_GEN_SPEC_VALID="true"
-170|  elif [ -z "$GEN_SPEC" ]; then
-171|    CURRENT_GEN_SPEC_VALID="true"
-172|  fi
-173|fi
-174|
-175|# ─── Build current state JSON ─────────────────────────────────
-176|
-177|CACHE_SCHEMA_VERSION=1
-178|
-179|CURRENT_STATE=$(cat <<STATEEOF
-180|{
-181|  "schemaVersion": $CACHE_SCHEMA_VERSION,
-182|  "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-183|  "stack": "$CURRENT_STACK",
-184|  "sourceDirCount": $CURRENT_SOURCE_DIRS,
-185|  "configExists": $CURRENT_CONFIG_EXISTS,
-186|  "rubricValid": $CURRENT_RUBRIC_VALID,
-187|  "scanProfileValid": $CURRENT_SCAN_PROFILE_VALID,
-188|  "genSpecValid": $CURRENT_GEN_SPEC_VALID
-189|}
-190|STATEEOF
-191|)
-192|
-193|# ─── Compare against cached state ─────────────────────────────
-194|
-195|if [ ! -f "$STATE_FILE" ]; then
-196|  # First run — write initial state, no drift to report
-197|  mkdir -p "$CACHE_DIR"
-198|  echo "$CURRENT_STATE" > "$STATE_FILE"
-199|  exit 0
-200|fi
-201|
-202|# Read cached state in one call
-203|if command -v jq &>/dev/null || [ -n "$PYTHON_CMD" ]; then
-204|  mapfile -t CACHED_VALS < <(read_json_fields "$STATE_FILE" "schemaVersion" "stack" "sourceDirCount" "configExists" "rubricValid" "scanProfileValid")
-205|  CACHED_SCHEMA="${CACHED_VALS[0]:-}"
-206|  CACHED_STACK="${CACHED_VALS[1]:-unknown}"
-207|  CACHED_SOURCE_DIRS="${CACHED_VALS[2]:-0}"
-208|  CACHED_CONFIG_EXISTS="${CACHED_VALS[3]:-false}"
-209|  CACHED_RUBRIC_VALID="${CACHED_VALS[4]:-false}"
-210|  CACHED_SCAN_PROFILE_VALID="${CACHED_VALS[5]:-false}"
-211|
-212|  # Schema version mismatch — treat as first run (overwrite, no warnings)
-213|  # Empty/missing = pre-schema cache (backwards-compatible, proceed normally)
-214|  if [ -n "$CACHED_SCHEMA" ] && [ "$CACHED_SCHEMA" != "$CACHE_SCHEMA_VERSION" ]; then
-215|    mkdir -p "$CACHE_DIR"
-216|    echo "$CURRENT_STATE" > "$STATE_FILE"
-217|    exit 0
-218|  fi
-219|else
-220|  # Cannot parse cache — treat as first run
-221|  mkdir -p "$CACHE_DIR"
-222|  echo "$CURRENT_STATE" > "$STATE_FILE"
-223|  exit 0
-224|fi
-225|
-226|# ─── Drift checks ─────────────────────────────────────────────
-227|
-228|# 1. Stack drift
-229|if [ "$CURRENT_STACK" != "$CACHED_STACK" ] && [ "$CACHED_STACK" != "unknown" ]; then
-230|  add_warning "STACK" "Detected stack changed from '$CACHED_STACK' to '$CURRENT_STACK'. Scan profile and generation spec may need updating."
-231|fi
-232|
-233|# 2. Config drift — config disappeared
-234|if [ "$CACHED_CONFIG_EXISTS" = "true" ] && [ "$CURRENT_CONFIG_EXISTS" = "false" ]; then
-235|  add_warning "CONFIG" "Project config file no longer found. Framework operating on defaults."
-236|fi
-237|
-238|# 3. Path validity drift — rubric became invalid (was valid, now isn't)
-239|if [ "$CURRENT_CONFIG_EXISTS" = "true" ] && [ "$CURRENT_RUBRIC_VALID" = "false" ] && [ "$CACHED_RUBRIC_VALID" = "true" ] && [ -n "${RUBRIC_PATH:-}" ]; then
-240|  add_warning "RUBRIC" "Configured rubric path '$RUBRIC_PATH' does not exist. Review will use fallback."
-241|fi
-242|
-243|# 4. Scan profile validity drift — was valid, now isn't
-244|if [ "$CURRENT_CONFIG_EXISTS" = "true" ] && [ "$CURRENT_SCAN_PROFILE_VALID" = "false" ] && [ "$CACHED_SCAN_PROFILE_VALID" = "true" ]; then
-245|  add_warning "PROFILE" "No valid scan profile found for stack '$CURRENT_STACK'. Discovery analyst will use minimal built-in scan only."
-246|fi
-247|
-248|# 5. Coverage drift — significant new source directories
-249|# Sanitize to integers (handles whitespace from wc -l, trailing spaces, etc.)
-250|CURRENT_SOURCE_DIRS="${CURRENT_SOURCE_DIRS//[!0-9]/}"
-251|CACHED_SOURCE_DIRS="${CACHED_SOURCE_DIRS//[!0-9]/}"
-252|CURRENT_SOURCE_DIRS="${CURRENT_SOURCE_DIRS:-0}"
-253|CACHED_SOURCE_DIRS="${CACHED_SOURCE_DIRS:-0}"
-254|if [ "$CURRENT_SOURCE_DIRS" -gt 0 ] && [ "$CACHED_SOURCE_DIRS" -gt 0 ]; then
-255|  GROWTH=$(( CURRENT_SOURCE_DIRS - CACHED_SOURCE_DIRS ))
-256|  if [ "$GROWTH" -gt 3 ]; then
-257|    add_warning "COVERAGE" "$GROWTH new source directories since last session. Verify scan coverage and coupling groups."
-258|  fi
-259|fi
-260|
-261|# ─── Update cache ─────────────────────────────────────────────
-262|
-263|mkdir -p "$CACHE_DIR"
-264|echo "$CURRENT_STATE" > "$STATE_FILE"
-265|
-266|# ─── Output ───────────────────────────────────────────────────
-267|
-268|if [ -z "$DRIFT_WARNINGS" ]; then
-269|  exit 0
-270|fi
-271|
-272|# Format warnings for session context injection
-273|ESCAPED_WARNINGS=$(echo -e "$DRIFT_WARNINGS" | sed 's/\\/\\\\/g' | sed 's/"/\\"/g' | sed ':a;N;$!ba;s/\n/\\n/g')
-274|
-275|cat <<EOF
-276|{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"⚠️ DRIFT DETECTED:\\n$ESCAPED_WARNINGS\\n\\nRun the discovery-analyst or update .preflight/config.json to resolve."}}
-277|EOF
-278|
+STATE_FILE="$CACHE_DIR/derived-state.json"
+DRIFT_WARNINGS=""
+
+# ─── Helpers ───────────────────────────────────────────────────
+
+add_warning() {
+  local category="$1" message="$2"
+  if [ -z "$DRIFT_WARNINGS" ]; then
+    DRIFT_WARNINGS="[$category] $message"
+  else
+    DRIFT_WARNINGS="$DRIFT_WARNINGS\n[$category] $message"
+  fi
+}
+
+# Detect a working Python interpreter (handles Windows Store stubs)
+PYTHON_CMD=""
+for py_candidate in python python3; do
+  if command -v "$py_candidate" &>/dev/null; then
+    if "$py_candidate" -c "pass" &>/dev/null 2>&1; then
+      PYTHON_CMD="$py_candidate"
+      break
+    fi
+  fi
+done
+
+source "${PLUGIN_ROOT}/lib/detect-stack.sh"
+
+count_source_dirs() {
+  # Count unique parent directories containing source files (portable — no GNU -printf)
+  local count
+  if count=$(find . -maxdepth 3 -type f \( -name "*.cs" -o -name "*.java" -o -name "*.py" -o -name "*.ts" -o -name "*.js" -o -name "*.go" -o -name "*.rs" \) 2>/dev/null | sed 's|/[^/]*$||' | sort -u | wc -l); then
+    echo "${count:-0}"
+  else
+    echo "0"
+  fi
+}
+
+# Read multiple fields from a JSON file in a single interpreter call.
+# Usage: read_json_fields <file> <field1> <field2> ...
+# Output: one value per line, booleans as true/false, missing as empty
+read_json_fields() {
+  local file="$1"; shift
+  local fields=("$@")
+  if [ ! -f "$file" ]; then
+    for _ in "${fields[@]}"; do echo ""; done
+    return
+  fi
+  if command -v jq &>/dev/null; then
+    for f in "${fields[@]}"; do
+      # Array fields: one element per line (mirrors python fallback contract).
+      # tr -d '\r': MSYS jq -r emits CRLF; trailing \r breaks every downstream
+      # comparison and mapfile element (was: CACHED_SCHEMA=$'\r' triggered
+      # false schema-mismatch → overwrite-and-exit before drift checks ran).
+      jq -r "(.[\"$f\"] // \"\") | if type == \"array\" then .[] else . end" "$file" 2>/dev/null | tr -d '\r' || echo ""
+    done
+  elif [ -n "$PYTHON_CMD" ]; then
+    local field_list=""
+    for f in "${fields[@]}"; do
+      field_list="${field_list}'${f}',"
+    done
+    $PYTHON_CMD -c "
+import json
+d=json.load(open('$file'))
+for f in [${field_list}]:
+    v=d.get(f, '')
+    if isinstance(v, bool): print(str(v).lower())
+    elif isinstance(v, (int,float)): print(v)
+    elif isinstance(v, list): print('\\n'.join(v) if v else '')
+    else: print(v if v else '')
+" 2>/dev/null | tr -d '\r' || {
+      for _ in "${fields[@]}"; do echo ""; done
+    }
+  else
+    for _ in "${fields[@]}"; do echo ""; done
+  fi
+}
+
+# ─── Derive current state ─────────────────────────────────────
+
+CONFIG_FILE=""
+for candidate in ".preflight/config.json" ".cpsl/config.json" ".forge.json"; do
+  if [ -f "$candidate" ]; then
+    CONFIG_FILE="$candidate"
+    break
+  fi
+done
+
+detect_stack
+CURRENT_STACK="$STACK_VALUE"
+CURRENT_SOURCE_DIRS=$(count_source_dirs)
+CURRENT_CONFIG_EXISTS="false"
+CURRENT_RUBRIC_VALID="false"
+CURRENT_SCAN_PROFILE_VALID="false"
+CURRENT_GEN_SPEC_VALID="false"
+RUBRIC_PATH=""
+SCAN_PROFILE=""
+GEN_SPEC=""
+
+if [ -n "$CONFIG_FILE" ]; then
+  CURRENT_CONFIG_EXISTS="true"
+
+  # Read rubric separately — it may be an ARRAY (one path per line);
+  # reading it with read_json_fields' batch mapfile misaligns indices
+  # when the array has >1 element (element [1] lands in the scanProfile
+  # slot, [2] in generation-spec). Mirror the proven rubric-validity-gate
+  # pattern: jq with //"" guard, array expansion, tr -d '\r'.
+  if command -v jq &>/dev/null; then
+    RUBRIC_PATH=$(jq -r '(.rubric // "") | if type == "array" then .[] else . end' "$CONFIG_FILE" 2>/dev/null | tr -d '\r' || echo "")
+  elif [ -n "$PYTHON_CMD" ]; then
+    RUBRIC_PATH=$($PYTHON_CMD -c "
+import json
+d=json.load(open('$CONFIG_FILE'))
+v=d.get('rubric','')
+if isinstance(v,list): print('\n'.join(v) if v else '')
+else: print(v if v else '')
+" 2>/dev/null | tr -d '\r' || echo "")
+  else
+    RUBRIC_PATH=$(grep -oP '"rubric"\s*:\s*"\K[^"]+' "$CONFIG_FILE" 2>/dev/null || echo "")
+  fi
+
+  # scanProfile and generation-spec are always scalars — safe to batch-read
+  mapfile -t CONFIG_VALS < <(read_json_fields "$CONFIG_FILE" "scanProfile" "generation-spec")
+  SCAN_PROFILE="${CONFIG_VALS[0]:-}"
+  GEN_SPEC="${CONFIG_VALS[1]:-}"
+
+  # Validate rubric paths — if array, ALL elements must resolve
+  if [ -z "$RUBRIC_PATH" ]; then
+    CURRENT_RUBRIC_VALID="true"
+  else
+    CURRENT_RUBRIC_VALID="true"
+    while IFS= read -r rp; do
+      [ -z "$rp" ] && continue
+      if [ ! -f "$rp" ] && [ ! -f "$PLUGIN_ROOT/$rp" ]; then
+        CURRENT_RUBRIC_VALID="false"
+        break
+      fi
+    done <<< "$RUBRIC_PATH"
+  fi
+
+  if [ -n "$SCAN_PROFILE" ] && [ -f "$SCAN_PROFILE" ]; then
+    CURRENT_SCAN_PROFILE_VALID="true"
+  elif [ -n "$SCAN_PROFILE" ] && [ -f "$PLUGIN_ROOT/$SCAN_PROFILE" ]; then
+    CURRENT_SCAN_PROFILE_VALID="true"
+  elif [ -z "$SCAN_PROFILE" ]; then
+    if [ -f ".preflight/scan-profiles/$CURRENT_STACK.md" ] || [ -f "$PLUGIN_ROOT/examples/scan-profiles/$CURRENT_STACK.md" ]; then
+      CURRENT_SCAN_PROFILE_VALID="true"
+    fi
+  fi
+
+  if [ -n "$GEN_SPEC" ] && [ -f "$GEN_SPEC" ]; then
+    CURRENT_GEN_SPEC_VALID="true"
+  elif [ -n "$GEN_SPEC" ] && [ -f "$PLUGIN_ROOT/$GEN_SPEC" ]; then
+    CURRENT_GEN_SPEC_VALID="true"
+  elif [ -z "$GEN_SPEC" ]; then
+    CURRENT_GEN_SPEC_VALID="true"
+  fi
+fi
+
+# ─── Build current state JSON ─────────────────────────────────
+
+CACHE_SCHEMA_VERSION=1
+
+CURRENT_STATE=$(cat <<STATEEOF
+{
+  "schemaVersion": $CACHE_SCHEMA_VERSION,
+  "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+  "stack": "$CURRENT_STACK",
+  "sourceDirCount": $CURRENT_SOURCE_DIRS,
+  "configExists": $CURRENT_CONFIG_EXISTS,
+  "rubricValid": $CURRENT_RUBRIC_VALID,
+  "scanProfileValid": $CURRENT_SCAN_PROFILE_VALID,
+  "genSpecValid": $CURRENT_GEN_SPEC_VALID
+}
+STATEEOF
+)
+
+# ─── Compare against cached state ─────────────────────────────
+
+if [ ! -f "$STATE_FILE" ]; then
+  # First run — write initial state, no drift to report
+  mkdir -p "$CACHE_DIR"
+  echo "$CURRENT_STATE" > "$STATE_FILE"
+  exit 0
+fi
+
+# Read cached state in one call
+if command -v jq &>/dev/null || [ -n "$PYTHON_CMD" ]; then
+  mapfile -t CACHED_VALS < <(read_json_fields "$STATE_FILE" "schemaVersion" "stack" "sourceDirCount" "configExists" "rubricValid" "scanProfileValid")
+  CACHED_SCHEMA="${CACHED_VALS[0]:-}"
+  CACHED_STACK="${CACHED_VALS[1]:-unknown}"
+  CACHED_SOURCE_DIRS="${CACHED_VALS[2]:-0}"
+  CACHED_CONFIG_EXISTS="${CACHED_VALS[3]:-false}"
+  CACHED_RUBRIC_VALID="${CACHED_VALS[4]:-false}"
+  CACHED_SCAN_PROFILE_VALID="${CACHED_VALS[5]:-false}"
+
+  # Schema version mismatch — treat as first run (overwrite, no warnings)
+  # Empty/missing = pre-schema cache (backwards-compatible, proceed normally)
+  if [ -n "$CACHED_SCHEMA" ] && [ "$CACHED_SCHEMA" != "$CACHE_SCHEMA_VERSION" ]; then
+    mkdir -p "$CACHE_DIR"
+    echo "$CURRENT_STATE" > "$STATE_FILE"
+    exit 0
+  fi
+else
+  # Cannot parse cache — treat as first run
+  mkdir -p "$CACHE_DIR"
+  echo "$CURRENT_STATE" > "$STATE_FILE"
+  exit 0
+fi
+
+# ─── Drift checks ─────────────────────────────────────────────
+
+# 1. Stack drift
+if [ "$CURRENT_STACK" != "$CACHED_STACK" ] && [ "$CACHED_STACK" != "unknown" ]; then
+  add_warning "STACK" "Detected stack changed from '$CACHED_STACK' to '$CURRENT_STACK'. Scan profile and generation spec may need updating."
+fi
+
+# 2. Config drift — config disappeared
+if [ "$CACHED_CONFIG_EXISTS" = "true" ] && [ "$CURRENT_CONFIG_EXISTS" = "false" ]; then
+  add_warning "CONFIG" "Project config file no longer found. Framework operating on defaults."
+fi
+
+# 3. Path validity drift — rubric became invalid (was valid, now isn't)
+if [ "$CURRENT_CONFIG_EXISTS" = "true" ] && [ "$CURRENT_RUBRIC_VALID" = "false" ] && [ "$CACHED_RUBRIC_VALID" = "true" ] && [ -n "${RUBRIC_PATH:-}" ]; then
+  add_warning "RUBRIC" "Configured rubric path '$RUBRIC_PATH' does not exist. Review will use fallback."
+fi
+
+# 4. Scan profile validity drift — was valid, now isn't
+if [ "$CURRENT_CONFIG_EXISTS" = "true" ] && [ "$CURRENT_SCAN_PROFILE_VALID" = "false" ] && [ "$CACHED_SCAN_PROFILE_VALID" = "true" ]; then
+  add_warning "PROFILE" "No valid scan profile found for stack '$CURRENT_STACK'. Discovery analyst will use minimal built-in scan only."
+fi
+
+# 5. Coverage drift — significant new source directories
+# Sanitize to integers (handles whitespace from wc -l, trailing spaces, etc.)
+CURRENT_SOURCE_DIRS="${CURRENT_SOURCE_DIRS//[!0-9]/}"
+CACHED_SOURCE_DIRS="${CACHED_SOURCE_DIRS//[!0-9]/}"
+CURRENT_SOURCE_DIRS="${CURRENT_SOURCE_DIRS:-0}"
+CACHED_SOURCE_DIRS="${CACHED_SOURCE_DIRS:-0}"
+if [ "$CURRENT_SOURCE_DIRS" -gt 0 ] && [ "$CACHED_SOURCE_DIRS" -gt 0 ]; then
+  GROWTH=$(( CURRENT_SOURCE_DIRS - CACHED_SOURCE_DIRS ))
+  if [ "$GROWTH" -gt 3 ]; then
+    add_warning "COVERAGE" "$GROWTH new source directories since last session. Verify scan coverage and coupling groups."
+  fi
+fi
+
+# ─── Update cache ─────────────────────────────────────────────
+
+mkdir -p "$CACHE_DIR"
+echo "$CURRENT_STATE" > "$STATE_FILE"
+
+# ─── Output ───────────────────────────────────────────────────
+
+if [ -z "$DRIFT_WARNINGS" ]; then
+  exit 0
+fi
+
+# Format warnings for session context injection
+ESCAPED_WARNINGS=$(echo -e "$DRIFT_WARNINGS" | sed 's/\\/\\\\/g' | sed 's/"/\\"/g' | sed ':a;N;$!ba;s/\n/\\n/g')
+
+cat <<EOF
+{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"⚠️ DRIFT DETECTED:\\n$ESCAPED_WARNINGS\\n\\nRun the discovery-analyst or update .preflight/config.json to resolve."}}
+EOF
