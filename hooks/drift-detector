@@ -19,6 +19,9 @@ CACHE_DIR=".preflight/cache"
 _hb_self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _hb_plugin_root="$(cd "$_hb_self_dir/.." && pwd)"
 [ -f "$_hb_plugin_root/lib/heartbeat.sh" ] && source "$_hb_plugin_root/lib/heartbeat.sh"
+# Fail-SAFE: undefined function under `set -e` would exit 127 before gate logic
+# (a blocking gate would fail OPEN). No-op fallback so heartbeat can't crash the gate.
+type _write_heartbeat &>/dev/null || _write_heartbeat() { :; }
 _write_heartbeat "drift-detector"
 
 STATE_FILE="$CACHE_DIR/derived-state.json"

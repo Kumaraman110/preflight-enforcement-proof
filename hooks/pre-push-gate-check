@@ -19,13 +19,11 @@ set -euo pipefail
 _hb_self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _hb_plugin_root="$(cd "$_hb_self_dir/.." && pwd)"
 [ -f "$_hb_plugin_root/lib/heartbeat.sh" ] && source "$_hb_plugin_root/lib/heartbeat.sh"
-_write_heartbeat "pre-push-gate-check"
-
-
-# --- Heartbeat (passive liveness self-evidencing) ---
-_hb_self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-_hb_plugin_root="$(cd "$_hb_self_dir/.." && pwd)"
-[ -f "$_hb_plugin_root/lib/heartbeat.sh" ] && source "$_hb_plugin_root/lib/heartbeat.sh"
+# Fail-SAFE: if heartbeat.sh was unreachable, the function is undefined; under
+# `set -e` the call would exit 127 BEFORE the gate logic runs — a blocking gate
+# would then fail OPEN (127 != 2). Define a no-op so the heartbeat can never
+# crash the host gate. The diagnostic just goes silent when the lib is absent.
+type _write_heartbeat &>/dev/null || _write_heartbeat() { :; }
 _write_heartbeat "pre-push-gate-check"
 
 # Per-clone topology overlay (issue #6): source the shared resolver so branch.base /
