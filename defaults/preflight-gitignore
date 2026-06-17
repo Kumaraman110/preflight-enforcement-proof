@@ -35,3 +35,8 @@ metrics.json
 
 # Migration progress checkpoint (session-local recovery state)
 migrate-checkpoint.json
+
+# Agent track-record scores (tools/preflight-agent-scorer.sh output) — ADVISORY, regenerable from
+# the judgment + ground-truth artifacts. Per-run, reported to a human; NEVER feeds a gate. Runtime
+# state, not a decision-of-record — never commit. (Spec: lib/agent-scorer.md.)
+track-record/
