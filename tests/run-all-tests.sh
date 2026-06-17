@@ -627,6 +627,18 @@ run_behavioral_tests() {
   else
     yellow "SKIP: coupled-gate-failclosed-test.sh not found"
   fi
+
+  local agent_scorer_test="$SCRIPT_DIR/behavioral/agent-scorer-test.sh"
+  if [ -f "$agent_scorer_test" ]; then
+    if bash "$agent_scorer_test"; then
+      PASSES=$((PASSES + 14))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: agent-scorer tests failed (independent judgment scorer; RED->GREEN overclaim + no-gate-feed)"
+    fi
+  else
+    yellow "SKIP: agent-scorer-test.sh not found"
+  fi
 }
 
 # ═══════════════════════════════════════════════════════════════

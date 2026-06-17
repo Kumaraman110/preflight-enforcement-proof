@@ -1,0 +1,31 @@
+{
+  "pr": 99,
+  "head": "abc1234",
+  "adjudicatedAt": "2026-06-15T18:00:00Z",
+  "adjudications": [
+    {
+      "commentId": "c-good",
+      "parentVerdict": "DEFENDED",
+      "citedEvidence": "Legacy/SessionTokenService.cs:142",
+      "handlerStability": "stable",
+      "securityEscalated": false,
+      "residualUncertainty": null
+    },
+    {
+      "commentId": "c-fixed",
+      "parentVerdict": "FIXED",
+      "citedEvidence": "n/a — fixed, not defended",
+      "handlerStability": "stable",
+      "securityEscalated": false,
+      "residualUncertainty": null
+    },
+    {
+      "commentId": "c-bare",
+      "parentVerdict": "DEFENDED",
+      "citedEvidence": "intentional — matches existing behavior",
+      "handlerStability": "stable",
+      "securityEscalated": false,
+      "residualUncertainty": null
+    }
+  ]
+}
