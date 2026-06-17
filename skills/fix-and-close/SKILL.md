@@ -107,6 +107,7 @@ guess is wrong. If only one reasonable interpretation exists, proceed without ce
 ### Stage 1 Gate
 
 4. **Run tests.** Must pass. If they fail, fix compilation/test errors FIRST (these are not rubric findings — they're broken code). **On pass:** write gate evidence: `bash "${FRAMEWORK_ROOT}/hooks/write-gate-evidence" tests-pass`
+   - **Record the claim (decision-log, for the agent-scorer):** you just asserted "tests pass". Record it VERBATIM with the actual test output as evidence: `bash "${FRAMEWORK_ROOT}/hooks/record-claim" count-assertion "<the pass/fail summary you assert, e.g. '0 failed'>" "tests pass: <verbatim>" "tests at HEAD" "<test command>" "<the test command's actual output>"`. The recorder logs what you claim; the independent scorer judges later whether it held. Record the claim as made — do not soften it.
 
 5. **Invoke `code-reviewer` sub-agent.** Always. Even for one-line changes.
 
@@ -165,6 +166,7 @@ guess is wrong. If only one reasonable interpretation exists, proceed without ce
 
 8. **If CLEAN** → write gate evidence: `bash "${FRAMEWORK_ROOT}/hooks/write-gate-evidence" stage1-clean`.
    - **Also write `map-validated` if a dependency map exists.** The pre-push gate (Gate 3) demands `map-validated` whenever a `dependency-map.json` is present — independent of whether Stage 1 found anything. On a CLEAN run the Coupled-Group Protocol (step 6) never executes, so its map-validation step never runs and `map-validated` would otherwise never be written — falsely blocking the push. So on the CLEAN path: if a dependency map exists, run the same structural validation as step 6b (via `${FRAMEWORK_ROOT}/lib/dependency-map-validator.md`), and on pass write `bash "${FRAMEWORK_ROOT}/hooks/write-gate-evidence" map-validated`. (The map is validated, not consumed for coupling, on the clean path — but the gate evidence is required either way.)
+   - **Record the claim (decision-log, for the agent-scorer):** you just asserted "Stage 1 CLEAN". Record it VERBATIM with the code-reviewer's verdict as evidence: `bash "${FRAMEWORK_ROOT}/hooks/record-claim" all-green CLEAN "Stage 1 clean — <verbatim claim>" "diff <base>...HEAD" "code-reviewer (Stage 1)" "<the reviewer's CLEAN/NEEDS_FIXES verdict>"`. Faithful recording, not self-assessment — the scorer grades it.
    - Then proceed to commit/push.
 
 ### Commit and Push
@@ -320,6 +322,8 @@ If ANY verification fails, DO NOT declare success. Surface the gap with the actu
     - Outcome and total duration
 
     Create the `.preflight/` directory if it doesn't exist. Do NOT skip metrics because the run failed — failed runs are the most valuable data points (they reveal where the system breaks).
+
+    - **Record the outcome claim (decision-log, for the agent-scorer):** when you assert the run outcome, record it VERBATIM: `bash "${FRAMEWORK_ROOT}/hooks/record-claim" done "<outcome, e.g. SUCCESS>" "<verbatim final-summary claim>"`. Record the outcome you are ACTUALLY asserting — a run that capped or got stuck records CAPPED/STUCK, never a laundered SUCCESS. The recorder logs it as made; the independent scorer (e.g. SUCCESS while stage1.capHit was true) judges whether it held.
 
 ### Stage 2 Resolution Gate (MANDATORY — checked before completion)
 

@@ -138,10 +138,14 @@ if ! grep -qi 'agent-scorer' "$ROOT/hooks/hooks.json" 2>/dev/null; then
   ok "C2c: scorer is NOT registered in hooks.json (not a gate)"
 else bad "C2c: scorer IS in hooks.json — it must never be a hook"; fi
 
-# C2d: NO hook or lib engine READS the scorer's output (track-record / score-*.json / agent-scorer).
-READERS="$(grep -rlE 'track-record|score-[a-zA-Z0-9_-]+\.json|agent-scorer' "$ROOT/hooks/" "$ROOT/lib/" 2>/dev/null | grep -vE '\.md$' || true)"
-if [ -z "$READERS" ]; then ok "C2d: no hook/lib-engine reads scorer output (track record informs humans, never a gate)"
-else bad "C2d: a hook/lib reads scorer output: $READERS"; fi
+# C2d: NO hook or lib engine READS the scorer's output (track-record / score-*.json). Match per-LINE
+# and exclude comments (a hook may legitimately MENTION the scorer in a header comment — e.g.
+# hooks/record-claim, the emitter, describes the scorer relationship; that is not a read). Only a
+# non-comment line referencing the scorer's OUTPUT would be a violation. (.md specs are excluded.)
+READERS="$(grep -rnE 'track-record|score-[a-zA-Z0-9_-]+\.json' "$ROOT/hooks/" "$ROOT/lib/" 2>/dev/null \
+            | grep -vE '\.md:' | grep -vE ':[0-9]+:\s*#' || true)"
+if [ -z "$READERS" ]; then ok "C2d: no hook/lib-engine reads scorer output in code (track record informs humans, never a gate)"
+else bad "C2d: a hook/lib reads scorer output (non-comment): $READERS"; fi
 
 # C2e: source honesty — requesting 'reality' (data pending) must NOT silently fall back; exit 2.
 bash "$SCORER" --run demo --source reality --decisions "$FIX/decisions/demo.jsonl" \

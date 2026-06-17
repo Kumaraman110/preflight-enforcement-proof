@@ -48,10 +48,9 @@ right or wrong. Three kinds, by where they live today:
 repeatedly — "ran out of tool calls but said done", "clear to cut" while 4 hooks were syntactically
 dead at the proposed SHA — lives ONLY in free-form prose reports today (e.g. `.release-audit/*.md`).
 There is no structured, append-only artifact capturing the agent's claims at emit time. The scorer
-**defines** the decision-log schema and **scores it when present**, but the orchestrator is not yet
-wired to emit it on every run. That wiring is a separate integration (orchestrator/skill change),
-deliberately NOT done here — emitting a fabricated history would defeat the entire point. Status:
-**schema ready, emission pending orchestrator integration.**
+**defines** the decision-log schema and **scores it when present**. Status: **WIRED** — `hooks/record-claim`
+emits the claim verbatim and the orchestrator skills (fix-and-close, migrate) call it at each
+consequential assertion. See "Emission" below.
 
 ### Decision-log schema (`.preflight/decisions/<run-id>.jsonl`, append-only, one JSON object per line)
 ```json
@@ -71,17 +70,50 @@ An optional `checkEvidence` field may record the actual output of `checkCommand`
 present, the rejudgment source (3) scores the claim against THAT recorded evidence rather than a bare
 assertion (the strongest the rejudgment source can do without re-running the world).
 
-> **Gitignore disposition (flagged, not yet decided).** The scorer's *output* (`track-record/`) is
-> advisory, regenerable runtime state and IS added to the shipped gitignore template + installer
-> `REQUIRED_IGNORES` (ignored, never committed). The *input* decision-log (`decisions/`) is a
-> different question: like `adjudications/`, an append-only judgment record you score later wants to
-> be DURABLE/tracked, not cache — but its tracked-vs-ignored disposition is deliberately left OPEN
-> until the orchestrator emission path exists (deciding it before there's a writer would be guessing).
-> Until then `decisions/` is neither ignored nor emitted; the scorer reads it if present.
+**Emission (now wired).** `hooks/record-claim` is the FAITHFUL RECORDER the orchestrator calls to
+append a claim, verbatim, to this log. See "Emission" below.
+
+> **Gitignore disposition (DECIDED — tracked).** The scorer's *output* (`track-record/`) is advisory,
+> regenerable runtime state → ignored (in the gitignore template + installer `REQUIRED_IGNORES`). The
+> *input* decision-log (`decisions/`) is the opposite class: it is the orchestrator's append-only
+> decision-of-record, and the scorer grades it later. Same reasoning as `adjudications/` (the
+> verdict-of-record, which the template deliberately tracks): a claim that vanished before it was
+> scored would defeat the accountability thesis. So **`decisions/` is TRACKED** — listed under
+> "intentionally NOT ignored" in `defaults/preflight-gitignore`, NOT added to `REQUIRED_IGNORES`.
 
 Append-only (`.jsonl`): a claim is never rewritten. A corrected claim is a NEW line referencing the
 old `id` — you can see the agent changed its mind, which is itself scoreable. This mirrors the
 adjudication record's immutability and mem0's audit-correct ADD-only discipline.
+
+### Emission — `hooks/record-claim` (the FAITHFUL RECORDER) + the orchestrator contract
+The orchestrator emits a claim by calling:
+```bash
+bash "${FRAMEWORK_ROOT}/hooks/record-claim" <claimType> <assertedStatus> "<claim-text-verbatim>" \
+     [scope] [checkCommand] [checkEvidence]
+```
+It appends ONE JSON line (the schema above) to `.preflight/decisions/<run-id>.jsonl`
+(run-id = HEAD short-sha, or `$PREFLIGHT_RUN_ID`). The recorder has **NO judgment**: it stores
+`claim` and `assertedStatus` EXACTLY as passed (no deriving status from text, no softening, no
+deciding what's "worth" recording), and records EVERY call. Whether the claim HELD is the
+independent scorer's job. (The line that keeps emission honest — see the recorder's header and the
+no-self-assessment assertions in `tests/behavioral/decision-emission-test.sh`.)
+
+**The orchestrator contract — emit a claim at EACH consequential assertion (record ALL, not a curated
+subset). The integration points (fix-and-close):**
+
+| When the orchestrator asserts… | call `record-claim` with |
+|---|---|
+| tests pass (step 4) | `count-assertion <test-summary> "<verbatim>" "<scope>" "<test cmd>" "<test output>"` |
+| Stage 1 CLEAN (step 8) | `all-green CLEAN "Stage 1 clean — <verbatim>" "<diff scope>" "code-reviewer" "<reviewer verdict>"` |
+| about to declare push-ready / "clear" | `clear-to-cut CLEAR "<verbatim push-ready claim>" "<HEAD scope>" "<gate cmd>" "<gate output>"` |
+| a class-A vs class-B call | `class-call <A-or-B> "<verbatim call + reason>"` |
+| run outcome SUCCESS (step 14) | `done <outcome> "<verbatim final-summary claim>"` |
+
+Pass `checkEvidence` (the actual command output) whenever it exists — it is what lets the rejudgment
+source score the claim against its OWN recorded evidence rather than a bare assertion. This is
+prompt-level wiring (the skills instruct the orchestrator to call the recorder); the recorder itself
+is mechanical. An orchestrator that asserts "GREEN/clear/done" WITHOUT recording the claim has skipped
+the contract — the gap is then visible as a missing decision-log line, not a hidden overclaim.
 
 ---
 

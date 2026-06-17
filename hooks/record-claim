@@ -1,0 +1,109 @@
+#!/usr/bin/env bash
+# record-claim — FAITHFUL RECORDER of an orchestrator claim into the append-only decision log.
+# Called by the orchestrating skills (fix-and-close, migrate, …) at the moment they assert a
+# consequential claim ("all GREEN", "clear to cut", a class-A/B call, "done"). The agent-scorer
+# (tools/preflight-agent-scorer.sh) later judges INDEPENDENTLY whether each recorded claim held.
+#
+# Usage:
+#   record-claim <claimType> <assertedStatus> <claim-text> [scope] [checkCommand] [checkEvidence]
+#     claimType       : all-green | clear-to-cut | count-assertion | class-call | fix-vs-defer | parity-verdict | done
+#     assertedStatus  : the status the orchestrator is asserting, VERBATIM (e.g. GREEN | CLEAR | DONE | "29/29")
+#     claim-text      : the claim exactly as the orchestrator made it, VERBATIM
+#     scope           : (optional) what the claim covers, e.g. "behavioral battery at HEAD abc"
+#     checkCommand    : (optional) the command whose output would confirm/refute the claim
+#     checkEvidence   : (optional) the ACTUAL output of checkCommand at claim time (raw, untruncated-as-given)
+#
+# Appends ONE JSON object (one line) to <repo-root>/.preflight/decisions/<run-id>.jsonl.
+# run-id defaults to the current HEAD short-sha; override with PREFLIGHT_RUN_ID.
+#
+# ── THE FAITHFUL-RECORDER CONSTRAINT (the line that keeps emission honest) ────────────────────────
+# This recorder has NO JUDGMENT in it. It does NOT:
+#   - decide whether a claim is "worth" recording (it records EVERY call — the orchestrator emits ALL
+#     consequential claims, not a curated subset);
+#   - characterize / soften / sanitize the claim (it stores claim-text and assertedStatus EXACTLY as
+#     passed — no "mostly done" laundering of "done"; it does not derive status from the text);
+#   - score / self-assess the claim (whether it HELD is the independent scorer's job, never the
+#     recorder's).
+# It captures the assertion verbatim with metadata, full stop. There is NO scoring/contradiction/
+# verdict logic anywhere in this file (verified by tests/behavioral/decision-emission-test.sh).
+# This is the inverse of self-certification done right: record WHAT was claimed; let the independent
+# scorer judge WHETHER it held.
+
+set -uo pipefail
+
+CLAIM_TYPE="${1:-}"
+ASSERTED="${2:-}"
+CLAIM_TEXT="${3:-}"
+SCOPE="${4:-}"
+CHECK_COMMAND="${5:-}"
+CHECK_EVIDENCE="${6:-}"
+
+if [ -z "$CLAIM_TYPE" ] || [ -z "$ASSERTED" ] || [ -z "$CLAIM_TEXT" ]; then
+  echo "Usage: record-claim <claimType> <assertedStatus> <claim-text> [scope] [checkCommand] [checkEvidence]" >&2
+  echo "  Records an orchestrator claim VERBATIM into .preflight/decisions/<run-id>.jsonl (append-only)." >&2
+  exit 1
+fi
+
+# Anchor at the repo root (same idiom as write-gate-evidence); outside a repo, fall back to pwd.
+REPO_TOP="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+CURRENT_HEAD="$(git rev-parse HEAD 2>/dev/null || echo "unknown")"
+SHORT_HEAD="$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")"
+RUN_ID="${PREFLIGHT_RUN_ID:-$SHORT_HEAD}"
+DEC_DIR="$REPO_TOP/.preflight/decisions"
+DEC_FILE="$DEC_DIR/${RUN_ID}.jsonl"
+TIMESTAMP="$(date -u +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null || date +"%Y-%m-%dT%H:%M:%S")"
+
+mkdir -p "$DEC_DIR"
+
+# Sequential, append-safe claim id: claim-<N> where N = existing line count + 1. Append-only — a
+# correction is a NEW line (the scorer can see the agent changed its mind), never a rewrite.
+EXISTING=0
+[ -f "$DEC_FILE" ] && EXISTING="$(grep -c '' "$DEC_FILE" 2>/dev/null || echo 0)"
+CLAIM_ID="claim-$(printf '%03d' "$((EXISTING + 1))")"
+
+# JSON-encode every value via python (claim text is arbitrary — must not break the JSONL line, and
+# must be stored EXACTLY as given). This is pure serialization: NO judgment, NO transformation of
+# meaning — json.dumps escapes, it does not characterize. Optional fields are omitted when empty.
+PYTHON_CMD=""
+for c in python3 python; do
+  if command -v "$c" &>/dev/null && "$c" -c "pass" &>/dev/null 2>&1; then PYTHON_CMD="$c"; break; fi
+done
+
+if [ -n "$PYTHON_CMD" ]; then
+  CLAIM_ID="$CLAIM_ID" HEAD="$CURRENT_HEAD" AT="$TIMESTAMP" CLAIM_TYPE="$CLAIM_TYPE" \
+  ASSERTED="$ASSERTED" CLAIM_TEXT="$CLAIM_TEXT" SCOPE="$SCOPE" CHECK_COMMAND="$CHECK_COMMAND" \
+  CHECK_EVIDENCE="$CHECK_EVIDENCE" "$PYTHON_CMD" - >> "$DEC_FILE" <<'PYEOF'
+import os, json
+e = os.environ
+# Verbatim capture: every field is stored exactly as passed in. The schema mirrors
+# lib/agent-scorer.md exactly (kind, id, head, at, claim, claimType, assertedStatus, scope,
+# checkCommand, and optional checkEvidence). No field is derived from another; nothing is softened.
+obj = {
+    "id": e["CLAIM_ID"],
+    "head": e["HEAD"],
+    "at": e["AT"],
+    "kind": "CLAIM",
+    "claim": e["CLAIM_TEXT"],            # VERBATIM — exactly as the orchestrator asserted it
+    "claimType": e["CLAIM_TYPE"],
+    "assertedStatus": e["ASSERTED"],     # VERBATIM — the recorder does NOT derive this from the text
+}
+if e.get("SCOPE"):          obj["scope"] = e["SCOPE"]
+if e.get("CHECK_COMMAND"):  obj["checkCommand"] = e["CHECK_COMMAND"]
+if e.get("CHECK_EVIDENCE"): obj["checkEvidence"] = e["CHECK_EVIDENCE"]
+# json.dumps with ensure_ascii=True keeps the line ASCII-safe (Windows cp1252 consoles); one line.
+print(json.dumps(obj, ensure_ascii=True))
+PYEOF
+  RC=$?
+else
+  # No python: refuse rather than emit a hand-built line that could mis-escape arbitrary claim text
+  # and corrupt the append-only log. Honest failure beats a malformed record.
+  echo "ERROR: record-claim needs a working python interpreter to JSON-encode the claim safely." >&2
+  exit 1
+fi
+
+if [ "${RC:-1}" -ne 0 ]; then
+  echo "ERROR: failed to append claim to $DEC_FILE" >&2
+  exit 1
+fi
+
+echo "recorded $CLAIM_ID ($CLAIM_TYPE / $ASSERTED) → .preflight/decisions/${RUN_ID}.jsonl"

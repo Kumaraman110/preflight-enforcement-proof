@@ -639,6 +639,18 @@ run_behavioral_tests() {
   else
     yellow "SKIP: agent-scorer-test.sh not found"
   fi
+
+  local decision_emission_test="$SCRIPT_DIR/behavioral/decision-emission-test.sh"
+  if [ -f "$decision_emission_test" ]; then
+    if bash "$decision_emission_test"; then
+      PASSES=$((PASSES + 8))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: decision-emission tests failed (record-claim faithful recorder; verbatim + no-self-assess + end-to-end)"
+    fi
+  else
+    yellow "SKIP: decision-emission-test.sh not found"
+  fi
 }
 
 # ═══════════════════════════════════════════════════════════════
