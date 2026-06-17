@@ -98,6 +98,12 @@ From config (or defaults):
 2. Determine diff scope (uncommitted + unpushed).
 3. If nothing to push, inform user and exit.
 
+**Interpretation check (cost-saver, NOT a gate).** If the change you are about to push could
+reasonably address more than one interpretation of the request, state the interpretations and the
+one you proceeded with (and why) — don't pick silently. This is not a mechanical block: the human PR
+review already catches a wrong reading. Surfacing it here just shaves a wasted review cycle when the
+guess is wrong. If only one reasonable interpretation exists, proceed without ceremony.
+
 ### Stage 1 Gate
 
 4. **Run tests.** Must pass. If they fail, fix compilation/test errors FIRST (these are not rubric findings — they're broken code). **On pass:** write gate evidence: `bash "${FRAMEWORK_ROOT}/hooks/write-gate-evidence" tests-pass`

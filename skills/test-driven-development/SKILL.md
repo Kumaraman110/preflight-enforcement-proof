@@ -13,6 +13,20 @@ You are in TDD mode. Every piece of new functionality follows the cycle:
 2. **GREEN:** Write the minimum code to make the test pass
 3. **REFACTOR:** Clean up without changing behavior (tests stay green)
 
+## What This Skill Turns Your Task Into
+
+TDD is the act of transforming an imperative instruction into a verifiable goal — the success
+criterion comes first, the implementation loops until it's met:
+
+| Instead of... | Transform to... |
+|---|---|
+| "Add validation" | "Write tests for invalid inputs, then make them pass" |
+| "Fix the bug" | "Write a test that reproduces it, then make it pass" |
+| "Refactor X" | "Ensure tests pass before and after" |
+
+Strong success criteria let you loop independently; weak ones ("make it work") force constant
+clarification. The rest of this skill enforces that loop.
+
 ## Step 0 — Test Command Resolution
 
 Resolve the test command through the three-layer config system. This is the single source of truth for which command TDD runs.
