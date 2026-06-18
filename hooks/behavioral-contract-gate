@@ -1,0 +1,159 @@
+#!/usr/bin/env bash
+# behavioral-contract-gate — STAGED, NOT-YET-WIRED PreToolUse hook for the spec-analyst dispatch.
+#
+# ┌──────────────────────────────────────────────────────────────────────────────────────────────┐
+# │ AWAITING OWNER DECISION — NOT registered in hooks.json. This artifact is the staged MECHANISM   │
+# │ for the Behavioral-Contract guard. It does NOT fire until the owner approves the hook point and │
+# │ a registration entry is added to hooks/hooks.json. Until then the guard remains prompt-level +  │
+# │ prose-hardened (agents/spec-analyst.md, skills/behavior-spec/SKILL.md). See                     │
+# │ docs/parity-gate-limitations.md ("Behavioral-Contract guard").                                  │
+# └──────────────────────────────────────────────────────────────────────────────────────────────┘
+#
+# WHAT IT CLOSES:
+#   The guard "stop if no Behavioral Contract in CLAUDE.md" was prompt-level only — the spec-analyst was
+#   merely TOLD to return BLOCKED. An agent bypassed it by substituting a behavior-spec.json's
+#   comparison_surfaces/category_vocabulary (a machine OUTPUT, two-thirds fixed framework boilerplate) for
+#   the human-authored CLAUDE.md ## Behavioral Contract INPUT, and proceeded. This hook makes the guard
+#   MECHANICAL: it intercepts the spec-analyst spawn and blocks it unless a real, non-DRAFT Behavioral
+#   Contract exists in CLAUDE.md at the repo root. The agent cannot talk the analyst past it.
+#
+# RECOMMENDED HOOK POINT (Option 1 — dispatch gate). Mirrors hooks/rubric-validity-gate exactly:
+#   matcher "Agent|Task" -> read tool_input.subagent_type -> act only on a spec-analyst spawn. Fires
+#   EARLY (before any wasted extraction), at the exact decision point that was corrupted. The sibling
+#   Option 2 (a Write|Edit gate on behavior-spec.json) is viable defense-in-depth but fires late and needs
+#   path-scoped matching (a basename match would false-fire on deck/demo/behavior-spec-*.json). See the
+#   Part D investigation in the commit body / docs.
+#
+# INPUT CONTRACT:
+#   Claude Code pipes a JSON object to stdin: {"tool_name":"Agent",
+#   "tool_input":{"prompt":"...","subagent_type":"spec-analyst",...}}. We read stdin and extract
+#   tool_input.subagent_type via jq (or node/grep fallback) — identical to rubric-validity-gate.
+#
+# FAIL DIRECTION:
+#   - Not a spec-analyst spawn (incl. empty/unparseable subagent_type) -> ALLOW (exit 0). Same posture as
+#     rubric-validity-gate: only act when SURE it is the gated subagent; a false match would over-block
+#     unrelated Agent calls. The contract enforcement below applies only once we KNOW it is spec-analyst.
+#   - It IS a spec-analyst spawn -> FAIL CLOSED: a missing CLAUDE.md, a missing ## Behavioral Contract
+#     section, a DRAFT (unfilled scaffold placeholder) contract, a contract with no concrete recognition
+#     pattern, or any inability to read/verify -> BLOCK (exit 2). Absence/uncertainty never proceeds.
+#
+# Exit 0 = allow the dispatch · Exit 2 = block (reason on stderr; Claude Code blocks on exit 2)
+
+# --- Heartbeat (passive liveness self-evidencing) ---
+_hb_self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_hb_plugin_root="$(cd "$_hb_self_dir/.." && pwd)"
+[ -f "$_hb_plugin_root/lib/heartbeat.sh" ] && source "$_hb_plugin_root/lib/heartbeat.sh"
+# Fail-SAFE: undefined function under `set -e` would exit 127 before gate logic (a blocking gate would
+# fail OPEN). No-op fallback so heartbeat can't crash the gate.
+type _write_heartbeat &>/dev/null || _write_heartbeat() { :; }
+_write_heartbeat "behavioral-contract-gate"
+
+set -uo pipefail
+
+STDIN_JSON="$(cat)"
+
+# ─── Extract subagent_type from stdin JSON (jq -> node -> grep) ───────────────
+SUBAGENT_TYPE=""
+if command -v jq &>/dev/null; then
+  SUBAGENT_TYPE=$(printf '%s' "$STDIN_JSON" | jq -r '.tool_input.subagent_type // ""' 2>/dev/null || echo "")
+elif command -v node &>/dev/null; then
+  SUBAGENT_TYPE=$(printf '%s' "$STDIN_JSON" | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{const j=JSON.parse(d);process.stdout.write((j.tool_input&&j.tool_input.subagent_type)||'')}catch(e){}})" 2>/dev/null || echo "")
+else
+  SUBAGENT_TYPE=$(printf '%s' "$STDIN_JSON" | grep -o '"subagent_type"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | sed 's/.*"subagent_type"[[:space:]]*:[[:space:]]*"//;s/"$//' || echo "")
+fi
+
+# Only gate spec-analyst spawns. Match bare or any "<prefix>:spec-analyst" (the framework namespaces
+# subagent_type with the plugin prefix, e.g. "preflight:spec-analyst"). The colon prevents false-positives
+# like "not-spec-analyst" or "spec-analyst-helper".
+if ! { [ "$SUBAGENT_TYPE" = "spec-analyst" ] || [[ "$SUBAGENT_TYPE" == *":spec-analyst" ]]; }; then
+  exit 0
+fi
+
+# ─── This IS a spec-analyst spawn — the contract MUST exist and be non-DRAFT ──
+# Anchor at repo root (same idiom as pre-push-gate / record-claim). Outside a repo, fall back to pwd.
+REPO_TOP="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+CLAUDE_MD="$REPO_TOP/CLAUDE.md"
+
+block() {
+  cat >&2 <<EOF
+BLOCKED: spec-analyst dispatch refused — no valid Behavioral Contract in CLAUDE.md.
+
+$1
+
+The Behavioral Contract is the human-authored INPUT the spec-analyst reads to extract the parity
+baseline. It must be a '## Behavioral Contract' section in CLAUDE.md at the repo root, with a concrete
+recognition pattern and a non-placeholder behavior list authored against the legacy source. A
+behavior-spec.json (or its comparison_surfaces / category_vocabulary) is the analyst's OUTPUT, not the
+contract — it cannot satisfy this gate.
+
+To proceed: a human runs /preflight:bootstrap (Generate mode) to stamp the scaffold, then authors the
+OPERATOR sections; or stamps examples/behavioral-contract-template.md and completes it. Until then,
+extraction is blocked because a missing/DRAFT contract yields a false-green parity baseline — the exact
+failure the framework exists to prevent. (Surface this to a human; do not relabel an artifact to bypass.)
+EOF
+  exit 2
+}
+
+# (1) CLAUDE.md must exist at the repo root.
+[ -f "$CLAUDE_MD" ] || block "No CLAUDE.md found at repo root ($CLAUDE_MD). The contract is absent."
+
+# (2)+(3)+(4) Parse the Behavioral Contract section and verify load-bearing content. Pure awk (no python
+# dependency, and awk is byte-safe — unlike grep, which treats the multibyte ⚠/em-dash contract text as
+# binary). The awk program prints exactly one verdict line: "OK" or "BLOCK: <reason>".
+VERDICT="$(awk '
+  function hlevel(s,   n){ n=0; while(substr(s,n+1,1)=="#") n++; return n }
+  BEGIN { inBC=0; sawBC=0; bcLevel=0; draft=""; sub_is_rec=0; rec_has_heading=0; rec_content=0; inComment=0 }
+  {
+    line=$0
+
+    # Heading handling FIRST (a heading line is never "content").
+    if (line ~ /^#+[ \t]+/) {
+      lvl=hlevel(line)
+      hdr=line; sub(/^#+[ \t]+/,"",hdr); h=tolower(hdr)
+      if (!sawBC && h ~ /^behavioral contract/) { inBC=1; sawBC=1; bcLevel=lvl; sub_is_rec=0; next }
+      if (inBC) {
+        if (lvl <= bcLevel) { inBC=0 }      # a same/higher-level heading ends the section
+        else {                               # a sub-heading inside the section
+          if (h ~ /recognition pattern/ || h ~ /result codes/) { rec_has_heading=1; sub_is_rec=1 }
+          else { sub_is_rec=0 }
+          next
+        }
+      }
+    }
+
+    if (!inBC) next
+
+    # --- inside the Behavioral Contract section ---
+    # DRAFT placeholder detection (same set bootstrap Validate uses): unfilled scaffold markers.
+    if (line ~ /<!--[ \t]*OPERATOR/)      draft="OPERATOR placeholder"
+    if (line ~ /<!--[ \t]*AUTO-DERIVED/)  draft="AUTO-DERIVED placeholder"
+    if (line ~ /<!--[ \t]*AUTO:/)         draft="AUTO placeholder"
+    if (line ~ /(^|[^A-Za-z])TODO([^A-Za-z]|$)/) draft="TODO token"
+
+    # Concrete recognition-pattern content: a non-blank, non-heading, non-comment line under the
+    # recognition-pattern / result-codes sub-heading. Track multi-line HTML comments so commentary inside
+    # <!-- ... --> never counts as authored content.
+    work=line
+    # strip complete inline comments
+    while (match(work, /<!--.*-->/)) { work=substr(work,1,RSTART-1) substr(work,RSTART+RLENGTH) }
+    if (inComment) {
+      if (match(work, /-->/)) { work=substr(work,RSTART+RLENGTH); inComment=0 } else { work="" }
+    }
+    if (match(work, /<!--/)) { work=substr(work,1,RSTART-1); inComment=1 }
+    gsub(/^[ \t]+/,"",work); gsub(/[ \t]+$/,"",work)
+    if (sub_is_rec && work != "" && work !~ /^#+[ \t]/) { rec_content=1 }
+  }
+  END {
+    if (!sawBC)            { print "BLOCK: no \"## Behavioral Contract\" section in CLAUDE.md"; exit }
+    if (draft != "")       { print "BLOCK: contract is a DRAFT (" draft " present) — DRAFT == ABSENT"; exit }
+    if (!rec_has_heading)  { print "BLOCK: contract has no recognition-pattern / result-codes heading"; exit }
+    if (!rec_content)      { print "BLOCK: recognition pattern is blank — no concrete pattern declared"; exit }
+    print "OK"
+  }
+' "$CLAUDE_MD" 2>/dev/null || echo "BLOCK: could not read/parse CLAUDE.md")"
+
+case "$VERDICT" in
+  OK) exit 0 ;;
+  BLOCK:*) block "${VERDICT#BLOCK: }" ;;
+  *) block "Contract verification produced no verdict (unexpected) — failing closed." ;;
+esac

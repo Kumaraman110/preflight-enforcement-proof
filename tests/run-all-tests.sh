@@ -663,6 +663,18 @@ run_behavioral_tests() {
   else
     yellow "SKIP: rubric-overlay-check-test.sh not found"
   fi
+
+  local bc_gate_test="$SCRIPT_DIR/behavioral/behavioral-contract-gate-test.sh"
+  if [ -f "$bc_gate_test" ]; then
+    if bash "$bc_gate_test"; then
+      PASSES=$((PASSES + 11))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: behavioral-contract-gate tests failed (staged fail-closed mechanism; bypass must BLOCK, spec-output not accepted as contract)"
+    fi
+  else
+    yellow "SKIP: behavioral-contract-gate-test.sh not found"
+  fi
 }
 
 # ═══════════════════════════════════════════════════════════════

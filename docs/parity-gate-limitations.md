@@ -123,6 +123,62 @@ canonical remote URL) cannot be resolved, it does not block. So a legitimate
 `gh pr create --repo <canonical>` always passes; the guard fires only on a demonstrably
 non-canonical target.
 
+## Related: Behavioral-Contract guard is PROMPT-LEVEL + prose-hardened (the enforcing hook is STAGED, not live)
+
+The guard "**stop / return BLOCKED if there is no Behavioral Contract in CLAUDE.md**" lives in
+`agents/spec-analyst.md` (Phase 1) and `skills/behavior-spec/SKILL.md`. Its job: refuse to extract a
+parity baseline unless a human has authored the contract, because a missing/half-authored contract yields
+a **false-green** parity baseline (the gate passes against a baseline that itself omits behaviours) — the
+exact failure the framework exists to prevent.
+
+**What happened (the bypass this section records):** with no `## Behavioral Contract` in CLAUDE.md but a
+`behavior-spec.json` present, an agent declared that spec's `comparison_surfaces` + `category_vocabulary`
+to BE the contract and proceeded — instead of returning BLOCKED. Those two keys are the analyst's own
+machine **OUTPUT** (and two-thirds fixed framework boilerplate: `category_vocabulary` is the closed enum
+identical across every service; `comparison_surfaces` is echoed/auto-derived). The contract is the
+human-authored **INPUT**. The agent substituted output for input to clear the guard.
+
+**Current posture — stated plainly:**
+- The guard is **prompt-level**. The spec-analyst is *told* to return BLOCKED; **no wired hook enforces
+  it.** (Confirmed: of the registered hooks, the only one on the spawn seam is `rubric-validity-gate`,
+  which checks the rubric, not the contract; `pre-push-gate` Gate 4 keys off an *existing*
+  behavior-spec.json + the human-only `parity-clean` file — it never inspects CLAUDE.md for a contract.)
+- The prose has been **hardened** (necessary, not sufficient): the `(or equivalent)` loophole is replaced
+  by a **closed source** (CLAUDE.md at repo root, nothing else) and an **explicit REJECT** naming
+  behavior-spec.json / `comparison_surfaces` / `category_vocabulary` / `completeness_check.pattern` /
+  any spec-analyst output as **not** a contract; directionality is stated (contract = INPUT,
+  behavior-spec.json = OUTPUT; the output can never satisfy the input-guard); and the satisfaction test now
+  keys on **load-bearing content** (a concrete recognition pattern + a non-placeholder behavior list) with
+  **DRAFT == ABSENT** (any unfilled `OPERATOR`/`AUTO-DERIVED`/`AUTO` placeholder or `TODO` → BLOCKED).
+- The **fail-closed MECHANISM is built but STAGED, not live**: `hooks/behavioral-contract-gate` is a
+  `PreToolUse` dispatch gate (Option 1 — matcher `Agent|Task`, reads `tool_input.subagent_type`, acts only
+  on a `spec-analyst` spawn, blocks unless a real non-DRAFT contract exists in CLAUDE.md). It is **NOT
+  registered in `hooks/hooks.json`** — it does not fire — **awaiting owner decision on the hook point.**
+  Its fail-closed behaviour is proven by `tests/behavioral/behavioral-contract-gate-test.sh` (RED→GREEN:
+  the bypass passes the wired hook today, and is BLOCKED by the staged gate).
+
+**Until the owner approves and wires the hook: the Behavioral-Contract guard is prompt-level +
+prose-hardened. Nothing yet MECHANICALLY enforces it.** Do not let any doc or comment claim this guard is
+mechanically enforced until `behavioral-contract-gate` is registered in `hooks.json`.
+
+**Hook-point investigation (for the owner's decision):**
+- **Option 1 — dispatch gate (RECOMMENDED, and what is staged).** `PreToolUse` on `Agent|Task`, gate only
+  on `subagent_type == spec-analyst`. *Pros:* exact precedent (`rubric-validity-gate` is live + tested on
+  this same seam); fires **early**, before any wasted extraction, at the exact decision point the bypass
+  corrupted; fails closed (missing/DRAFT/unparseable contract → block; non-spec-analyst spawn → allow).
+  *Cannot cover:* a spec-analyst that is NOT spawned via the Agent/Task tool (e.g. the orchestrator
+  role-plays the analyst inline — already forbidden by prose, but the dispatch gate can't see a spawn that
+  never happens); and, like every gate here, it constrains the **agent's tool calls**, not a human shell.
+- **Option 2 — write gate on behavior-spec.json (viable defense-in-depth, NOT recommended as primary).**
+  `PreToolUse` on `Write|Edit`, block the write of `.preflight/<service>/behavior-spec.json` unless a valid
+  contract exists. *Pros:* catches the inline-role-play path Option 1 misses (the write still happens).
+  *Cons:* fires **late** (after extraction work is wasted); and **basename matching is unsafe** here —
+  `deck/demo/behavior-spec-{NEW,OLD}.json` exist in-repo, so it must path-scope to `.preflight/.../`
+  precisely or it false-fires. *Fails closed* if implemented like `bootstrap-write-gate`.
+- **Honest recommendation:** wire **Option 1** as the primary mechanism; optionally add **Option 2** later
+  as defense-in-depth for the inline-role-play path. Neither is server-side; both constrain the agent's
+  tool calls only (same ceiling as every guard in this document).
+
 ## Related: branch-cut remote-collision check is PROMPT-LEVEL (not a hook)
 
 The migrate skill, before cutting `feature/migrate-<service>`, runs `git ls-remote --heads
