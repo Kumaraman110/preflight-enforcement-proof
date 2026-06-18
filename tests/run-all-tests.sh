@@ -651,6 +651,18 @@ run_behavioral_tests() {
   else
     yellow "SKIP: decision-emission-test.sh not found"
   fi
+
+  local rubric_overlay_test="$SCRIPT_DIR/behavioral/rubric-overlay-check-test.sh"
+  if [ -f "$rubric_overlay_test" ]; then
+    if bash "$rubric_overlay_test"; then
+      PASSES=$((PASSES + 8))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: rubric-overlay-check tests failed (Model B governance POC; overlay must not weaken the base)"
+    fi
+  else
+    yellow "SKIP: rubric-overlay-check-test.sh not found"
+  fi
 }
 
 # ═══════════════════════════════════════════════════════════════
