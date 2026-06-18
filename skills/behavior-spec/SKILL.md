@@ -19,8 +19,17 @@ The user passed `$ARGUMENTS` as input. Parse:
 
 1. Search for config: `.preflight/config.json` > `.cpsl/config.json` > `.forge.json`
 2. If found: extract `migration.legacyRepoPath`, `migration.servicesRoot`, service paths.
-3. Confirm `CLAUDE.md` exists at project root and contains a "Behavioral Contract" section.
-4. If CLAUDE.md has no Behavioral Contract section, inform user and stop.
+3. Confirm `CLAUDE.md` exists at project root and contains a `## Behavioral Contract` section. This is the
+   ONLY acceptable contract source — `CLAUDE.md` at the repo root. There is no "(or equivalent)" fallback.
+   A `behavior-spec.json` (or any spec-analyst output — its `comparison_surfaces`, `category_vocabulary`,
+   or `completeness_check.pattern`) is **explicitly NOT** a Behavioral Contract: it is the analyst's
+   machine OUTPUT, not the human-authored INPUT, and accepting it would be circular. Do not relabel it as
+   the contract to proceed.
+4. If CLAUDE.md has no `## Behavioral Contract` section — OR the section is still a DRAFT (any unfilled
+   `<!-- OPERATOR: ... -->` / `<!-- AUTO-DERIVED ... -->` / `<!-- AUTO: ... -->` placeholder comment or a
+   `TODO` token remains in the behaviour-bearing sections) — treat the contract as ABSENT: inform the user
+   and stop. A DRAFT contract produces a false-green parity baseline, so a half-authored contract must
+   stop here, not proceed.
 
 ## Step 1 — Ensure Dependency Map
 
