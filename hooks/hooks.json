@@ -79,6 +79,12 @@
             "command": "\"${CLAUDE_PROJECT_DIR}/.claude/hooks/run-hook.cmd\" rubric-validity-gate \"$TOOL_INPUT\"",
             "timeout": 5000,
             "async": false
+          },
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PROJECT_DIR}/.claude/hooks/run-hook.cmd\" behavioral-contract-gate \"$TOOL_INPUT\"",
+            "timeout": 5000,
+            "async": false
           }
         ]
       }

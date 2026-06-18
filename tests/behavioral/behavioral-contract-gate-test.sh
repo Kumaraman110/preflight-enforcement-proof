@@ -25,8 +25,9 @@
 #   BG6 RED   — no CLAUDE.md at all -> BLOCKED (2).
 #   BG7 RED   — blank recognition pattern (heading present, no content) -> BLOCKED (2).
 #   BG8 RED   — namespaced 'preflight:spec-analyst' with no contract -> BLOCKED (2).
-#   BG9       — STAGED, NOT WIRED: behavioral-contract-gate is absent from hooks/hooks.json (proves it is
-#               awaiting owner decision, not live). If the owner wires it, flip this assertion.
+#   BG9       — WIRED: behavioral-contract-gate is registered exactly once under a PreToolUse Agent|Task
+#               block in hooks/hooks.json (owner approved; fires on a real spec-analyst spawn). (Flipped
+#               from the original "must be staged/absent" assertion when the owner wired the hook.)
 #
 # Exit 0 = all assertions passed; exit 1 = at least one failed.
 
@@ -138,11 +139,28 @@ RC="$(run_hook "$GATE" "$BYPASS_REPO" preflight:spec-analyst)"
 [ "$RC" = "2" ] && ok "BG8 RED: namespaced 'preflight:spec-analyst' with no contract -> BLOCKED (2)" \
                 || bad "BG8: namespaced spec-analyst should be BLOCKED (2), got $RC"
 
-# BG9: STAGED, NOT WIRED — the gate must be ABSENT from hooks.json (awaiting owner decision).
-if [ -f "$HOOKS_JSON" ] && grep -q 'behavioral-contract-gate' "$HOOKS_JSON"; then
-  bad "BG9: behavioral-contract-gate is REGISTERED in hooks.json — this test expects it STAGED (not wired) pending owner decision. If the owner wired it intentionally, update this assertion."
+# BG9: WIRED — the gate is now registered in hooks.json (owner approved the hook point). It must appear
+# EXACTLY ONCE, under a PreToolUse "Agent|Task" matcher block (same dispatch seam as rubric-validity-gate),
+# so it fires on a real spec-analyst spawn. (This assertion was flipped from "must be ABSENT/staged" when
+# the owner wired the hook — see the wiring commit.)
+if [ ! -f "$HOOKS_JSON" ]; then
+  bad "BG9: hooks.json not found at $HOOKS_JSON"
 else
-  ok "BG9: behavioral-contract-gate is NOT in hooks.json (staged, awaiting owner decision — prose guard remains the live layer)"
+  BC_COUNT="$(grep -c 'behavioral-contract-gate' "$HOOKS_JSON")"
+  # Confirm it lives under an Agent|Task PreToolUse block (jq if available; else a structural grep).
+  UNDER_AGENT_TASK=0
+  if command -v jq &>/dev/null; then
+    jq -e '.hooks.PreToolUse[] | select(.matcher=="Agent|Task") | .hooks[] | select(.command|test("behavioral-contract-gate"))' \
+      "$HOOKS_JSON" >/dev/null 2>&1 && UNDER_AGENT_TASK=1
+  else
+    # Fallback: the gate is registered and an "Agent|Task" matcher exists in the file.
+    grep -q '"Agent|Task"' "$HOOKS_JSON" && UNDER_AGENT_TASK=1
+  fi
+  if [ "$BC_COUNT" -eq 1 ] && [ "$UNDER_AGENT_TASK" -eq 1 ]; then
+    ok "BG9: behavioral-contract-gate is WIRED exactly once under a PreToolUse Agent|Task block (owner-approved; fires on a real spec-analyst spawn)"
+  else
+    bad "BG9: expected behavioral-contract-gate registered exactly once (got $BC_COUNT) under an Agent|Task PreToolUse block (under_agent_task=$UNDER_AGENT_TASK)"
+  fi
 fi
 
 echo ""
