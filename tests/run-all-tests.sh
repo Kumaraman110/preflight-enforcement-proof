@@ -747,6 +747,18 @@ run_behavioral_tests() {
   else
     yellow "SKIP: spec-divergence-semantic-poc-test.sh not found"
   fi
+
+  local spec_div_eng_test="$SCRIPT_DIR/behavioral/spec-divergence-engine-test.sh"
+  if [ -f "$spec_div_eng_test" ]; then
+    if bash "$spec_div_eng_test"; then
+      PASSES=$((PASSES + 11))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: spec-divergence-engine tests failed (productionized engine; blind-judge-brief, semantic score, ELICIT/PROCEED decision, targeted questions, elicited artifact, advisory threshold)"
+    fi
+  else
+    yellow "SKIP: spec-divergence-engine-test.sh not found"
+  fi
 }
 
 # ═══════════════════════════════════════════════════════════════
