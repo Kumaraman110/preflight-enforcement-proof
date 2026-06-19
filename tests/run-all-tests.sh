@@ -699,6 +699,18 @@ run_behavioral_tests() {
   else
     yellow "SKIP: rubric-source-check-test.sh not found"
   fi
+
+  local codeowners_test="$SCRIPT_DIR/behavioral/base-owners-codeowners-test.sh"
+  if [ -f "$codeowners_test" ]; then
+    if bash "$codeowners_test"; then
+      PASSES=$((PASSES + 5))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: base-owners-codeowners tests failed (base rubric owner-governed; stub state must be honestly surfaced, not silently fail-open)"
+    fi
+  else
+    yellow "SKIP: base-owners-codeowners-test.sh not found"
+  fi
 }
 
 # ═══════════════════════════════════════════════════════════════

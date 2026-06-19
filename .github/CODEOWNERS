@@ -1,0 +1,46 @@
+# CODEOWNERS — Model B rubric governance (base-owners path).
+#
+# ┌──────────────────────────────────────────────────────────────────────────────────────────────┐
+# │ OWNER MUST PROVIDE A REAL GITHUB HANDLE. Every "@OWNER-PROVIDE-*" token below is a STUB — replace│
+# │ it with a real GitHub username or @org/team slug before this file governs anything. GitHub        │
+# │ SILENTLY IGNORES CODEOWNERS lines that reference a non-existent user/team, so an unreplaced stub  │
+# │ = NO protection on that path (fails OPEN). Do not ship with the stubs in place expecting them to  │
+# │ enforce. (The agent did NOT invent a username — see the build report.)                            │
+# └──────────────────────────────────────────────────────────────────────────────────────────────┘
+#
+# WHY (see .release-audit/RUBRIC-GOVERNANCE.md, Model B, Phase 4):
+#   - The BASE rubric is the shared detection FLOOR every team inherits. A change to it — especially a
+#     WEAKENING (lower a base severity / remove a base rule) — lowers everyone's floor, so it is the
+#     highest-governance artifact: it requires the base-owner's approval.
+#   - Team OVERLAY files can ONLY TIGHTEN (lib/rubric-overlay-check.sh + lib/rubric-resolve.sh enforce
+#     this mechanically), so a team approving its OWN overlay cannot lower anyone else's floor. That is
+#     the asymmetry that makes overlays low-ceremony: team-owned is safe BECAUSE the overlay-check
+#     guarantees tighten-only.
+#
+# HOW THIS RIDES THE EXISTING BRANCH PROTECTION:
+#   The active ruleset `preflight-protected-feature-preflight-framework` already requires a PR + 1
+#   non-pusher approval to merge into feature/preflight-framework. CODEOWNERS adds WHO that approver must
+#   be FOR SPECIFIC PATHS: a PR touching the base rubric needs the base-owner's review specifically (not
+#   just any non-pusher). To make that binding, the owner must also enable "Require review from Code
+#   Owners" on the branch ruleset/protection (GitHub setting) — CODEOWNERS alone suggests reviewers; the
+#   "require code owner review" toggle is what makes it a merge gate. That toggle is an owner/admin action,
+#   not a code change in this repo. Until it is on, CODEOWNERS auto-requests the owner but does not BLOCK.
+
+# ── BASE rubrics — the shared safety floor. Base-owner approval required. ──
+# (Adjust the globs to wherever your live base rubrics are configured; these cover the example rubrics
+#  and any future rubrics/base/ location.)
+/examples/rubrics/rubric-*.md      @OWNER-PROVIDE-base-owner
+/rubrics/base/                     @OWNER-PROVIDE-base-owner
+# The governance machinery itself (the no-weaken check, the resolver, the provenance check + format) is
+# base-owner-governed — weakening THESE would defeat the whole model.
+/lib/rubric-overlay-check.sh       @OWNER-PROVIDE-base-owner
+/lib/rubric-resolve.sh             @OWNER-PROVIDE-base-owner
+/lib/rubric-source-check.sh        @OWNER-PROVIDE-base-owner
+/lib/rubric-changelog-format.md    @OWNER-PROVIDE-base-owner
+
+# ── TEAM overlays — owned by their teams. Safe to be team-owned because overlays can only TIGHTEN. ──
+# One line per team overlay. Example shape (replace handles + paths with the real teams/overlays):
+#   /rubrics/overlays/team-payments-overlay.md   @OWNER-PROVIDE-team-payments
+#   /rubrics/overlays/team-identity-overlay.md   @OWNER-PROVIDE-team-identity
+# The POC overlays are examples only (no team ownership needed — they are fixtures):
+#   /examples/rubrics/governance-poc/            (no owner — POC fixtures, not live team overlays)
