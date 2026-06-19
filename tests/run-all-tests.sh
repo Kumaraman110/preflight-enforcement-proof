@@ -675,6 +675,18 @@ run_behavioral_tests() {
   else
     yellow "SKIP: behavioral-contract-gate-test.sh not found"
   fi
+
+  local rubric_resolve_test="$SCRIPT_DIR/behavioral/rubric-resolve-test.sh"
+  if [ -f "$rubric_resolve_test" ]; then
+    if bash "$rubric_resolve_test"; then
+      PASSES=$((PASSES + 8))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: rubric-resolve tests failed (Model B merge engine; weakening overlay must ABORT the merge, not silently drop)"
+    fi
+  else
+    yellow "SKIP: rubric-resolve-test.sh not found"
+  fi
 }
 
 # ═══════════════════════════════════════════════════════════════
