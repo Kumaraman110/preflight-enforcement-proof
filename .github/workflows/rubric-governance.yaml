@@ -1,0 +1,136 @@
+---
+# Rubric Governance — ADVISORY-FIRST CI check (Model B).
+#
+# Runs the no-weaken overlay-check and the provenance Source-line check on rubric PRs. ADVISORY-FIRST:
+# it REPORTS violations (job summary + log) but does NOT fail the build — exactly the WIRE-B
+# advisory→corroborated→blocking promotion pattern. See .release-audit/RUBRIC-GOVERNANCE.md and
+# lib/rubric-changelog-format.md.
+#
+# ┌──────────────────────────────────────────────────────────────────────────────────────────────┐
+# │ ADVISORY (current): every step ends `exit 0` so a violation surfaces but never blocks merge.     │
+# │ PROMOTION TO BLOCKING (owner decision): see "HOW TO PROMOTE" at the bottom — flip the marked       │
+# │ lines so a violation exits non-zero (the job goes red and, if made a required check, blocks merge).│
+# │ Promotion criteria are documented; do NOT promote before the existing rubrics are backfilled with  │
+# │ Source lines (else the provenance step would block every pre-existing un-annotated rule).          │
+# └──────────────────────────────────────────────────────────────────────────────────────────────┘
+
+name: Rubric Governance (advisory)
+
+on:
+  pull_request:
+    paths:
+      - "examples/rubrics/**"
+      - "rubrics/**"
+      - "lib/rubric-overlay-check.sh"
+      - "lib/rubric-resolve.sh"
+      - "lib/rubric-source-check.sh"
+      - ".github/workflows/rubric-governance.yaml"
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  rubric-governance-advisory:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: No-weaken overlay-check (advisory)
+        run: |
+          # For each team overlay in the PR, run the no-weaken check against the configured base.
+          # ADVISORY: a weakening overlay is REPORTED but does not fail the build (exit 0 at the end).
+          # Discovery: overlays live under rubrics/overlays/ (live) — the POC fixtures under
+          # examples/rubrics/governance-poc/ are demonstration pairs (their own base), checked as a smoke test.
+          BASE_DEFAULT="examples/rubrics/rubric-generic-dotnet.md"
+          STATUS=0
+          {
+            echo "## Rubric Governance — no-weaken overlay-check (ADVISORY)"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          run_check () {
+            local base="$1" overlay="$2"
+            # Capture the exit code WITHOUT letting errexit abort before we report (the dead-gate trap the
+            # parity CI steps documented: disable -e only around the call, read $?, re-enable).
+            set +e
+            OUT="$(bash lib/rubric-overlay-check.sh "$base" "$overlay" 2>&1)"
+            local rc=$?
+            set -e
+            if [ "$rc" -ne 0 ]; then
+              STATUS=1
+              {
+                echo "- ⚠️ **WEAKENING overlay (advisory):** \`$overlay\` vs base \`$base\` — exit $rc"
+                echo '```'
+                echo "$OUT"
+                echo '```'
+              } >> "$GITHUB_STEP_SUMMARY"
+              echo "ADVISORY: $overlay would weaken $base (exit $rc)"
+            else
+              echo "OK: $overlay only tightens $base"
+            fi
+          }
+
+          # Live overlays (if any).
+          if [ -d rubrics/overlays ]; then
+            BASE="${BASE_DEFAULT}"
+            [ -f rubrics/base/base-rubric.md ] && BASE="rubrics/base/base-rubric.md"
+            for ov in rubrics/overlays/*.md; do
+              [ -f "$ov" ] || continue
+              run_check "$BASE" "$ov"
+            done
+          fi
+          # POC smoke test (demonstrates the check runs in CI; uses the POC's own base).
+          if [ -d examples/rubrics/governance-poc ]; then
+            run_check examples/rubrics/governance-poc/base-rubric.md examples/rubrics/governance-poc/overlay-tighten.md
+          fi
+
+          if [ "$STATUS" -eq 0 ]; then echo "no-weaken: clean" >> "$GITHUB_STEP_SUMMARY"; fi
+          # ADVISORY: always exit 0. >>> TO PROMOTE TO BLOCKING: change to `exit $STATUS`. <<<
+          exit 0
+
+      - name: Provenance Source-line check (advisory)
+        run: |
+          # Every rubric rule must carry a structured Source line. ADVISORY: report, do not block.
+          {
+            echo ""
+            echo "## Rubric Governance — provenance Source-line check (ADVISORY)"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
+          # Check rubric files changed in this PR (best-effort) plus the example rubrics.
+          set +e
+          CHANGED="$(git diff --name-only "origin/${{ github.base_ref }}"...HEAD 2>/dev/null | grep -E '(rubric|overlay).*\.md$' || true)"
+          OUT="$(bash lib/rubric-source-check.sh ${CHANGED:-examples/rubrics/rubric-generic-dotnet.md} 2>&1)"
+          RC=$?
+          set -e
+          if [ "$RC" -ne 0 ]; then
+            {
+              echo "- ⚠️ **Provenance gap (advisory):** one or more rules missing a structured Source line."
+              echo '```'
+              echo "$OUT"
+              echo '```'
+              echo ""
+              echo "Format: \`**Source:** <origin> | <ref> | <YYYY-MM-DD> | <op>\` (lib/rubric-changelog-format.md)."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "ADVISORY: provenance gap (exit $RC)"
+          else
+            echo "provenance: clean" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          # ADVISORY: always exit 0. >>> TO PROMOTE TO BLOCKING: change to `exit $RC` (after backfilling
+          # existing rubrics with Source lines — see lib/rubric-changelog-format.md promotion criterion). <<<
+          exit 0
+
+# ════════════════════════════════════════════════════════════════════════════════════════════════
+# HOW TO PROMOTE (advisory → blocking) — owner decision, documented per WIRE-B:
+#   1. Backfill: add a structured Source line to every rule in the live base + overlay rubrics so the
+#      provenance step would not fire on legitimate pre-existing rules.
+#   2. Flip the two marked `exit 0` lines to `exit $STATUS` / `exit $RC` so a violation fails the job.
+#   3. Make this workflow a REQUIRED status check on the branch ruleset (an owner/admin GitHub setting) so
+#      a red job actually blocks merge. (CI red alone does not block until it is a required check — same
+#      ceiling noted in docs/parity-gate-limitations.md for the parity job.)
+#   Exit-code alignment: both checks already use the parity-check convention (0 clean / 1 advisory / 2
+#   blocking) so promotion is a one-line flip per step, not a rewrite.
+# ════════════════════════════════════════════════════════════════════════════════════════════════

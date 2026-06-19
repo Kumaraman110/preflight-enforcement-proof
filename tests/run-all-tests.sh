@@ -711,6 +711,18 @@ run_behavioral_tests() {
   else
     yellow "SKIP: base-owners-codeowners-test.sh not found"
   fi
+
+  local rubric_ci_test="$SCRIPT_DIR/behavioral/rubric-governance-ci-test.sh"
+  if [ -f "$rubric_ci_test" ]; then
+    if bash "$rubric_ci_test"; then
+      PASSES=$((PASSES + 6))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: rubric-governance-ci tests failed (advisory-first CI step; must wire both checks, stay advisory, be dead-gate-safe)"
+    fi
+  else
+    yellow "SKIP: rubric-governance-ci-test.sh not found"
+  fi
 }
 
 # ═══════════════════════════════════════════════════════════════
