@@ -687,6 +687,18 @@ run_behavioral_tests() {
   else
     yellow "SKIP: rubric-resolve-test.sh not found"
   fi
+
+  local rubric_source_test="$SCRIPT_DIR/behavioral/rubric-source-check-test.sh"
+  if [ -f "$rubric_source_test" ]; then
+    if bash "$rubric_source_test"; then
+      PASSES=$((PASSES + 9))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: rubric-source-check tests failed (enforced provenance; a rule with no Source line must fail — mechanism not convention)"
+    fi
+  else
+    yellow "SKIP: rubric-source-check-test.sh not found"
+  fi
 }
 
 # ═══════════════════════════════════════════════════════════════
