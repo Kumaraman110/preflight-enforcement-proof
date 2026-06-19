@@ -771,6 +771,18 @@ run_behavioral_tests() {
   else
     yellow "SKIP: spec-divergence-wiring-test.sh not found"
   fi
+
+  local parity_exit_test="$SCRIPT_DIR/behavioral/parity-check-exit-codes-test.sh"
+  if [ -f "$parity_exit_test" ]; then
+    if bash "$parity_exit_test"; then
+      PASSES=$((PASSES + 9))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: parity-check-exit-codes tests failed (flagship-gate false-green; malformed spec MUST be 3=check-error, never 1=advisory)"
+    fi
+  else
+    yellow "SKIP: parity-check-exit-codes-test.sh not found"
+  fi
 }
 
 # ═══════════════════════════════════════════════════════════════

@@ -5,10 +5,23 @@
 #
 # Usage: parity-check.sh <baseline.json> <current.json>
 #
-# Output: JSON parity report to stdout. Exit codes:
-#   0 = clean (no blocking violations)
-#   1 = advisory violations only (warnings, non-blocking)
-#   2 = blocking violations (missing or changed high-confidence behaviors)
+# Output: JSON parity report to stdout. Exit codes (0/1/2/3 — each DISTINCT):
+#   0 = CLEAN          — no blocking and no advisory violations
+#   1 = ADVISORY       — advisory violations ONLY (warnings, non-blocking)
+#   2 = BLOCKING       — blocking violations (missing/changed high-confidence behaviors)
+#   3 = CHECK-ERROR    — the gate COULD NOT RUN (usage error, missing/unreadable/corrupt spec,
+#                        no Python, or any unhandled engine exception). This is NOT a verdict —
+#                        it means the check is broken and the result is unknown.
+#
+# WHY 3 EXISTS (the false-green this closes): exit 1 used to be OVERLOADED — it meant BOTH
+# "advisory verdict" AND "the engine crashed" (a json.load() on a truncated/corrupt
+# behavior-spec-current.json raises JSONDecodeError, and under `set -euo pipefail` Python
+# exits 1 — IDENTICAL to a clean-advisory result). So a CRASHED parity check was
+# indistinguishable from a non-blocking advisory, and any caller treating 1 as non-blocking
+# would pass a BROKEN flagship gate GREEN. Exit 3 makes could-not-run DISTINCT from advisory:
+# a crash now FAILS LOUDLY and can never be confused with a passing-advisory result.
+# CALLER CONTRACT: treat 0 = pass, 1 = pass-with-warning, 2 = FAIL (drift), 3 = FAIL (broken
+# check — fix the spec/engine), and any OTHER code = FAIL (unexpected). Never treat 3 as pass.
 #
 # The engine diffs by canonical-id → observable. It categorizes each diff:
 #   MISSING  — id in baseline, absent in current (dropped behavior)
@@ -25,19 +38,22 @@ set -euo pipefail
 BASELINE="${1:-}"
 CURRENT="${2:-}"
 
+# Pre-flight bash errors are CHECK-ERROR (could-not-run), NOT blocking-violations — they mean
+# the gate could not even start, so they exit 3 (distinct from a real exit-2 drift verdict and
+# from an exit-1 advisory). A caller must fail loudly on 3, never treat it as pass-with-warning.
 if [ -z "$BASELINE" ] || [ -z "$CURRENT" ]; then
-  echo '{"error": "Usage: parity-check.sh <baseline.json> <current.json>"}' >&2
-  exit 2
+  echo '{"error": "Usage: parity-check.sh <baseline.json> <current.json>", "exit_meaning": "check-error"}' >&2
+  exit 3
 fi
 
 if [ ! -f "$BASELINE" ]; then
-  echo "{\"error\": \"Baseline not found: $BASELINE\"}" >&2
-  exit 2
+  echo "{\"error\": \"Baseline not found: $BASELINE\", \"exit_meaning\": \"check-error\"}" >&2
+  exit 3
 fi
 
 if [ ! -f "$CURRENT" ]; then
-  echo "{\"error\": \"Current not found: $CURRENT\"}" >&2
-  exit 2
+  echo "{\"error\": \"Current not found: $CURRENT\", \"exit_meaning\": \"check-error\"}" >&2
+  exit 3
 fi
 
 # Detect a working Python interpreter
@@ -52,10 +68,15 @@ for py_candidate in python python3; do
 done
 
 if [ -z "$PYTHON_CMD" ]; then
-  echo '{"error": "No working Python interpreter found. parity-check requires Python."}' >&2
-  exit 2
+  echo '{"error": "No working Python interpreter found. parity-check requires Python.", "exit_meaning": "check-error"}' >&2
+  exit 3
 fi
 
+# Run the engine WITHOUT letting `set -e` abort before we can remap the exit code. Capture the
+# raw code, then normalize: 0/1/2/3 pass through; ANY other code (e.g. a SIGKILL → 137, or an
+# interpreter-level failure that escaped the in-Python guard) is remapped to 3 (check-error),
+# never to a verdict. This is the trailing backstop the consumer fix added.
+set +e
 "$PYTHON_CMD" - "$BASELINE" "$CURRENT" <<'PYTHON_SCRIPT'
 import json
 import sys
@@ -251,5 +272,38 @@ def main():
     sys.exit(exit_code)
 
 if __name__ == "__main__":
-    main()
+    # Guard the engine: a verdict (main() calls sys.exit(0|1|2)) re-raises UNCHANGED, so a real
+    # advisory stays 1 and a real drift stays 2. ANY other exception — JSONDecodeError on a
+    # truncated/corrupt spec, a KeyError, an OSError, anything — becomes exit 3 (check-error),
+    # NEVER exit 1. This is the line that closes the false-green: a crashed engine can no longer
+    # masquerade as a clean-advisory result.
+    try:
+        main()
+    except SystemExit as e:
+        code = e.code if isinstance(e.code, int) else (0 if e.code is None else 1)
+        if code in (0, 1, 2):
+            raise                      # genuine verdict — pass through unchanged
+        # An unexpected sys.exit() value from inside main() is treated as could-not-run.
+        sys.stderr.write('{"error": "parity engine exited with an unexpected code", "exit_meaning": "check-error"}\n')
+        sys.exit(3)
+    except BaseException as e:         # noqa: BLE001 — deliberately catch-all; a crash must not look like advisory
+        sys.stderr.write(json.dumps({
+            "error": "parity engine could not run: %s: %s" % (type(e).__name__, str(e)),
+            "exit_meaning": "check-error"
+        }) + "\n")
+        sys.exit(3)
 PYTHON_SCRIPT
+PARITY_EXIT=$?
+set -e
+
+# Trailing remap (the backstop): 0/1/2/3 are the only legitimate codes. Anything else — e.g. the
+# Python process killed by a signal (SIGKILL → 137, SIGTERM → 143) before it could emit 3, or any
+# shell-level failure — is remapped to 3 (check-error). A non-verdict code must NEVER be confused
+# with a verdict (especially not with advisory=1 or clean=0).
+case "$PARITY_EXIT" in
+  0|1|2|3) exit "$PARITY_EXIT" ;;
+  *)
+    echo "{\"error\": \"parity-check terminated with unexpected code $PARITY_EXIT (e.g. killed by a signal)\", \"exit_meaning\": \"check-error\"}" >&2
+    exit 3
+    ;;
+esac

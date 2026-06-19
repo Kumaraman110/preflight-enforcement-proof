@@ -568,22 +568,27 @@ jobs:
             exit 0
           fi
           # GitHub Actions runs `run:` steps under `set -e`, so a non-zero exit from
-          # parity-check.sh (1 advisory / 2 blocking) would abort the step AT THE CALL,
-          # BEFORE `$?` is captured — making the exit-code branching below DEAD (the
-          # "BLOCKED:" diagnostic never prints, and the intended exit-2-blocks logic never
-          # runs). Disable errexit ONLY around the call so the code is captured, then decide.
+          # parity-check.sh (1 advisory / 2 blocking / 3 check-error) would abort the step AT
+          # THE CALL, BEFORE `$?` is captured — making the exit-code branching below DEAD.
+          # Disable errexit ONLY around the call so the code is captured, then decide.
           # (Ported from the consumer fix proven live in the SessionToken run — keep here so
           # future consumers do not inherit the dead gate. Single source: this template.)
           set +e
           bash .github/scripts/parity-check.sh "$BASELINE" "$CURRENT"
           PARITY_EXIT=$?
           set -e
-          if [ $PARITY_EXIT -eq 2 ]; then
-            echo "BLOCKED: Blocking parity violations detected."
-            echo "The migrated service has behavioral drift from legacy."
-            exit 1
-          fi
-          exit $PARITY_EXIT
+          # EXHAUSTIVE 0/1/2/3/* mapping. The old `exit $PARITY_EXIT` was a false-green: exit 3
+          # (the engine CRASHED — e.g. a corrupt behavior-spec-current.json) is non-2, so it fell
+          # through to `exit $PARITY_EXIT` = exit 3, which a lenient status check could treat as
+          # non-blocking → a BROKEN flagship gate passing GREEN. Now a check-error FAILS loudly,
+          # and any unexpected code FAILS too. Only 0 (clean) and 1 (advisory) pass.
+          case "$PARITY_EXIT" in
+            0) echo "Parity: CLEAN (exit 0)." ; exit 0 ;;
+            1) echo "Parity: ADVISORY only (exit 1) — non-blocking warnings." ; exit 0 ;;
+            2) echo "BLOCKED: blocking parity violations (exit 2) — behavioral drift from legacy." ; exit 1 ;;
+            3) echo "BLOCKED: parity check COULD NOT RUN (exit 3 = check-error: corrupt/missing spec or engine crash). A broken gate is a FAILURE, never a pass. Fix the spec/engine and re-run." ; exit 1 ;;
+            *) echo "BLOCKED: parity check exited with UNEXPECTED code $PARITY_EXIT (e.g. killed by a signal). Treating as failure." ; exit 1 ;;
+          esac
 
       - name: Wire-fidelity golden test (WIRE-B)
         run: |
@@ -1004,9 +1009,19 @@ elif [ $PARITY_EXIT -eq 2 ]; then
   echo "and manually clear the gate. The agent does not authorize overrides."
   echo "═══════════════════════════════════════════════════════════════════════"
   exit 1
-else
-  echo "CHECK 6 FAIL: parity-check.sh exited with unexpected code $PARITY_EXIT"
+elif [ $PARITY_EXIT -eq 3 ]; then
+  echo "CHECK 6 FAIL: parity-check.sh exit 3 (CHECK-ERROR — the gate COULD NOT RUN)."
   echo "$PARITY_OUTPUT"
+  echo ""
+  echo "Exit 3 means a corrupt/missing behavior-spec or an engine crash — NOT a clean result."
+  echo "A broken flagship gate is a FAILURE, never a pass: do NOT proceed to handoff. Fix the"
+  echo "spec/engine (commonly a truncated behavior-spec-current.json) and re-run Check 6."
+  echo "(This is the false-green that exit-1-overloading used to hide — a crash is now distinct.)"
+  exit 1
+else
+  echo "CHECK 6 FAIL: parity-check.sh exited with UNEXPECTED code $PARITY_EXIT (e.g. signal kill)."
+  echo "$PARITY_OUTPUT"
+  echo "An unexpected code is treated as failure, never as a pass."
   exit 1
 fi
 ```
