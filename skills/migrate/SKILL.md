@@ -26,6 +26,28 @@ The user passed `$ARGUMENTS` as input. Parse generously:
 - Free-form description (e.g. "migrate the seat lookup thing") → extract the service identifier. Ask for clarification only if genuinely ambiguous (multiple plausible services match).
 - No argument → ask which service.
 
+## Phase 0 — Spec-Divergence Check (the initial prompt is a fresh-ambiguity entry point)
+
+Before Setup/Phase 1, run the spec-divergence engine on the user's migration request. This is the initial
+fresh-ambiguity entry point — closing the spec gap here prevents a vague request from cascading into a
+mis-scoped migration (the costliest failure, per the Phase 1 human-gate note). Follow the shared procedure
+in `${FRAMEWORK_ROOT}/lib/spec-divergence.md`: spawn 4 BLIND interpreters on the load-bearing axes (scope
+boundary, surfaces in/out, core behavior), build the blind judge brief
+(`lib/spec-divergence.sh build-judge-brief` — strips the prompt), spawn 3 BLIND judges, then
+`score`/`decision`.
+
+- **PROCEED** (divergence ≤ threshold): the request is specified-enough-in-context (note: repo/config
+  context often resolves a terse migrate request — low divergence then is CORRECT) → continue to Setup.
+- **ELICIT** (divergence > threshold): surface the forked axes + ask the targeted questions
+  (`lib/spec-divergence.sh questions`), incorporate answers, re-evaluate, then `write-elicited <service>`
+  → `.preflight/<service>/spec-elicited.md`.
+
+**ADVISORY** (do not hard-block): proceed with a logged note if the user declines to clarify — the
+threshold is n=5-proven, not a hard gate yet. **Fire Phase 0 ONLY here (and at a later hand-off that
+introduces NEW external scope)** — do NOT re-run it on the internal discovery-analyst / spec-analyst /
+implementer dispatches; those operate on an already-pinned spec, so re-checking them is cost without
+catch. Cost: ~7 agents per fire; a typical migrate run fires once.
+
 ## A note on enforcement
 
 This skill uses CRITICAL-INSTRUCTION blocks to mark behavioral requirements. These are prose-level instructions — the model is expected to comply, but no mechanical hook prevents the model from proceeding if it doesn't. Mechanical enforcement (hook-level blocks) is provided separately by the pre-push-gate and coupled-edit-gate hooks. Treat CRITICAL-INSTRUCTION blocks as "you must follow this" guidance, not as a system-level block.

@@ -759,6 +759,18 @@ run_behavioral_tests() {
   else
     yellow "SKIP: spec-divergence-engine-test.sh not found"
   fi
+
+  local spec_div_wire_test="$SCRIPT_DIR/behavioral/spec-divergence-wiring-test.sh"
+  if [ -f "$spec_div_wire_test" ]; then
+    if bash "$spec_div_wire_test"; then
+      PASSES=$((PASSES + 10))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: spec-divergence-wiring tests failed (Phase 0 wired into scaffold+migrate at fresh-ambiguity entry points, advisory, not on internal dispatches)"
+    fi
+  else
+    yellow "SKIP: spec-divergence-wiring-test.sh not found"
+  fi
 }
 
 # ═══════════════════════════════════════════════════════════════
