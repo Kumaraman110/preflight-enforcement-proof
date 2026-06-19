@@ -723,6 +723,18 @@ run_behavioral_tests() {
   else
     yellow "SKIP: rubric-governance-ci-test.sh not found"
   fi
+
+  local spec_div_test="$SCRIPT_DIR/behavioral/spec-divergence-poc-test.sh"
+  if [ -f "$spec_div_test" ]; then
+    if bash "$spec_div_test"; then
+      PASSES=$((PASSES + 8))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: spec-divergence-poc tests failed (POC scorer math; identical->0, maxdiff->1, deterministic, computed-not-self-assessed)"
+    fi
+  else
+    yellow "SKIP: spec-divergence-poc-test.sh not found"
+  fi
 }
 
 # ═══════════════════════════════════════════════════════════════
