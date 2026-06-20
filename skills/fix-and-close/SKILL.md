@@ -194,7 +194,15 @@ guess is wrong. If only one reasonable interpretation exists, proceed without ce
 
     Include the `Capture:` line counting entries by bucket whenever the external-review-handler sub-agent has written capture entries alongside the fix. Include `Stage 1: clean` as a footer to signal the gate passed.
 
-11. Push to remote feature branch (never `--force`).
+11. Push to the remote feature branch (never `--force`). Run the push directly — do NOT hand the user a
+    "run this command" copy-paste. The push is reversibility-tiered by `pre-push-gate-check` (CLAUDE.md
+    rule #6): a non-force push to your UNPROTECTED feature branch on the configured remote is **AUTO** —
+    it proceeds with no human handoff (the friction removed). If you are pushing to a **protected**
+    branch (`main`/`base`), a **non-canonical/denylisted remote**, or issuing a **bare** push, the gate
+    will escalate to a human **CONFIRM** (`permissionDecision:ask`) — that is expected; let the human
+    confirm. A **force-push to a protected branch** or a push to a **forbidden** remote is **BLOCKED**
+    (exit 2) — do not retarget around it; surface it. Always push a NAMED remote (never bare) so the
+    target is validatable.
 
 ### Stage 2 — Copilot Review Loop
 

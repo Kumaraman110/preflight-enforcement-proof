@@ -114,11 +114,19 @@ JSON
 
 cd "$NORM"
 
-# N1: push to non-canonical named remote 'evil' → BLOCK.
+# N1: push to non-canonical named remote 'evil' → now CONFIRM (three-tier policy), not hard BLOCK.
+# A non-canonical remote is consequential-but-human-may-proceed, so it escalates to
+# permissionDecision:ask (AFTER the evidence gate) rather than a hard exit-2. WITHOUT gate evidence
+# here, the evidence gate fires first (exit 2) and the tier logic is never reached — so we assert only
+# that the remote guard NO LONGER hard-blocks with a 'non-canonical/configured remote' BLOCKED message;
+# the full CONFIRM outcome is asserted in pre-push-bare-remote-test.sh (which sets up evidence). A remote
+# on the explicit forbiddenRepos denylist stays a hard BLOCK — see I1; 'evil' is not listed.
 run_hook 'git push evil HEAD:feature/work'
-if [ "$RC" -eq 2 ] && printf '%s' "$OUT" | grep -qi 'BLOCKED'; then
-  ok "N1 normal: push to non-canonical remote 'evil' still BLOCKED"
-else bad "N1 normal: expected BLOCK(2), got RC=$RC OUT=$OUT"; fi
+if printf '%s' "$OUT" | grep -qiE 'BLOCKED: push targets remote .* not the configured'; then
+  bad "N1 normal: 'evil' was hard-BLOCKED by the old wrong-remote guard — should now be CONFIRM-tier, not exit-2 block. OUT=$OUT"
+else
+  ok "N1 normal: non-canonical remote 'evil' is no longer hard-blocked by the wrong-remote guard (now CONFIRM-tier; full ask-outcome asserted in pre-push-bare-remote-test)"
+fi
 
 # N2: force-push to protected branch main → BLOCK.
 run_hook 'git push --force origin HEAD:main'

@@ -1,23 +1,31 @@
 #!/usr/bin/env bash
-# Behavioral test for the pre-push-gate-check BARE-PUSH guard (the unvalidatable-target hole).
+# Behavioral test for the pre-push-gate-check THREE-TIER reversibility policy (AUTO / CONFIRM / BLOCK).
 #
-# THE HOLE (confirmed empirically; was a silent EXIT=0): a `git push` with NO named remote resolves to
-# git's DEFAULT/upstream remote — a target the guard never sees — so the forbidden-destination (B0) and
-# wrong-remote (B) checks are SILENTLY SKIPPED. On an inverted clone where the default remote is legacy
-# PROD, that is an ungated push-to-prod. The fix: when a repo has OPTED IN to push-gating (config with
-# branch.remote present), a bare push is BLOCKED with a require-named-remote message so the target becomes
-# validatable. Fail-open otherwise (no config / no configured remote -> not opted in -> not blocked).
+# THE POLICY: each push is classified MECHANICALLY (from PROTECTED_BRANCHES / configured REMOTE /
+# FORBIDDEN_* / HAS_FORCE / ARG_REMOTE — never agent judgement) into:
+#   AUTO    — exit 0 + permissionDecision:allow → reversible (named SAFE remote, UNPROTECTED branch,
+#             non-force): the agent pushes, NO human handoff. (the friction being removed)
+#   CONFIRM — exit 0 + permissionDecision:ask → consequential but a human MAY proceed: bare push
+#             (unvalidatable target), non-canonical/prod remote, or a PROTECTED-branch push. The platform
+#             prompts the user; the agent cannot self-approve.
+#   BLOCK   — exit 2 → never-OK: force-push to a protected branch, or a remote on the explicit
+#             forbidden denylist (an opt-in 'never push here' that is stronger than CONFIRM).
+# Claude Code PreToolUse protocol: exit 0 + JSON XOR exit 2 (JSON ignored on exit 2) — verified against
+# the hooks docs. CONFIRM/AUTO emit JSON after the evidence gate passes; BLOCK exits 2.
 #
-# These tests feed crafted Bash-tool JSON to the hook and read the exit code, with HEAD-fresh gate
-# evidence present so the run reaches the remote logic (past the evidence gate).
+# Tests feed crafted Bash-tool JSON to the hook with HEAD-fresh gate evidence (so the run reaches the
+# tier logic past the evidence gate) and read the exit code + permissionDecision (via jq, MSYS-safe).
 #
 # Proves:
-#   B1 — bare 'git push' (opted in, remote set)        -> BLOCKED (2), names the unvalidatable-target reason.
-#   B2 — 'git push -u' (still no positional remote)     -> BLOCKED (2).
-#   B3 — 'git push --force' (bare + force)              -> BLOCKED (2) (force to default target, unvalidatable).
-#   B4 — 'git push origin HEAD:feature/x' (named canon) -> NOT blocked by this guard (0) — normal flow intact.
-#   B5 — 'git push evil HEAD:feature/x' (named, wrong)  -> BLOCKED (2) by the existing wrong-remote guard (regression check).
-#   B6 — FAIL-OPEN: bare push with NO config (not opted in) + evidence present -> NOT blocked (0).
+#   B1 — bare 'git push' (opted in)                     -> CONFIRM (0 + ask).
+#   B2 — 'git push -u' (no positional remote)           -> CONFIRM (0 + ask).
+#   B3 — bare 'git push --force' (unprotected target)   -> CONFIRM (0 + ask).
+#   B4 — named push, safe remote, UNPROTECTED branch    -> AUTO (0 + allow) — friction removed.
+#   B5 — non-canonical remote 'evil' (!= configured)    -> CONFIRM (0 + ask) — was hard-BLOCK, reclassified.
+#   B6 — push to PROTECTED branch 'main'                -> CONFIRM (0 + ask).
+#   B7 — force-push to PROTECTED 'main'                 -> BLOCK (2) — preserved.
+#   B8 — configured remote on forbiddenRepos (=prod)    -> BLOCK (2) — GAP-A close (was silent allow).
+#   B9 — FAIL-OPEN: bare push, NO config (not opted in) -> NOT gated (0, decision != ask).
 #
 # Exit 0 = all assertions passed; exit 1 = at least one failed.
 
@@ -42,7 +50,10 @@ mk_ws() {
   local name="$1" with_config="$2"
   local ws="$T/$name"
   mkdir -p "$ws/.preflight/gate"
-  ( cd "$ws" && git init -q && git commit -q --allow-empty -m init )
+  # Start on an UNPROTECTED feature branch so a bare push resolves to a non-protected current branch
+  # (otherwise the git-init default 'master' is in PROTECTED_BRANCHES and a bare force would BLOCK as
+  # force-to-protected — a different, correct path tested explicitly in B3p/B7).
+  ( cd "$ws" && git init -q && git commit -q --allow-empty -m init && git checkout -q -b feature/topic-x )
   local head; head="$(cd "$ws" && git rev-parse HEAD)"
   printf 'HEAD=%s\nts=now\n' "$head" > "$ws/.preflight/gate/tests-pass"
   printf 'HEAD=%s\nts=now\n' "$head" > "$ws/.preflight/gate/stage1-clean"
@@ -52,42 +63,98 @@ mk_ws() {
   echo "$ws"
 }
 
-# Run the hook from inside a workspace with a crafted push command; echo "<exit> <stderr>".
+# Run the hook in a workspace with a crafted push command. Sets:
+#   RC      = exit code
+#   DEC     = permissionDecision from the JSON on stdout ("allow"/"ask"/"" if none), via jq (MSYS-safe)
+#   ERR1    = first stderr line (for BLOCK-message assertions)
 probe() {
   local ws="$1" cmd="$2"
   local json; json="$(printf '{"tool_name":"Bash","tool_input":{"command":"%s"}}' "$cmd")"
-  local out rc
-  out="$( cd "$ws" && printf '%s' "$json" | CLAUDE_PROJECT_DIR="$ws" bash "$HOOK" "$json" 2>&1 )"; rc=$?
-  printf '%s\n%s' "$rc" "$out"
+  local outf errf; outf="$(mktemp)"; errf="$(mktemp)"
+  # Per-probe timeout: on this Git-Bash box the hook's git/jq subprocesses can intermittently wedge under
+  # heavy concurrent load (an environmental flake in the pre-push-gate chain, NOT in the tier logic — it
+  # runs clean unloaded). The timeout makes a wedge surface as a clear FAIL (RC=124) instead of hanging
+  # the whole suite. 60s is far above the normal sub-second runtime.
+  ( cd "$ws" && printf '%s' "$json" | CLAUDE_PROJECT_DIR="$ws" timeout 60 bash "$HOOK" "$json" >"$outf" 2>"$errf" ); RC=$?
+  DEC="$(jq -r '.hookSpecificOutput.permissionDecision // ""' "$outf" 2>/dev/null || echo "")"
+  ERR1="$(head -1 "$errf")"
+  rm -f "$outf" "$errf"
 }
-ec() { printf '%s' "$1" | head -1; }
-msg() { printf '%s' "$1" | tail -n +2; }
 
 WS="$(mk_ws optedin with-config)"
+# Workspace branch is git's init default (master/main); config base is 'main'. Pushing to feature/x is
+# UNPROTECTED. No 'origin' remote is configured, so a named-remote slug won't resolve to a forbidden repo
+# (kept out of the forbidden list) — so a named push to the configured remote is the AUTO case.
 
-R="$(probe "$WS" 'git push')"
-if [ "$(ec "$R")" = "2" ] && printf '%s' "$(msg "$R")" | grep -qiE 'bare|no named remote|unvalidatable'; then
-  ok "B1: bare 'git push' (opted in) -> BLOCKED (2), names the unvalidatable-target reason"
-else bad "B1: bare push should BLOCK(2) with reason, got ec=$(ec "$R")"; fi
+# ── Three-tier outcomes ──
+# B1 — bare push (opted in): CONFIRM (exit 0 + permissionDecision:ask), names the unvalidatable target.
+probe "$WS" 'git push'
+if [ "$RC" = "0" ] && [ "$DEC" = "ask" ]; then
+  ok "B1: bare 'git push' (opted in) -> CONFIRM (exit 0 + permissionDecision:ask)"
+else bad "B1: bare push should be CONFIRM (0/ask), got RC=$RC DEC=$DEC"; fi
 
-R="$(probe "$WS" 'git push -u')"
-[ "$(ec "$R")" = "2" ] && ok "B2: 'git push -u' (no positional remote) -> BLOCKED (2)" || bad "B2: should BLOCK(2), got $(ec "$R")"
+# B2 — 'git push -u' (still no positional remote): CONFIRM.
+probe "$WS" 'git push -u'
+[ "$RC" = "0" ] && [ "$DEC" = "ask" ] && ok "B2: 'git push -u' (no positional remote) -> CONFIRM (ask)" \
+                                       || bad "B2: should be CONFIRM (0/ask), got RC=$RC DEC=$DEC"
 
-R="$(probe "$WS" 'git push --force')"
-[ "$(ec "$R")" = "2" ] && ok "B3: 'git push --force' (bare + force) -> BLOCKED (2)" || bad "B3: should BLOCK(2), got $(ec "$R")"
+# B3 — bare 'git push --force' on an UNPROTECTED branch (feature/topic-x): force is NOT to a protected
+# branch -> not the hard BLOCK; but it is a bare push (no named remote) -> CONFIRM.
+probe "$WS" 'git push --force'
+[ "$RC" = "0" ] && [ "$DEC" = "ask" ] && ok "B3: bare 'git push --force' (unprotected current branch) -> CONFIRM (ask)" \
+                                       || bad "B3: should be CONFIRM (0/ask), got RC=$RC DEC=$DEC"
 
-R="$(probe "$WS" 'git push origin HEAD:feature/x')"
-[ "$(ec "$R")" = "0" ] && ok "B4: named canonical push 'git push origin HEAD:feature/x' -> NOT blocked (0); normal flow intact" \
-                       || bad "B4: canonical push should pass (0), got $(ec "$R") — NORMAL FLOW BROKEN"
+# B3p — bare 'git push --force' while ON a PROTECTED branch -> hard BLOCK (force-to-protected). Separate
+# workspace checked out on 'main' (a protected branch) to exercise this path distinctly from B3.
+WS_PROT="$T/onprotected"; mkdir -p "$WS_PROT/.preflight/gate"
+( cd "$WS_PROT" && git init -q && git commit -q --allow-empty -m init && git checkout -q -b main 2>/dev/null || (cd "$WS_PROT" && git branch -m main) )
+_ph="$(cd "$WS_PROT" && git rev-parse HEAD)"
+for ev in tests-pass stage1-clean; do printf 'HEAD=%s\nts=now\n' "$_ph" > "$WS_PROT/.preflight/gate/$ev"; done
+printf '{"branch":{"base":"main","remote":"origin","forbiddenRemotes":[],"forbiddenRepos":[]}}' > "$WS_PROT/.preflight/config.json"
+probe "$WS_PROT" 'git push --force'
+[ "$RC" = "2" ] && printf '%s' "$ERR1" | grep -qi 'force-push' \
+  && ok "B3p: bare 'git push --force' while ON protected 'main' -> BLOCK (2, force-to-protected)" \
+  || bad "B3p: bare force on protected branch should BLOCK(2), got RC=$RC ERR1=$ERR1"
 
-R="$(probe "$WS" 'git push evil HEAD:feature/x')"
-[ "$(ec "$R")" = "2" ] && ok "B5: named wrong remote 'git push evil ...' -> BLOCKED (2) by existing wrong-remote guard (regression check)" \
-                       || bad "B5: wrong-remote should BLOCK(2), got $(ec "$R")"
+# B4 — AUTO: named push to the configured safe remote, UNPROTECTED branch, non-force -> proceed silently.
+probe "$WS" 'git push origin HEAD:feature/x'
+if [ "$RC" = "0" ] && [ "$DEC" = "allow" ]; then
+  ok "B4: AUTO — named push to safe remote, unprotected branch, non-force -> permissionDecision:allow (friction removed)"
+else bad "B4: should be AUTO (0/allow), got RC=$RC DEC=$DEC — friction-removal broken"; fi
 
+# B5 — CONFIRM: a named NON-canonical remote ('evil' != configured 'origin') -> ask (was a hard BLOCK).
+probe "$WS" 'git push evil HEAD:feature/x'
+[ "$RC" = "0" ] && [ "$DEC" = "ask" ] && ok "B5: non-canonical remote 'evil' -> CONFIRM (ask), was hard-BLOCK (reclassified)" \
+                                       || bad "B5: should be CONFIRM (0/ask), got RC=$RC DEC=$DEC"
+
+# B6 — CONFIRM: push to a PROTECTED branch ('main' = config base), safe remote, non-force -> ask.
+probe "$WS" 'git push origin HEAD:main'
+[ "$RC" = "0" ] && [ "$DEC" = "ask" ] && ok "B6: push to PROTECTED branch 'main' -> CONFIRM (ask)" \
+                                       || bad "B6: protected-branch push should be CONFIRM (0/ask), got RC=$RC DEC=$DEC"
+
+# B7 — BLOCK preserved: force-push to a PROTECTED branch ('main') -> hard exit 2 (never auto, never ask).
+probe "$WS" 'git push --force origin HEAD:main'
+[ "$RC" = "2" ] && printf '%s' "$ERR1" | grep -qi 'force-push' \
+  && ok "B7: BLOCK preserved — force-push to protected 'main' -> exit 2 (hard block)" \
+  || bad "B7: force-to-protected should BLOCK(2), got RC=$RC ERR1=$ERR1"
+
+# B8 — GAP A close: a named push to a remote on the forbiddenRepos denylist -> hard BLOCK (exit 2). An
+# explicit operator denylist is a deliberate 'never push here' — stronger than CONFIRM by design.
+WS_FORBID="$T/forbid"; mkdir -p "$WS_FORBID/.preflight/gate"
+( cd "$WS_FORBID" && git init -q && git commit -q --allow-empty -m init && git remote add origin https://github.com/Org/PROD.git )
+_fh="$(cd "$WS_FORBID" && git rev-parse HEAD)"
+for ev in tests-pass stage1-clean; do printf 'HEAD=%s\nts=now\n' "$_fh" > "$WS_FORBID/.preflight/gate/$ev"; done
+printf '{"branch":{"base":"main","remote":"origin","forbiddenRemotes":[],"forbiddenRepos":["Org/PROD"]}}' > "$WS_FORBID/.preflight/config.json"
+probe "$WS_FORBID" 'git push origin HEAD:feature/x'
+[ "$RC" = "2" ] && printf '%s' "$ERR1" | grep -qi 'FORBIDDEN' \
+  && ok "B8: GAP-A — configured remote on forbiddenRepos denylist (=prod) -> hard BLOCK (exit 2), not silent allow" \
+  || bad "B8: forbidden-repo push should BLOCK(2)+FORBIDDEN, got RC=$RC ERR1=$ERR1"
+
+# B9 — FAIL-OPEN: bare push with NO config (not opted in) + evidence present -> NOT gated (AUTO/allow).
 WS_NOCFG="$(mk_ws noconfig no-config)"
-R="$(probe "$WS_NOCFG" 'git push')"
-[ "$(ec "$R")" = "0" ] && ok "B6: FAIL-OPEN — bare push, NO config (not opted in), evidence present -> NOT blocked (0)" \
-                       || bad "B6: no-config bare push should fail-open (0), got $(ec "$R") — additive-guard posture violated"
+probe "$WS_NOCFG" 'git push'
+[ "$RC" = "0" ] && [ "$DEC" != "ask" ] && ok "B9: FAIL-OPEN — bare push, NO config (not opted in) -> NOT gated (RC=0, decision='$DEC' not ask)" \
+                                        || bad "B9: no-config bare push should fail-open (not ask), got RC=$RC DEC=$DEC"
 
 echo ""
 echo "pre-push-bare-remote tests: ${PASS} passed, ${FAIL} failed"

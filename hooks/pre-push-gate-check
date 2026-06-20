@@ -189,6 +189,21 @@ _pfg_url_to_slug() {
   printf '%s' "$1" | sed -E 's#^git@[^:]+:#https://x/#; s#^https?://[^/]+/##; s#\.git$##' | sed -E 's#^/+##'
 }
 
+# Emit stdin as a JSON string LITERAL (surrounding quotes + escaped) for the permissionDecisionReason
+# value. jq is UTF-8-safe; node is the fallback; a last-ditch sed escapes the JSON-critical chars so the
+# stdout JSON never breaks (a malformed permissionDecision payload would be ignored by the platform →
+# fail-open to normal permission flow, which for a CONFIRM case is acceptable, but we escape properly).
+_pfg_json_string() {
+  if command -v jq &>/dev/null; then
+    jq -Rs . 2>/dev/null && return 0
+  fi
+  if command -v node &>/dev/null; then
+    node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>process.stdout.write(JSON.stringify(d.replace(/\n+$/,''))))" 2>/dev/null && return 0
+  fi
+  # Fallback: escape backslash, double-quote, CR, tab, and newline; wrap in quotes.
+  printf '"%s"' "$(sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/\r//g' -e 's/\t/ /g' | tr '\n' ' ')"
+}
+
 # ── Forbidden-destination denylist (A1 fix) ───────────────────────────────────
 # The two guards below historically derived their SINGLE notion of "safe target"
 # from config.branch.remote ("anything != the configured remote is bad"). That is
@@ -403,34 +418,35 @@ fi
 # branch.remote is present), REQUIRE the remote be named explicitly so it becomes validatable — then
 # the B0/B checks run on it. FAIL-OPEN otherwise: no config / no configured remote → not opted in →
 # do NOT newly block (same additive-guard posture as the rest of this file).
-if [ -n "$PUSH_CMD" ] && [ -z "$ARG_REMOTE" ] && [ -n "$REMOTE" ]; then
-  echo "BLOCKED: bare 'git push' with no named remote — the push target is UNVALIDATABLE." >&2
-  echo "  A bare push goes to git's default/upstream remote, which this guard cannot see, so the" >&2
-  echo "  forbidden-destination and wrong-remote checks are bypassed. On an inverted clone that default" >&2
-  echo "  may be the legacy production repo. Name the remote explicitly (e.g. 'git push <remote> <refspec>')" >&2
-  echo "  so the target is checked, and confirm with a human it is not prod; see docs/parity-gate-limitations.md." >&2
-  echo "  (Agent Bash-tool guard only; not server-side protection.)" >&2
-  exit 2
+#
+# ── THREE-TIER REVERSIBILITY POLICY (AUTO / CONFIRM / BLOCK) ──────────────────────────────────────
+# The push-safety tiers below are computed MECHANICALLY from the signals already resolved above
+# (PROTECTED_BRANCHES, REMOTE, FORBIDDEN_*, HAS_FORCE, ARG_REMOTE) — never the agent's judgement.
+#   BLOCK   (exit 2)                : irreversible-and-never-OK → force-push to a protected branch, and
+#                                     the explicit forbidden-destination block (B0, above).
+#   CONFIRM (exit 0 + permissionDecision:ask) : consequential/high-blast-radius but a human MAY choose
+#                                     to proceed → push to a PROTECTED branch, to a PROD/non-canonical
+#                                     remote (closes GAP A — a configured-remote push to a prod-looking
+#                                     target is now ASK, not silent allow), or a BARE push (unvalidatable
+#                                     target). The platform prompts the user; the agent cannot self-approve.
+#   AUTO    (exit 0, fall through to the evidence gate) : reversible/low-blast-radius → named SAFE remote,
+#                                     UNPROTECTED branch, non-force. The friction being removed: the agent
+#                                     just pushes (after the evidence gate), no human copy-paste handoff.
+# PROTOCOL NOTE (Claude Code PreToolUse): exit 0 + JSON on stdout XOR exit 2 — they cannot be combined
+# (JSON is ignored on exit 2). So the HARD BLOCK (force-to-protected) exits 2 here; the CONFIRM tier is
+# deferred until AFTER the evidence gate (a missing/stale-evidence exit 2 is itself a hard block that must
+# win over a CONFIRM). We set CONFIRM_REASON now, run the evidence gate, then emit the tier decision.
+CONFIRM_REASON=""
+
+# Resolve the would-be target branch (refspec dest after ':', else named ref, else current branch).
+TARGET_BRANCH="${ARG_REFSPEC##*:}"
+if [ -z "$TARGET_BRANCH" ]; then
+  TARGET_BRANCH="$(git -C "$PFG_TARGET_CWD" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
 fi
 
-# (B) wrong-remote: a NAMED remote that isn't the canonical one → block.
-if [ -n "$REMOTE" ] && [ -n "$ARG_REMOTE" ] && [ "$ARG_REMOTE" != "$REMOTE" ]; then
-  echo "BLOCKED: push targets remote '$ARG_REMOTE', not the configured remote '$REMOTE' (config.branch.remote)." >&2
-  echo "  Do NOT assume the configured remote is the safe one — on an inverted clone the configured remote may itself" >&2
-  echo "  be the legacy production repo. Confirm the intended remote with a human before retrying; see docs/parity-gate-limitations.md." >&2
-  echo "  (Agent Bash-tool guard only; not server-side protection — see docs/parity-gate-limitations.md.)" >&2
-  exit 2
-fi
-
-# (A) force to a protected branch → block. Target branch = refspec's destination
-# (after a ':' if present, e.g. HEAD:AccountLookUp_POC), else the named ref, else the
-# current branch (bare `git push --force`).
+# (A) HARD BLOCK — force-push to a protected branch (irreversible history rewrite; never auto, never
+# merely-confirm). Preserved exactly as before: exit 2.
 if [ "$HAS_FORCE" = true ]; then
-  TARGET_BRANCH="${ARG_REFSPEC##*:}"
-  if [ -z "$TARGET_BRANCH" ]; then
-    # Bare `git push --force`: the current branch OF THE PUSH-TARGET REPO (repo-aware, NEW-2).
-    TARGET_BRANCH="$(git -C "$PFG_TARGET_CWD" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
-  fi
   for pb in $PROTECTED_BRANCHES; do
     if [ "$TARGET_BRANCH" = "$pb" ]; then
       echo "BLOCKED: force-push (--force/-f/--force-with-lease) to protected branch '$pb'." >&2
@@ -441,7 +457,67 @@ if [ "$HAS_FORCE" = true ]; then
   done
 fi
 
-# Not a blocked operation — fall through to the evidence gate.
-# This IS a git push - run the full pre-push gate
+# (B-bare) CONFIRM — bare 'git push' (no named remote): the target is unvalidatable (default/upstream
+# remote this guard cannot see → could be prod). Was a hard BLOCK; now CONFIRM so a human can proceed
+# deliberately, never silently. Only when push-gating is opted in (REMOTE set); fail-open otherwise.
+if [ -z "$CONFIRM_REASON" ] && [ -n "$PUSH_CMD" ] && [ -z "$ARG_REMOTE" ] && [ -n "$REMOTE" ]; then
+  CONFIRM_REASON="Bare 'git push' with no named remote — the target is UNVALIDATABLE (git's default/upstream remote, which the guard cannot see, may be the legacy production repo). Name the remote explicitly so it is checked, or confirm this push is intended. (Agent Bash-tool guard only; not server-side protection.)"
+fi
+
+# (B) CONFIRM — push to a PROD/non-canonical remote. A NAMED remote that isn't the configured one, OR
+# (GAP A close) the configured remote itself resolving to a FORBIDDEN/prod slug. Was: wrong-remote → BLOCK,
+# configured-prod → silent ALLOW. Now both → CONFIRM (the human may push to prod deliberately, not silently).
+if [ -z "$CONFIRM_REASON" ] && [ -n "$ARG_REMOTE" ]; then
+  if [ -n "$REMOTE" ] && [ "$ARG_REMOTE" != "$REMOTE" ]; then
+    CONFIRM_REASON="Push targets remote '$ARG_REMOTE', not the configured remote '$REMOTE' (config.branch.remote). On an inverted clone the named remote may be a legacy production repo. Confirm this is the intended target. (Agent Bash-tool guard only; not server-side protection.)"
+  else
+    # GAP A: the configured remote could itself be prod. Resolve its slug and check the forbidden list.
+    _AR_URL="$(git -C "$PFG_TARGET_CWD" remote get-url "$ARG_REMOTE" 2>/dev/null || true)"
+    _AR_SLUG=""
+    if [ -n "$_AR_URL" ]; then _AR_SLUG="$(_pfg_url_to_slug "$_AR_URL")"
+    else case "$ARG_REMOTE" in *://*|*@*:*|*/*) _AR_SLUG="$(_pfg_url_to_slug "$ARG_REMOTE")" ;; esac; fi
+    if [ -n "$_AR_SLUG" ] && _pfg_repo_forbidden "$_AR_SLUG" "$FORBIDDEN_REPOS"; then
+      CONFIRM_REASON="Push targets '$ARG_REMOTE' (→ $_AR_SLUG), which is on the forbidden/prod denylist (config.branch.forbiddenRepos) — even though it is the configured remote. A push to prod must be a deliberate human confirmation, never silent. (Agent Bash-tool guard only; not server-side protection.)"
+    fi
+  fi
+fi
+
+# (C) CONFIRM — push to a PROTECTED branch (main/master/config.base), even on the safe remote, non-force.
+# Landing on a protected/shared branch is consequential; the human confirms. (Force-to-protected already
+# hard-blocked above.)
+if [ -z "$CONFIRM_REASON" ] && [ -n "$TARGET_BRANCH" ]; then
+  for pb in $PROTECTED_BRANCHES; do
+    if [ "$TARGET_BRANCH" = "$pb" ]; then
+      CONFIRM_REASON="Push lands on PROTECTED branch '$pb' (a shared/integration branch). Confirm this is intended — safe topic-branch pushes proceed automatically, but a push to a protected branch is consequential. (Agent Bash-tool guard only; not server-side protection.)"
+      break
+    fi
+  done
+fi
+
+# Not a hard-blocked operation — run the evidence gate FIRST (a missing/stale-evidence exit 2 is a hard
+# block that must win over CONFIRM). pre-push-gate exits 2 to block, or returns 0 when evidence is fresh.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-exec bash "$SCRIPT_DIR/pre-push-gate"
+set +e
+# Redirect stdin from /dev/null: the parent already consumed its stdin (STDIN_JSON="$(cat)" at the top),
+# so the inherited fd is an exhausted pipe. Detaching the child's stdin avoids any downstream git/jq op
+# blocking on it, and matches the original `exec` form's effective behavior without replacing the process.
+bash "$SCRIPT_DIR/pre-push-gate" </dev/null
+EVIDENCE_RC=$?
+set -e
+if [ "$EVIDENCE_RC" -ne 0 ]; then
+  exit "$EVIDENCE_RC"   # evidence gate blocked (exit 2) — hard block, JSON would be ignored anyway.
+fi
+
+# Evidence is fresh. Now emit the tier decision (exit 0 + JSON, per the PreToolUse protocol).
+if [ -n "$CONFIRM_REASON" ]; then
+  # CONFIRM tier: ask the user. permissionDecision:ask escalates to a human confirmation prompt; the
+  # agent CANNOT self-approve (the accountability property — the consequential push is gated to a human).
+  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":%s}}\n' \
+    "$(printf '%s' "CONSEQUENTIAL PUSH — confirm to proceed. $CONFIRM_REASON" | _pfg_json_string)"
+  exit 0
+fi
+# AUTO tier: reversible/low-blast-radius (named safe remote, unprotected branch, non-force, evidence
+# fresh). Fall through with exit 0 + explicit allow so the safe push proceeds with NO human handoff —
+# the friction being removed.
+printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":"Reversible push: unprotected branch to the configured safe remote, non-force, gate evidence fresh."}}\n'
+exit 0
