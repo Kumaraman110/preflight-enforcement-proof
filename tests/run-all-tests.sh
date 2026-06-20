@@ -783,6 +783,18 @@ run_behavioral_tests() {
   else
     yellow "SKIP: parity-check-exit-codes-test.sh not found"
   fi
+
+  local bare_push_test="$SCRIPT_DIR/behavioral/pre-push-bare-remote-test.sh"
+  if [ -f "$bare_push_test" ]; then
+    if bash "$bare_push_test"; then
+      PASSES=$((PASSES + 6))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: pre-push-bare-remote tests failed (bare 'git push' with no named remote is an unvalidatable target — must BLOCK when push-gating opted in, fail-open otherwise)"
+    fi
+  else
+    yellow "SKIP: pre-push-bare-remote-test.sh not found"
+  fi
 }
 
 # ═══════════════════════════════════════════════════════════════

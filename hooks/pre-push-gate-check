@@ -394,6 +394,25 @@ if [ -n "$ARG_REMOTE" ]; then
   fi
 fi
 
+# (B-bare) UNVALIDATABLE BARE PUSH: a `git push` with NO named remote (e.g. bare `git push`,
+# `git push -u`, `git push --force`) resolves to git's DEFAULT remote (the branch's upstream, or
+# `origin`) — a target this guard NEVER SEES, so the forbidden-destination (B0) and wrong-remote (B)
+# checks above are SILENTLY SKIPPED and the push sails through unvalidated. On an inverted clone where
+# the default/upstream remote is legacy PROD, that is an ungated push-to-prod. You cannot confirm a
+# remote you did not name. So: when this repo has OPTED IN to preflight push-gating (a config with
+# branch.remote is present), REQUIRE the remote be named explicitly so it becomes validatable — then
+# the B0/B checks run on it. FAIL-OPEN otherwise: no config / no configured remote → not opted in →
+# do NOT newly block (same additive-guard posture as the rest of this file).
+if [ -n "$PUSH_CMD" ] && [ -z "$ARG_REMOTE" ] && [ -n "$REMOTE" ]; then
+  echo "BLOCKED: bare 'git push' with no named remote — the push target is UNVALIDATABLE." >&2
+  echo "  A bare push goes to git's default/upstream remote, which this guard cannot see, so the" >&2
+  echo "  forbidden-destination and wrong-remote checks are bypassed. On an inverted clone that default" >&2
+  echo "  may be the legacy production repo. Name the remote explicitly (e.g. 'git push <remote> <refspec>')" >&2
+  echo "  so the target is checked, and confirm with a human it is not prod; see docs/parity-gate-limitations.md." >&2
+  echo "  (Agent Bash-tool guard only; not server-side protection.)" >&2
+  exit 2
+fi
+
 # (B) wrong-remote: a NAMED remote that isn't the canonical one → block.
 if [ -n "$REMOTE" ] && [ -n "$ARG_REMOTE" ] && [ "$ARG_REMOTE" != "$REMOTE" ]; then
   echo "BLOCKED: push targets remote '$ARG_REMOTE', not the configured remote '$REMOTE' (config.branch.remote)." >&2
