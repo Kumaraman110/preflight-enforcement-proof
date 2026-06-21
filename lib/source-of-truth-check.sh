@@ -30,7 +30,11 @@
 #   - dir:   the path EXISTS, is a directory, is READABLE, and is NON-EMPTY (contains >=1 entry).
 #   - any:   EXISTS + READABLE (file or dir), emptiness not checked (use when emptiness is legitimately ok).
 #   A placeholder value (e.g. "<set-this-to-...>", "TODO", "CHANGEME") is treated as UNCONFIGURED -> MISSING
-#   (the operator never filled it in — guessing past it is the failure).
+#   (the operator never filled it in — guessing past it is the failure). Note the placeholder match is
+#   deliberately broad: ANY value that both starts with '<' and ends with '>' (e.g. "<anything>") is
+#   treated as an unconfigured placeholder, in addition to the specific tokens above. A real path that
+#   literally begins '<' and ends '>' would be mis-flagged — accepted as a conservative fail-safe (such
+#   paths effectively never occur, and over-escalating is the safe direction for a missing-source gate).
 #
 # Usage:
 #   bash lib/source-of-truth-check.sh \

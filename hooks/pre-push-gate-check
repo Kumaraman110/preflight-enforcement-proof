@@ -115,7 +115,7 @@ done
 # ── Subprocess wedge-bounding (Layer 2 of the fail-closed conversion) ─────────
 # Each wedge-prone external call (git remote get-url, git rev-parse, jq config read) is run
 # under a SHORT per-call timeout, so a SINGLE stalled subprocess fails closed in ~3s with a
-# precise diagnostic instead of riding the 7s self-watchdog backstop. Fail direction CLOSED:
+# precise diagnostic instead of riding the 8s self-watchdog backstop. Fail direction CLOSED:
 # a TIMED-OUT call (124) or signal-kill (137) sets a FILESYSTEM wedge flag — a shell variable
 # would not survive the `$(...)` subshells these calls run inside, but a file write does — and
 # the main shell checks the flag at each allow/ask decision point and BLOCKS (exit 2). A NORMAL
@@ -393,7 +393,7 @@ _pfg_repo_forbidden() {
 # the patterns are deliberately narrow): a token must appear as a WHOLE path/name SEGMENT — bounded
 # by start/end, '/', '.', '-', '_', or ':' — so 'reproduce'/'product-catalog'/'proddy' do NOT match
 # 'prod', and 'reliable' does NOT match 'live'. Matches: prod, production, prd, release, live,
-# legacy + the known legacy-prod repo basename 'cpsl'. Case-insensitive on the slug only (the
+# legacy. Case-insensitive on the slug only (the
 # owner/repo + host path), not on arbitrary URL noise.
 # Override/extend via branch.prodPatterns (committed config only; NOT overlayable — same posture as
 # the forbidden lists). HONESTY: this is a NAME heuristic — a prod remote named blandly (e.g.
@@ -675,7 +675,7 @@ if [ -z "$CONFIRM_REASON" ] && [ -n "$ARG_REMOTE" ]; then
     # each of which flips the otherwise-AUTO configured-remote push to CONFIRM (never silent prod push):
     #   (1) EXPLICIT denylist — the slug is on config.branch.forbiddenRepos (operator's precise tool).
     #   (2) PROD-PATTERN heuristic (GAP-A hardening) — the slug/URL carries a high-confidence prod
-    #       signal (prod/production/prd/release/live/legacy/cpsl as a whole segment, + branch.prodPatterns).
+    #       signal (prod/production/prd/release/live/legacy as a whole segment, + branch.prodPatterns).
     #       This is the ALWAYS-ON net that closes the silent-auto-push-to-prod hole with NO opt-in.
     #   (3) SAFE-REMOTES allowlist (GAP-A opt-in strict mode) — if branch.safeRemotes is set and this
     #       remote/slug is NOT on it → CONFIRM. Inert (no flip) when safeRemotes is absent, so the AUTO
