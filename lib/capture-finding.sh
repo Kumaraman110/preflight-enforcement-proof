@@ -95,19 +95,37 @@ HEAD_SHA="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
 # capture-time log line, not a workflow script.)
 TS="${PREFLIGHT_CAPTURE_TS:-$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo unknown)}"
 
-mkdir -p "$(dirname "$DEST")"
+# WRITE FAIL-CLOSED (G4): this script runs under `set -uo pipefail` but NOT `set -e`, so a failed write
+# (mkdir cannot create the dir, the header/append redirect fails on an unwritable path/full disk) would
+# only emit to stderr while control fell through to the success echo + `exit 0` — reporting a SILENT
+# SUCCESS for a capture that never persisted. A lost capture is INVISIBLE (looks identical to "no defect
+# found") — the exact accountability gap this file exists to close (see header), and it defeats the sole
+# caller's failure detection (coverage-gap-detect.sh keys off a non-zero exit that never came). So EACH
+# write step is now checked and fails CLOSED: a capture that cannot be verified to have persisted ERRORS
+# (exit 3) and does NOT print the "captured:" success line. (Exit 3, distinct from the exit-2 usage error:
+# this is a could-not-persist runtime failure, not bad arguments.)
+_cf_write_fail() {  # $1 = what failed (for the diagnostic)
+  echo "capture-finding: FAILED to write the capture entry — $1" >&2
+  echo "  The finding '${SUMMARY}' was NOT persisted to ${DEST}. Failing CLOSED (a lost capture is an" >&2
+  echo "  invisible accountability gap). Fix the destination (path/permissions/disk) and re-run; do not" >&2
+  echo "  treat this as a successful capture." >&2
+  exit 3
+}
+
+mkdir -p "$(dirname "$DEST")" || _cf_write_fail "cannot create the capture directory $(dirname "$DEST")"
 # Create the file with a minimal header if absent (matches the template shape).
 if [ ! -f "$DEST" ]; then
   case "$BUCKET" in
-    calibration-log)     printf '# Calibration Log\n\nEntries record cases where Stage 1 detection was too weak (missed something the rubric covers) or severity was miscalibrated.\n\n---\n\n' > "$DEST" ;;
-    checklist-additions) printf '# Checklist Additions\n\nEntries record new categories that no existing rubric section covers.\n\n---\n\n' > "$DEST" ;;
-    false-positives)     printf '# False Positives\n\nEntries record cases where Stage 1 flagged something external review disagreed with.\n\n---\n\n' > "$DEST" ;;
+    calibration-log)     printf '# Calibration Log\n\nEntries record cases where Stage 1 detection was too weak (missed something the rubric covers) or severity was miscalibrated.\n\n---\n\n' > "$DEST" || _cf_write_fail "cannot create $DEST (header write)" ;;
+    checklist-additions) printf '# Checklist Additions\n\nEntries record new categories that no existing rubric section covers.\n\n---\n\n' > "$DEST" || _cf_write_fail "cannot create $DEST (header write)" ;;
+    false-positives)     printf '# False Positives\n\nEntries record cases where Stage 1 flagged something external review disagreed with.\n\n---\n\n' > "$DEST" || _cf_write_fail "cannot create $DEST (header write)" ;;
   esac
 fi
 
 # Append the structured entry. The `Source:` line uses the source-agnostic label so a non-Copilot origin
 # is FIRST-CLASS in the record (was: only "copilot PR#nn" could appear). Survived:0 initializes the
-# promotion recurrence counter (lib/rubric-promotion-evaluator.sh consumes it).
+# promotion recurrence counter (lib/rubric-promotion-evaluator.sh consumes it). The whole block's redirect
+# is guarded: a failed append fails CLOSED (the entry did not persist), never a silent success.
 {
   echo "## ${SUMMARY}"
   echo ""
@@ -121,7 +139,11 @@ fi
   echo ""
   echo "---"
   echo ""
-} >> "$DEST"
+} >> "$DEST" || _cf_write_fail "cannot append the entry to $DEST"
+
+# Confirmed persisted: the destination exists and is non-empty. (Belt-and-suspenders — the redirects above
+# already fail-closed; this also catches a write that silently produced nothing.)
+[ -s "$DEST" ] || _cf_write_fail "the entry append produced no content at $DEST"
 
 echo "captured: '${SUMMARY}' -> ${BUCKET_LABEL}"
 echo "  source=${SOURCE}  category=${CATEGORY}  head=${HEAD_SHA}  -> ${DEST}"

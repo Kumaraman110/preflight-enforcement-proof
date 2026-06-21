@@ -808,6 +808,18 @@ run_behavioral_tests() {
     yellow "SKIP: coverage-gap-signal-body-test.sh not found"
   fi
 
+  local cap_write_test="$SCRIPT_DIR/behavioral/capture-finding-write-failclosed-test.sh"
+  if [ -f "$cap_write_test" ]; then
+    if bash "$cap_write_test"; then
+      PASSES=$((PASSES + 4))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: capture-finding-write-failclosed tests failed (G4: a FAILED capture write must FAIL CLOSED — error + non-zero exit, no 'captured:' success — never a silent loss; a lost capture is an invisible accountability gap. Normal writable capture and the usage-error path must be unchanged)"
+    fi
+  else
+    yellow "SKIP: capture-finding-write-failclosed-test.sh not found"
+  fi
+
   local sot_test="$SCRIPT_DIR/behavioral/source-of-truth-check-test.sh"
   if [ -f "$sot_test" ]; then
     if bash "$sot_test"; then
