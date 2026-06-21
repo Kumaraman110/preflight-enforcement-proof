@@ -383,6 +383,67 @@ _pfg_repo_forbidden() {
   return 1
 }
 
+# ── GAP-A hardening: conservative prod-PATTERN heuristic (no explicit denylist needed) ─────────
+# GAP-A was: a configured remote that IS prod but is NOT on forbiddenRepos, on an unprotected
+# branch, classified AUTO → the agent silently auto-pushed to prod. The denylist closed it only
+# when the operator opted in. This adds an ALWAYS-ON conservative net: if the remote's URL/slug
+# carries a HIGH-CONFIDENCE prod signal, flip AUTO → CONFIRM (never BLOCK — a human may still push
+# to prod deliberately, just never SILENTLY). Conservative by design (false-positive here only
+# adds ONE confirmation, never blocks; but a false-positive on a safe remote is still friction, so
+# the patterns are deliberately narrow): a token must appear as a WHOLE path/name SEGMENT — bounded
+# by start/end, '/', '.', '-', '_', or ':' — so 'reproduce'/'product-catalog'/'proddy' do NOT match
+# 'prod', and 'reliable' does NOT match 'live'. Matches: prod, production, prd, release, live,
+# legacy + the known legacy-prod repo basename 'cpsl'. Case-insensitive on the slug only (the
+# owner/repo + host path), not on arbitrary URL noise.
+# Override/extend via branch.prodPatterns (committed config only; NOT overlayable — same posture as
+# the forbidden lists). HONESTY: this is a NAME heuristic — a prod remote named blandly (e.g.
+# 'app-final') will NOT match; the explicit forbiddenRepos denylist remains the operator's
+# precise tool. Raises the bar on the OBVIOUS case; does not claim completeness.
+# NOTE on the pattern set: only TRULY GENERIC prod tokens are built in. A project-specific legacy-prod
+# repo name (e.g. the migration program's 'CPSL') is DELIBERATELY NOT a built-in — it would false-positive
+# on a safe sibling that merely shares the fragment (observed: 'cyf.cpsl_core', the real migration TARGET,
+# vs 'CPSL', the legacy prod). Project-specific prod repos belong on the operator's explicit
+# branch.forbiddenRepos denylist (precise, no collateral), or in branch.prodPatterns if wanted.
+_PFG_PROD_PATTERNS_BUILTIN='prod production prd release live legacy'
+_pfg_remote_looks_prod() {  # $1 = slug-or-url ; $2 = extra newline-separated patterns (optional). 0 = looks prod.
+  local hay="$1" extra="${2:-}" tok
+  [ -z "$hay" ] && return 1
+  # Lowercase for case-insensitive segment matching.
+  hay="$(printf '%s' "$hay" | tr '[:upper:]' '[:lower:]')"
+  # A segment boundary is: start-of-string, end-of-string, or one of / . - _ :
+  for tok in $_PFG_PROD_PATTERNS_BUILTIN; do
+    printf '%s' "$hay" | grep -qE "(^|[/._:-])${tok}([/._:-]|\$)" && return 0
+  done
+  # Operator-supplied extra patterns (committed branch.prodPatterns), same segment-boundary rule.
+  if [ -n "$extra" ]; then
+    while IFS= read -r tok; do
+      [ -z "$tok" ] && continue
+      tok="$(printf '%s' "$tok" | tr '[:upper:]' '[:lower:]')"
+      printf '%s' "$hay" | grep -qE "(^|[/._:-])${tok}([/._:-]|\$)" && return 0
+    done <<< "$extra"
+  fi
+  return 1
+}
+
+# ── GAP-A hardening (opt-in strict mode): a SAFE-REMOTES allowlist ─────────────────────────────
+# When the operator sets branch.safeRemotes (committed config; NOT overlayable), AUTO is restricted
+# to remotes whose NAME or resolved SLUG is on that list — everything else (including the configured
+# remote, if it isn't listed) → CONFIRM. This inverts the default to fail-SAFE for operators who want
+# it: AUTO only for explicitly-blessed remotes. ABSENT (the default) → this is INERT (returns "on the
+# list" for everything) so the AUTO tier is preserved unchanged for consumers who never opt in — no
+# friction regression. The one cost when ENABLED: the first push to a new safe remote needs one
+# confirmation until it is added to the list (the documented trade for fail-safe AUTO).
+_pfg_remote_on_safelist() {  # $1 = remote name ; $2 = resolved slug ; $3 = safeRemotes (newline list). 0 = allowed/AUTO-ok.
+  local name="$1" slug="$2" list="$3" line
+  [ -z "$list" ] && return 0   # no allowlist configured → INERT (everything is AUTO-eligible)
+  while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    [ "$line" = "$name" ] && return 0
+    [ -n "$slug" ] && [ "$(_pfg_url_to_slug "$line")" = "$slug" ] && return 0
+  done <<< "$list"
+  return 1
+}
+
 # ── #3a: guard `gh pr create` against a FORBIDDEN or NON-CANONICAL repo ───────
 # `gh pr create` with no --repo resolves the repo from the cwd's default remote,
 # which on migration clones is often origin = the legacy production repo. Two
@@ -495,6 +556,11 @@ fi
 # to, REGARDLESS of branch.remote. Read via the shared helpers (jq → node → grep, fail-open).
 FORBIDDEN_REMOTES="$(_pfg_branch_array "$CONFIG" forbiddenRemotes)"
 FORBIDDEN_REPOS="$(_pfg_branch_array "$CONFIG" forbiddenRepos)"
+# GAP-A hardening (committed config only; NOT overlayable — same posture as the forbidden lists):
+#   prodPatterns  — extra segment-tokens that flag a remote as prod (extends the built-in net).
+#   safeRemotes   — opt-in allowlist; when set, AUTO is restricted to listed remotes (fail-safe).
+PROD_PATTERNS="$(_pfg_branch_array "$CONFIG" prodPatterns)"
+SAFE_REMOTES="$(_pfg_branch_array "$CONFIG" safeRemotes)"
 
 # Protected branch names: config base (if any) + main/master always.
 PROTECTED_BRANCHES="main master"
@@ -605,13 +671,28 @@ if [ -z "$CONFIRM_REASON" ] && [ -n "$ARG_REMOTE" ]; then
   if [ -n "$REMOTE" ] && [ "$ARG_REMOTE" != "$REMOTE" ]; then
     CONFIRM_REASON="Push targets remote '$ARG_REMOTE', not the configured remote '$REMOTE' (config.branch.remote). On an inverted clone the named remote may be a legacy production repo. Confirm this is the intended target. (Agent Bash-tool guard only; not server-side protection.)"
   else
-    # GAP A: the configured remote could itself be prod. Resolve its slug and check the forbidden list.
+    # GAP A: the configured remote could itself be prod. Resolve its slug ONCE and run three checks,
+    # each of which flips the otherwise-AUTO configured-remote push to CONFIRM (never silent prod push):
+    #   (1) EXPLICIT denylist — the slug is on config.branch.forbiddenRepos (operator's precise tool).
+    #   (2) PROD-PATTERN heuristic (GAP-A hardening) — the slug/URL carries a high-confidence prod
+    #       signal (prod/production/prd/release/live/legacy/cpsl as a whole segment, + branch.prodPatterns).
+    #       This is the ALWAYS-ON net that closes the silent-auto-push-to-prod hole with NO opt-in.
+    #   (3) SAFE-REMOTES allowlist (GAP-A opt-in strict mode) — if branch.safeRemotes is set and this
+    #       remote/slug is NOT on it → CONFIRM. Inert (no flip) when safeRemotes is absent, so the AUTO
+    #       tier is preserved by default for consumers who never opt in.
     _AR_URL="$(_pfg_git -C "$PFG_TARGET_CWD" remote get-url "$ARG_REMOTE" 2>/dev/null || true)"
     _AR_SLUG=""
     if [ -n "$_AR_URL" ]; then _AR_SLUG="$(_pfg_url_to_slug "$_AR_URL")"
     else case "$ARG_REMOTE" in *://*|*@*:*|*/*) _AR_SLUG="$(_pfg_url_to_slug "$ARG_REMOTE")" ;; esac; fi
+    # The signal the heuristic inspects: the resolved slug if we have one, else the raw remote URL,
+    # else the remote name itself (covers a remote named e.g. 'prod' with no resolvable URL).
+    _AR_PROBE="${_AR_SLUG:-${_AR_URL:-$ARG_REMOTE}}"
     if [ -n "$_AR_SLUG" ] && _pfg_repo_forbidden "$_AR_SLUG" "$FORBIDDEN_REPOS"; then
       CONFIRM_REASON="Push targets '$ARG_REMOTE' (→ $_AR_SLUG), which is on the forbidden/prod denylist (config.branch.forbiddenRepos) — even though it is the configured remote. A push to prod must be a deliberate human confirmation, never silent. (Agent Bash-tool guard only; not server-side protection.)"
+    elif _pfg_remote_looks_prod "$_AR_PROBE" "$PROD_PATTERNS"; then
+      CONFIRM_REASON="Push targets '$ARG_REMOTE' (→ ${_AR_PROBE}), which matches a PRODUCTION-name pattern (prod/production/release/live/legacy/…). Even though it is the configured remote, a push to a prod-looking target must be a deliberate human confirmation, never silent. If this remote is actually safe, add it to config.branch.safeRemotes (or confirm to proceed). (Heuristic name match — agent Bash-tool guard only; not server-side protection.)"
+    elif ! _pfg_remote_on_safelist "$ARG_REMOTE" "$_AR_SLUG" "$SAFE_REMOTES"; then
+      CONFIRM_REASON="Push targets '$ARG_REMOTE' (→ ${_AR_PROBE}), which is NOT on config.branch.safeRemotes (strict-mode allowlist is enabled). AUTO is restricted to explicitly-blessed remotes; confirm this push, or add the remote to safeRemotes. (Agent Bash-tool guard only; not server-side protection.)"
     fi
   fi
 fi

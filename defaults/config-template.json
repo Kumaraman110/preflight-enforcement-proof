@@ -37,7 +37,10 @@
     "_comment_remote_VERIFY": "DEFAULT is 'origin'. CONFIRM this is your intended push target, NOT a legacy/prod repo, before the pipeline pushes. If origin is prod: change this, or add origin to forbiddenRemotes below.",
     "migrationPrefix": "feature/migrate-",
     "forbiddenRemotes": [],
-    "forbiddenRepos": []
+    "forbiddenRepos": [],
+    "_comment_gapA": "GAP-A hardening (push-autonomy): a configured remote that is PROD but NOT denylisted, on an unprotected branch, used to classify AUTO (silent auto-push to prod). Two layers now flip that to CONFIRM (a human-confirm prompt, never a silent push; never a hard block): (1) prodPatterns = extra name-segment tokens that flag a remote URL/slug as prod; the built-in net already catches prod/production/prd/release/live/legacy as whole segments, this EXTENDS it (e.g. an internal codename). (2) safeRemotes = an OPT-IN allowlist; when non-empty, AUTO is restricted to the listed remote names/slugs and every other configured remote -> CONFIRM (fail-safe strict mode; the first push to a new safe remote then needs one confirmation until you add it). Both are committed-config only (NOT overlayable, same as the forbidden lists). Leaving both empty keeps the always-on prodPatterns net and preserves AUTO for plainly-named safe remotes.",
+    "prodPatterns": [],
+    "safeRemotes": []
   },
 
   "test": {

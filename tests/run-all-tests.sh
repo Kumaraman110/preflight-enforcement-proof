@@ -807,6 +807,18 @@ run_behavioral_tests() {
   else
     yellow "SKIP: pre-push-wedge-failclosed-test.sh not found"
   fi
+
+  local gapa_test="$SCRIPT_DIR/behavioral/pre-push-gapa-prod-pattern-test.sh"
+  if [ -f "$gapa_test" ]; then
+    if bash "$gapa_test"; then
+      PASSES=$((PASSES + 7))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: pre-push-gapa-prod-pattern tests failed (GAP-A: a configured PROD remote not on the denylist, unprotected branch, must classify CONFIRM not silent AUTO; genuinely-safe remotes must stay AUTO)"
+    fi
+  else
+    yellow "SKIP: pre-push-gapa-prod-pattern-test.sh not found"
+  fi
 }
 
 # ═══════════════════════════════════════════════════════════════
