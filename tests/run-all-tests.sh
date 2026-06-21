@@ -772,6 +772,18 @@ run_behavioral_tests() {
     yellow "SKIP: spec-divergence-wiring-test.sh not found"
   fi
 
+  local spec_div_pref_test="$SCRIPT_DIR/behavioral/spec-divergence-prefilter-test.sh"
+  if [ -f "$spec_div_pref_test" ]; then
+    if bash "$spec_div_pref_test"; then
+      PASSES=$((PASSES + 7))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: spec-divergence-prefilter tests failed (cheap mechanical pre-check; obviously-detailed->SKIP, vague/padded/borderline/short/empty->RUN-CHECK, conservative; drama can't manufacture a SKIP)"
+    fi
+  else
+    yellow "SKIP: spec-divergence-prefilter-test.sh not found"
+  fi
+
   local parity_exit_test="$SCRIPT_DIR/behavioral/parity-check-exit-codes-test.sh"
   if [ -f "$parity_exit_test" ]; then
     if bash "$parity_exit_test"; then

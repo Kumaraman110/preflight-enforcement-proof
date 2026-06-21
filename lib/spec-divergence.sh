@@ -31,6 +31,9 @@
 # Override via env PREFLIGHT_SPEC_DIVERGENCE_THRESHOLD or arg.
 #
 # Usage:
+#   bash lib/spec-divergence.sh prefilter <prompt.txt|->
+#       -> CHEAP mechanical pre-check (no agents): prints SKIP (prompt is obviously detailed — skip the
+#          7-agent check) or RUN-CHECK (run the full divergence check). CONSERVATIVE toward RUN-CHECK.
 #   bash lib/spec-divergence.sh build-judge-brief <interpretations.json>
 #       -> emits the judge brief to stdout: ONLY the interpretations (prompt stripped). Feed to blind judges.
 #   bash lib/spec-divergence.sh score <judgments.json> [--threshold N]
@@ -49,7 +52,7 @@ set -uo pipefail
 DEFAULT_THRESHOLD="${PREFLIGHT_SPEC_DIVERGENCE_THRESHOLD:-0.30}"
 
 SUB="${1:-}"
-[ -n "$SUB" ] || { echo "Usage: $0 <build-judge-brief|score|decision|questions|write-elicited> ..." >&2; exit 2; }
+[ -n "$SUB" ] || { echo "Usage: $0 <prefilter|build-judge-brief|score|decision|questions|write-elicited> ..." >&2; exit 2; }
 shift || true
 
 PYTHON_CMD=""
@@ -69,6 +72,84 @@ while [ "$#" -gt 0 ]; do
 done
 
 case "$SUB" in
+  prefilter)
+    # CHEAP MECHANICAL PRE-FILTER (no agent dispatch) — runs BEFORE the 7-agent divergence check.
+    # Decides whether a prompt is OBVIOUSLY detailed enough to SKIP the full check (saving 4 interpreters
+    # + 3 judges), or whether the full check must RUN.
+    #
+    # INTEGRITY / SAFETY DIRECTION — CONSERVATIVE TOWARD RUNNING:
+    #   A false-SKIP (skipping a vague prompt) re-introduces the exact under-specification cascade the
+    #   engine exists to prevent — so SKIP must have HIGH PRECISION. A false-RUN (running the check on an
+    #   already-detailed prompt) only costs 7 agents — tolerable. So the bar to SKIP is deliberately high:
+    #   the prompt must clear BOTH a length floor AND a specificity-marker count. ANYTHING marginal -> RUN.
+    #   This is a pure mechanical heuristic (regex marker counting) — it is NOT the working agent's
+    #   self-assessment of "is this clear enough" (that would be the rationalizer failure). The signal is
+    #   COMPUTED from the prompt text; the agent cannot argue a vague prompt past it.
+    #
+    # Output (stdout): "SKIP" or "RUN-CHECK" on line 1, then a human-readable rationale. Exit 0 always
+    # (a usage/parse problem -> RUN-CHECK, fail-safe: never skip on an error).
+    #   bash lib/spec-divergence.sh prefilter <prompt.txt>     (or: echo "<prompt>" | ... prefilter -)
+    # Tunables (env, all conservative defaults):
+    #   PREFLIGHT_SPEC_PREFILTER_MINLEN   (default 240)  min chars to even CONSIDER skipping
+    #   PREFLIGHT_SPEC_PREFILTER_MINMARK  (default 4)    min DISTINCT specificity-marker categories to skip
+    PF_IN="${ARGS[0]:--}"
+    if [ "$PF_IN" = "-" ]; then PROMPT_TEXT="$(cat)"; else
+      if [ ! -f "$PF_IN" ]; then echo "RUN-CHECK"; echo "  (prompt file not found: $PF_IN — failing safe to RUN)"; exit 0; fi
+      PROMPT_TEXT="$(cat "$PF_IN")"
+    fi
+    PF_MINLEN="${PREFLIGHT_SPEC_PREFILTER_MINLEN:-240}"
+    PF_MINMARK="${PREFLIGHT_SPEC_PREFILTER_MINMARK:-4}"
+    # The prompt is passed via env (_PF_PROMPT) to avoid MSYS stdin/path quirks on this platform.
+    _PF_PROMPT="$PROMPT_TEXT" PF_MINLEN="$PF_MINLEN" PF_MINMARK="$PF_MINMARK" "$PYTHON_CMD" - <<'PYEOF'
+import os, re
+prompt = os.environ.get("_PF_PROMPT", "") or ""
+minlen = int(os.environ.get("PF_MINLEN", "240"))
+minmark = int(os.environ.get("PF_MINMARK", "4"))
+text = prompt.strip()
+low = text.lower()
+
+# ── Mechanical specificity markers (each is ONE distinct category; we count CATEGORIES, not hits,
+#    so a prompt that merely repeats one kind of detail does not clear the bar on that alone). ──
+markers = {}
+
+# (1) Named files / paths / extensions — concrete artifacts named.
+markers["named_files"] = bool(re.search(r'[\w./-]+\.(cs|sh|md|json|ya?ml|js|ts|py|sql|csproj|sln|txt|xml|html?)\b', low)
+                              or re.search(r'\b(?:src|lib|tests?|hooks|skills|agents|docs|defaults)/[\w./-]+', low))
+# (2) Explicit scope markers — IN/OUT scope, only, exclude, do not.
+markers["scope_markers"] = bool(re.search(r'\b(in scope|out of scope|only\b|do not\b|don\'t\b|exclude|excluding|must not|leave .* unchanged|not in scope)\b', low))
+# (3) Named surfaces / components — the load-bearing axes the engine judges.
+markers["named_surfaces"] = bool(re.search(r'\b(controller|endpoint|route|api|schema|migration|wire[- ]?format|auth|authoriz|cache|database|repository|data[- ]access|downstream|interface|handler|middleware|hook|gate|rubric|payload|dto|contract)\b', low))
+# (4) Version / numeric specificity — versions, percentages, exact counts/limits.
+markers["numeric_spec"] = bool(re.search(r'\bv?\d+\.\d+(\.\d+)?\b', low) or re.search(r'\b\d+\s?%', low)
+                               or re.search(r'\b\d+\s+(test|rule|file|service|endpoint|day|second|ms|retr|assertion)s?\b', low))
+# (5) Named behaviors / acceptance criteria — must/should/when-then, given/then.
+markers["behavior_criteria"] = bool(re.search(r'\b(must|shall|should|when .+ then|given .+ then|acceptance criteri|expected behavior|preserve|idempotent|return\s)\b', low))
+# (6) Enumerated structure — numbered/bulleted lists of requirements (a strong specificity signal).
+markers["enumerated"] = bool(re.search(r'(^|\n)\s*(\d+[.)]\s|\-\s|\*\s)', text) and len(re.findall(r'(^|\n)\s*(\d+[.)]\s|\-\s|\*\s)', text)) >= 2)
+
+n_markers = sum(1 for v in markers.values() if v)
+length_ok = len(text) >= minlen
+
+# CONSERVATIVE decision: SKIP only if BOTH the length floor AND the marker-category floor are cleared.
+skip = length_ok and (n_markers >= minmark)
+
+present = [k for k, v in markers.items() if v]
+absent  = [k for k, v in markers.items() if not v]
+print("SKIP" if skip else "RUN-CHECK")
+print(f"  length: {len(text)} chars (floor {minlen}: {'ok' if length_ok else 'BELOW -> run'})")
+print(f"  specificity markers present ({n_markers}/{len(markers)}, need >= {minmark} to skip): {', '.join(present) if present else '(none)'}")
+if absent:
+    print(f"  markers absent: {', '.join(absent)}")
+if skip:
+    print("  => OBVIOUSLY detailed: skipping the 7-agent divergence check (cost saved).")
+else:
+    if not length_ok:
+        print("  => too short to be obviously-detailed -> RUN the full check (conservative).")
+    else:
+        print(f"  => only {n_markers} marker categories (< {minmark}) -> NOT obviously detailed -> RUN the full check (conservative).")
+PYEOF
+    ;;
+
   build-judge-brief)
     # INTEGRITY-CRITICAL: the judge brief contains ONLY the interpretations — the original prompt is never
     # included, so a judge cannot infer vague-vs-specified and must score meaning-agreement. This MECHANICALLY
@@ -206,7 +287,7 @@ PYEOF
     ;;
 
   *)
-    echo "Usage: $0 <build-judge-brief|score|decision|questions|write-elicited> ..." >&2
+    echo "Usage: $0 <prefilter|build-judge-brief|score|decision|questions|write-elicited> ..." >&2
     exit 2
     ;;
 esac
