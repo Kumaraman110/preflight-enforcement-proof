@@ -75,7 +75,16 @@ probe() {
   # heavy concurrent load (an environmental flake in the pre-push-gate chain, NOT in the tier logic — it
   # runs clean unloaded). The timeout makes a wedge surface as a clear FAIL (RC=124) instead of hanging
   # the whole suite. 60s is far above the normal sub-second runtime.
-  ( cd "$ws" && printf '%s' "$json" | CLAUDE_PROJECT_DIR="$ws" timeout 60 bash "$HOOK" "$json" >"$outf" 2>"$errf" ); RC=$?
+  #
+  # _PFG_WATCHDOG_CHILD=1 drives the hook BODY directly, bypassing the Layer-1 self-watchdog re-exec.
+  # The watchdog kills the body at an internal deadline (default 8s, < the 10s platform kill) and fails
+  # CLOSED — correct in production (sub-second body) but on THIS pathologically slow-spawn box (~1.3s per
+  # subprocess; the full push body takes ~37s) the watchdog would kill every legitimate run and turn each
+  # tier outcome into a spurious exit-2 BLOCK. Bypassing it tests the exact code that runs AS the watchdog
+  # child in production, isolating the DECISION logic from the box's spawn tax — the same compensation the
+  # `timeout 60` above already makes. The watchdog's own fail-closed behavior is proven separately in
+  # pre-push-wedge-failclosed-test.sh (which exercises it WITH a real injected wedge).
+  ( cd "$ws" && printf '%s' "$json" | CLAUDE_PROJECT_DIR="$ws" _PFG_WATCHDOG_CHILD=1 timeout 60 bash "$HOOK" "$json" >"$outf" 2>"$errf" ); RC=$?
   DEC="$(jq -r '.hookSpecificOutput.permissionDecision // ""' "$outf" 2>/dev/null || echo "")"
   ERR1="$(head -1 "$errf")"
   rm -f "$outf" "$errf"

@@ -47,7 +47,13 @@ bad()  { echo "FAIL: $1" >&2; FAIL=$((FAIL+1)); }
 run_hook() {
   local cmd="$1" json
   json="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"${cmd}\"}}"
-  OUT="$(printf '%s' "$json" | bash "$HOOK" 2>&1)"; RC=$?
+  # _PFG_WATCHDOG_CHILD=1 drives the hook BODY directly, bypassing the Layer-1 self-watchdog re-exec.
+  # The watchdog fails CLOSED at an internal deadline (default 8s, < the 10s platform kill); on this
+  # pathologically slow-spawn Git-Bash box (~1.3s/subprocess) a legitimate body exceeds that and the
+  # watchdog would turn every guard outcome into a spurious exit-2. Bypassing it tests the exact code
+  # that runs AS the watchdog child in production. The watchdog's fail-closed behavior is proven
+  # separately (with a real injected wedge) in pre-push-wedge-failclosed-test.sh.
+  OUT="$(printf '%s' "$json" | _PFG_WATCHDOG_CHILD=1 bash "$HOOK" 2>&1)"; RC=$?
 }
 # Does block output recommend a specific remote/repo (the A1 dangerous-steering defect)?
 has_steer() { printf '%s' "$1" | grep -qiE "Use '?origin'?|Use --repo|Use ${LEGACY_SLUG}"; }

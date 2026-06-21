@@ -795,6 +795,18 @@ run_behavioral_tests() {
   else
     yellow "SKIP: pre-push-bare-remote-test.sh not found"
   fi
+
+  local wedge_failclosed_test="$SCRIPT_DIR/behavioral/pre-push-wedge-failclosed-test.sh"
+  if [ -f "$wedge_failclosed_test" ]; then
+    if bash "$wedge_failclosed_test"; then
+      PASSES=$((PASSES + 6))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: pre-push-wedge-failclosed tests failed (a wedged/slow push-safety hook must BLOCK (exit 2), never fall through to a non-blocking 124/137 that lets the push proceed ungated)"
+    fi
+  else
+    yellow "SKIP: pre-push-wedge-failclosed-test.sh not found"
+  fi
 }
 
 # ═══════════════════════════════════════════════════════════════

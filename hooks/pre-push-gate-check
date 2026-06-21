@@ -12,6 +12,73 @@
 # Exit 0 = allow the tool call
 # Exit 2 = block the tool call (stderr fed back to Claude; Claude Code blocks on exit 2)
 
+# ── SELF-WATCHDOG — fail CLOSED on a wedged/slow gate (gap: wedge fail-open) ───
+# This hook is registered with a 10s platform timeout (hooks.json). If a subprocess
+# wedges (git blocked on a credential/SSH prompt, jq on a stalled NFS read, a herestring
+# scan on a pathological blob), the PLATFORM SIGKILLs the hook at 10s. That kill surfaces
+# as exit 124/137 — and per the PreToolUse protocol ONLY exit 2 blocks; any other code
+# (124, 137, 1, 127, …) is a NON-blocking error, so the push then proceeds UNGATED. A
+# safety gate that wedges must NEVER wave a push through.
+#
+# Fix: re-exec the real hook body as a CHILD under a SHORTER internal deadline (default 8s SIGTERM,
+# +1s grace → 9s SIGKILL — under the 10s platform kill, leaving ~1s margin for the parent to emit its
+# decision). If the child reaches a real decision it exits 0 (allow) or 2 (block) and the parent relays
+# that EXACT code + the child's already-written stdout (the AUTO/CONFIRM JSON, inherited straight
+# through) / stderr. If the child does NOT finish in time — timeout's 124, a signal-kill >128, or ANY
+# code that is neither 0 nor 2 — the parent maps it to exit 2 (BLOCK): a wedged or crashed gate fails
+# CLOSED. This is the user-facing guarantee: a gate too slow to RENDER a push-safety verdict in time
+# BLOCKS the push, it never waves it through ungated.
+#
+# DEADLINE is env-tunable via PREFLIGHT_PUSH_GATE_DEADLINE (seconds), clamped to [2,9] so it can never
+# exceed the platform kill. Why tunable: on a pathologically slow subprocess-spawn host (e.g. this
+# Windows/Git-Bash box — the hook makes dozens of grep/jq/git spawns, measured ~13s for a trivial body
+# and ~37s for a full push body, so even a NORMAL unwedged run there far exceeds 10s — meaning the
+# UNFIXED hook ALREADY fails open on that host, killed by the platform at 10s). The behavioral tests do
+# NOT raise this knob; they instead drive the body directly (_PFG_WATCHDOG_CHILD=1) to isolate the
+# DECISION logic from the watchdog, the same posture as their per-probe `timeout 60`. The knob exists for
+# operators on slow hosts who want headroom up to the 9s clamp. Production hosts (sub-second spawns) use
+# the 8s default, safely under the 10s kill.
+#
+# `_PFG_WATCHDOG_CHILD` breaks the re-exec recursion (the child skips this block and runs the body).
+# `timeout` absent (non-coreutils host) → degrade to running the body inline, no worse than the pre-fix
+# behavior. This block runs BEFORE `set -euo pipefail` so the timeout's non-zero return cannot itself
+# abort the parent.
+if [ -z "${_PFG_WATCHDOG_CHILD:-}" ] && command -v timeout >/dev/null 2>&1; then
+  _pfg_deadline="${PREFLIGHT_PUSH_GATE_DEADLINE:-8}"
+  case "$_pfg_deadline" in (*[!0-9]*|'') _pfg_deadline=8 ;; esac   # non-numeric → default
+  [ "$_pfg_deadline" -lt 2 ] && _pfg_deadline=2                    # floor
+  [ "$_pfg_deadline" -gt 9 ] && _pfg_deadline=9                    # ceiling: never exceed the 10s kill
+  # CAPTURE the child's stdout/stderr to FILES rather than letting it inherit the parent's (= the
+  # platform's) stdout pipe. CRITICAL: a wedged git can leave an orphaned grandchild (a credential
+  # helper, ssh-askpass, the test's `sleep`) that INHERITS whatever stdout fd the child had. If that
+  # fd were the platform's stdout pipe, the orphan would hold it open AFTER this hook exits, and a
+  # platform that reads hook stdout to EOF before applying the verdict would BLOCK on that read until
+  # its OWN 10s kill — re-introducing the very fail-open (137) this watchdog exists to remove. Writing
+  # to files means the orphan only ever holds a file fd (harmless); the parent's real stdout is never
+  # inherited downward, so the platform sees EOF the instant the parent exits with its decision.
+  # stdin (the piped hook JSON) is still inherited so the child's `STDIN_JSON="$(cat)"` reads it.
+  _pfg_co="$(mktemp 2>/dev/null)" || _pfg_co="${TMPDIR:-/tmp}/.pfg-co.$$"
+  _pfg_ce="$(mktemp 2>/dev/null)" || _pfg_ce="${TMPDIR:-/tmp}/.pfg-ce.$$"
+  _PFG_WATCHDOG_CHILD=1 timeout -k 1 "$_pfg_deadline" bash "$0" "$@" >"$_pfg_co" 2>"$_pfg_ce"
+  _wd_rc=$?
+  if [ "$_wd_rc" -eq 0 ] || [ "$_wd_rc" -eq 2 ]; then
+    # Real decision — relay the child's captured stdout (AUTO/CONFIRM JSON) + stderr, then its exit code.
+    cat "$_pfg_co" 2>/dev/null; cat "$_pfg_ce" >&2 2>/dev/null
+    rm -f "$_pfg_co" "$_pfg_ce" 2>/dev/null
+    exit "$_wd_rc"
+  fi
+  # 124 (timeout SIGTERM), 137 (SIGKILL after -k grace), 143, or any other abnormal code: the body did
+  # not reach a decision in time → FAIL CLOSED (block), never fall through to allow. Relay any partial
+  # child stderr for diagnosis, then emit the watchdog's own block reason.
+  cat "$_pfg_ce" >&2 2>/dev/null
+  rm -f "$_pfg_co" "$_pfg_ce" 2>/dev/null
+  echo "BLOCKED: pre-push-gate-check did not reach a decision within its ${_pfg_deadline}s safety deadline (rc=${_wd_rc})." >&2
+  echo "  A push-safety subprocess (git/jq) wedged or the gate stalled. Failing CLOSED: the push is" >&2
+  echo "  BLOCKED rather than allowed ungated. Retry; if it persists, run the push from a human shell" >&2
+  echo "  after confirming the target. (Watchdog fail-closed; see docs/parity-gate-limitations.md.)" >&2
+  exit 2
+fi
+
 set -euo pipefail
 
 
@@ -25,6 +92,13 @@ _hb_plugin_root="$(cd "$_hb_self_dir/.." && pwd)"
 # crash the host gate. The diagnostic just goes silent when the lib is absent.
 type _write_heartbeat &>/dev/null || _write_heartbeat() { :; }
 _write_heartbeat "pre-push-gate-check"
+# NOTE on wedge coverage: the heartbeat above (and the config-overlay lib sourced below) make a
+# few git/jq calls INSIDE sourced functions, which the Layer-2 `_pfg_git`/`_pfg_jq` wrappers do
+# NOT intercept. These are local-repo reads (`git rev-parse HEAD`, a config-file `jq`), the LEAST
+# wedge-prone calls (no network/credential round-trip). The Layer-1 self-watchdog above is the
+# COMPREHENSIVE backstop: it wraps the entire body, so a wedge ANYWHERE — including these — still
+# fails CLOSED (exit 2) at the watchdog deadline. Layer 2 is the FAST-PATH for the network-facing
+# push-target resolution (`git remote get-url`), the call that actually wedges in practice.
 
 # Per-clone topology overlay (issue #6): source the shared resolver so branch.base /
 # branch.remote honor a gitignored .preflight/config.local.json. Best-effort — if the
@@ -38,10 +112,67 @@ for _pfg_overlay_lib in "$_PFG_SELF_DIR/../lib/config-overlay.sh" "$_PFG_SELF_DI
   fi
 done
 
+# ── Subprocess wedge-bounding (Layer 2 of the fail-closed conversion) ─────────
+# Each wedge-prone external call (git remote get-url, git rev-parse, jq config read) is run
+# under a SHORT per-call timeout, so a SINGLE stalled subprocess fails closed in ~3s with a
+# precise diagnostic instead of riding the 7s self-watchdog backstop. Fail direction CLOSED:
+# a TIMED-OUT call (124) or signal-kill (137) sets a FILESYSTEM wedge flag — a shell variable
+# would not survive the `$(...)` subshells these calls run inside, but a file write does — and
+# the main shell checks the flag at each allow/ask decision point and BLOCKS (exit 2). A NORMAL
+# non-zero (e.g. `git remote get-url` exit 2 for an absent remote) is NOT a wedge: it is a
+# legitimate empty result, left to the existing `|| true` fail-open-by-design resolution paths.
+_PFG_SUBPROC_TIMEOUT=3
+_PFG_WEDGE_FLAG="${TMPDIR:-/tmp}/.pfg-wedge.$$"
+rm -f "$_PFG_WEDGE_FLAG" 2>/dev/null || true
+trap 'rm -f "$_PFG_WEDGE_FLAG" 2>/dev/null || true' EXIT
+_pfg_have_timeout() { command -v timeout >/dev/null 2>&1; }
+# Bounded subprocess runner. CRITICAL: the timed call writes to a TEMP FILE, never a
+# command-substitution pipe. A wedged subprocess can spawn a child (credential helper, the
+# git-stub's `sleep`) that INHERITS the capture fd; with `$(timeout 3 cmd)` the outer pipe
+# then stays open until that orphaned grandchild dies, so the substitution HANGS for the full
+# wedge despite `timeout` having already reaped the direct child. Writing to a file and reading
+# it AFTER timeout returns waits only on the direct child timeout manages — the orphan lingers
+# harmlessly. `-k 1`: a subprocess that ignores SIGTERM is SIGKILLed 1s later. stdin from
+# /dev/null so a read-blocked subprocess can't stall either.
+_pfg_bounded() {  # $1 = binary (git|jq) ; $@ = its args. Echoes stdout; ALWAYS returns 0.
+  # SHORT-CIRCUIT: once anything has wedged, the decision is already going to BLOCK at the next
+  # checkpoint — don't pay another timeout per remaining call (6+ git/jq lookups would otherwise
+  # stack to >18s and blow the watchdog/platform budget). Return empty instantly.
+  [ -f "$_PFG_WEDGE_FLAG" ] && return 0
+  local bin="$1"; shift
+  local tmp rc; tmp="$(mktemp 2>/dev/null)" || tmp="${TMPDIR:-/tmp}/.pfg-out.$$.$RANDOM"
+  if _pfg_have_timeout; then timeout -k 1 "$_PFG_SUBPROC_TIMEOUT" "$bin" "$@" >"$tmp" 2>/dev/null </dev/null; rc=$?
+  else                       "$bin" "$@" >"$tmp" 2>/dev/null </dev/null; rc=$?; fi
+  if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ] || [ "$rc" -eq 125 ]; then
+    : > "$_PFG_WEDGE_FLAG" 2>/dev/null || true   # 124=timed out, 137=SIGKILLed, 125=timeout internal error
+  fi
+  cat "$tmp" 2>/dev/null || true
+  rm -f "$tmp" 2>/dev/null || true
+  return 0
+}
+_pfg_git() { _pfg_bounded git "$@"; }   # bounded git (remote get-url / rev-parse) — wedge-prone
+_pfg_jq()  { _pfg_bounded jq  "$@"; }   # bounded jq (config-file reads) — wedge-prone on stalled FS
+# Checkpoint: call immediately before ANY allow/ask emission. If a bounded subprocess wedged,
+# the push target could not be fully verified → fail CLOSED (block), never allow/ask on it.
+_pfg_wedge_block_if_flagged() {
+  if [ -f "$_PFG_WEDGE_FLAG" ]; then
+    echo "BLOCKED: a push-safety subprocess (git/jq) timed out (~${_PFG_SUBPROC_TIMEOUT}s) while resolving the" >&2
+    echo "  push target — the destination could not be fully verified. Failing CLOSED: the push is BLOCKED" >&2
+    echo "  rather than allowed on an unresolved target. Retry; if it persists, push from a human shell after" >&2
+    echo "  confirming the remote. (Subprocess wedge-bound; see docs/parity-gate-limitations.md.)" >&2
+    exit 2
+  fi
+}
+
 STDIN_JSON="$(cat)"
 
-# Primary: extract the command field via jq
-COMMAND="$(printf '%s' "$STDIN_JSON" | jq -r '.tool_input.command // empty' 2>/dev/null || true)"
+# Primary: extract the command field via jq (bounded — a wedge here falls to the raw-blob
+# fallback below, which fail-safely greps for 'git push'; no flag needed on this path).
+if _pfg_have_timeout; then
+  COMMAND="$(printf '%s' "$STDIN_JSON" | timeout "$_PFG_SUBPROC_TIMEOUT" jq -r '.tool_input.command // empty' 2>/dev/null || true)"
+else
+  COMMAND="$(printf '%s' "$STDIN_JSON" | jq -r '.tool_input.command // empty' 2>/dev/null || true)"
+fi
 
 # Fallback: if extraction yielded nothing, use the raw blob so a push
 # is still detected (fail-safe for the push case; non-pushes still pass).
@@ -158,7 +289,7 @@ PFG_TARGET_CWD="$(_pfg_target_cwd "$COMMAND")"
 # REPO-AWARE: reads config from the PUSH-TARGET repo (PFG_TARGET_CWD), not the session root.
 _pfg_config() {  # echo the resolved .preflight/config.json path, or nothing. Always returns 0.
   local top
-  top="$(git -C "$PFG_TARGET_CWD" rev-parse --show-toplevel 2>/dev/null || echo "")"
+  top="$(_pfg_git -C "$PFG_TARGET_CWD" rev-parse --show-toplevel 2>/dev/null || echo "")"
   [ -z "$top" ] && top="$PFG_TARGET_CWD"
   local c="$top/.preflight/config.json"
   if [ -f "$c" ]; then echo "$c"; fi
@@ -177,7 +308,7 @@ _pfg_branch_field() {  # $1 = base|remote ; echo value or empty (overlay → jq 
     return 0
   fi
   if command -v jq &>/dev/null; then
-    jq -r ".branch.$field // empty" "$cfg" 2>/dev/null || true
+    _pfg_jq -r ".branch.$field // empty" "$cfg" 2>/dev/null || true
   elif command -v node &>/dev/null; then
     node -e "try{const c=require('$cfg');process.stdout.write((c.branch&&c.branch.$field)||'')}catch(e){}" 2>/dev/null || true
   else
@@ -221,7 +352,7 @@ _pfg_branch_array() {  # $1 = cfg path ; $2 = field ; echo array values, one per
   local cfg="$1" field="$2"
   [ -z "$cfg" ] || [ ! -f "$cfg" ] && return 0
   if command -v jq &>/dev/null; then
-    jq -r ".branch.${field}[]? // empty" "$cfg" 2>/dev/null || true
+    _pfg_jq -r ".branch.${field}[]? // empty" "$cfg" 2>/dev/null || true
   elif command -v node &>/dev/null; then
     node -e "try{const c=require('$cfg');const a=(c.branch&&c.branch.$field)||[];a.forEach(x=>console.log(x))}catch(e){}" 2>/dev/null || true
   else
@@ -274,7 +405,7 @@ if printf '%s' "$COMMAND" | grep -qE '(^|&&|\|\||;|")\s*gh[[:space:]]+pr[[:space
   # Resolve canonical slug from the configured remote's URL (fail-open if unresolvable).
   CANON_SLUG=""
   if [ -n "$CANON_REMOTE" ]; then
-    CANON_URL="$(git -C "$PFG_TARGET_CWD" remote get-url "$CANON_REMOTE" 2>/dev/null || true)"
+    CANON_URL="$(_pfg_git -C "$PFG_TARGET_CWD" remote get-url "$CANON_REMOTE" 2>/dev/null || true)"
     [ -n "$CANON_URL" ] && CANON_SLUG="$(_pfg_url_to_slug "$CANON_URL")"
   fi
   # Resolve the slug this pr-create would ACTUALLY target: explicit --repo if present,
@@ -284,7 +415,7 @@ if printf '%s' "$COMMAND" | grep -qE '(^|&&|\|\||;|")\s*gh[[:space:]]+pr[[:space
   if [ -n "$REPO_ARG" ]; then
     TARGET_SLUG="$(_pfg_url_to_slug "$REPO_ARG")"
   else
-    DEFAULT_URL="$(git -C "$PFG_TARGET_CWD" remote get-url origin 2>/dev/null || true)"
+    DEFAULT_URL="$(_pfg_git -C "$PFG_TARGET_CWD" remote get-url origin 2>/dev/null || true)"
     [ -n "$DEFAULT_URL" ] && TARGET_SLUG="$(_pfg_url_to_slug "$DEFAULT_URL")"
   fi
 
@@ -320,6 +451,9 @@ if printf '%s' "$COMMAND" | grep -qE '(^|&&|\|\||;|")\s*gh[[:space:]]+pr[[:space
     fi
   fi
   # Canonical / not-forbidden / fail-open → allow the pr-create. Not a push; nothing more to gate here.
+  # FAIL-CLOSED checkpoint: if remote-slug resolution above wedged, the forbidden/non-canonical checks
+  # ran on UNRESOLVED slugs (could not prove the target is safe) — block rather than allow a pr-create.
+  _pfg_wedge_block_if_flagged
   exit 0
 fi
 
@@ -392,7 +526,7 @@ ARG_REFSPEC="${2:-}"           # second positional = refspec (if named)
 # remote reached under a different name). De-steered: never recommends a remote.
 if [ -n "$ARG_REMOTE" ]; then
   ARG_REMOTE_SLUG=""
-  ARG_REMOTE_URL="$(git -C "$PFG_TARGET_CWD" remote get-url "$ARG_REMOTE" 2>/dev/null || true)"
+  ARG_REMOTE_URL="$(_pfg_git -C "$PFG_TARGET_CWD" remote get-url "$ARG_REMOTE" 2>/dev/null || true)"
   if [ -n "$ARG_REMOTE_URL" ]; then
     ARG_REMOTE_SLUG="$(_pfg_url_to_slug "$ARG_REMOTE_URL")"
   else
@@ -441,7 +575,7 @@ CONFIRM_REASON=""
 # Resolve the would-be target branch (refspec dest after ':', else named ref, else current branch).
 TARGET_BRANCH="${ARG_REFSPEC##*:}"
 if [ -z "$TARGET_BRANCH" ]; then
-  TARGET_BRANCH="$(git -C "$PFG_TARGET_CWD" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+  TARGET_BRANCH="$(_pfg_git -C "$PFG_TARGET_CWD" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
 fi
 
 # (A) HARD BLOCK — force-push to a protected branch (irreversible history rewrite; never auto, never
@@ -472,7 +606,7 @@ if [ -z "$CONFIRM_REASON" ] && [ -n "$ARG_REMOTE" ]; then
     CONFIRM_REASON="Push targets remote '$ARG_REMOTE', not the configured remote '$REMOTE' (config.branch.remote). On an inverted clone the named remote may be a legacy production repo. Confirm this is the intended target. (Agent Bash-tool guard only; not server-side protection.)"
   else
     # GAP A: the configured remote could itself be prod. Resolve its slug and check the forbidden list.
-    _AR_URL="$(git -C "$PFG_TARGET_CWD" remote get-url "$ARG_REMOTE" 2>/dev/null || true)"
+    _AR_URL="$(_pfg_git -C "$PFG_TARGET_CWD" remote get-url "$ARG_REMOTE" 2>/dev/null || true)"
     _AR_SLUG=""
     if [ -n "$_AR_URL" ]; then _AR_SLUG="$(_pfg_url_to_slug "$_AR_URL")"
     else case "$ARG_REMOTE" in *://*|*@*:*|*/*) _AR_SLUG="$(_pfg_url_to_slug "$ARG_REMOTE")" ;; esac; fi
@@ -496,19 +630,38 @@ fi
 
 # Not a hard-blocked operation — run the evidence gate FIRST (a missing/stale-evidence exit 2 is a hard
 # block that must win over CONFIRM). pre-push-gate exits 2 to block, or returns 0 when evidence is fresh.
+# A wedge during the tier-signal resolution above (remote slugs / target branch) means the CONFIRM/AUTO
+# classification was computed on an unresolved target — block before even running the evidence gate.
+_pfg_wedge_block_if_flagged
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 set +e
 # Redirect stdin from /dev/null: the parent already consumed its stdin (STDIN_JSON="$(cat)" at the top),
 # so the inherited fd is an exhausted pipe. Detaching the child's stdin avoids any downstream git/jq op
 # blocking on it, and matches the original `exec` form's effective behavior without replacing the process.
+# NO separate timeout here: this whole body already runs INSIDE the Layer-1 self-watchdog child, whose
+# deadline bounds the evidence gate's git rev-parse/diff along with everything else (a wedged evidence
+# gate is caught by the watchdog → fail-closed exit 2). A redundant tight sub-timeout was tried and
+# REMOVED — on a slow-spawn host it false-blocked a LEGITIMATE fresh-evidence run (the gate's own
+# spawn tax, not a wedge, exceeded the cap), which is a fail-CLOSED-the-wrong-way regression. The
+# 124/137 remap below stays as defence-in-depth in case a future caller runs this body unwrapped.
 bash "$SCRIPT_DIR/pre-push-gate" </dev/null
 EVIDENCE_RC=$?
 set -e
+if [ "$EVIDENCE_RC" -eq 124 ] || [ "$EVIDENCE_RC" -eq 137 ] || [ "$EVIDENCE_RC" -gt 128 ]; then
+  echo "BLOCKED: the pre-push evidence gate wedged (rc=$EVIDENCE_RC) resolving HEAD/diff — failing CLOSED." >&2
+  echo "  Could not verify gate evidence is fresh for the pushed code; the push is BLOCKED, not allowed." >&2
+  exit 2
+fi
 if [ "$EVIDENCE_RC" -ne 0 ]; then
   exit "$EVIDENCE_RC"   # evidence gate blocked (exit 2) — hard block, JSON would be ignored anyway.
 fi
 
 # Evidence is fresh. Now emit the tier decision (exit 0 + JSON, per the PreToolUse protocol).
+# FINAL fail-closed checkpoint: a CONFIRM (ask) or AUTO (allow) must only be emitted on a FULLY
+# resolved target. If any bounded git/jq call wedged while computing the remote slug / target branch,
+# the tier could be wrong (e.g. a forbidden-prod remote whose slug never resolved) → BLOCK instead.
+_pfg_wedge_block_if_flagged
 if [ -n "$CONFIRM_REASON" ]; then
   # CONFIRM tier: ask the user. permissionDecision:ask escalates to a human confirmation prompt; the
   # agent CANNOT self-approve (the accountability property — the consequential push is gated to a human).
