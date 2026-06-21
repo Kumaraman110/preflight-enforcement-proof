@@ -351,15 +351,24 @@ _pfg_json_string() {
 _pfg_branch_array() {  # $1 = cfg path ; $2 = field ; echo array values, one per line.
   local cfg="$1" field="$2"
   [ -z "$cfg" ] || [ ! -f "$cfg" ] && return 0
+  # CRLF FAIL-OPEN FIX (G1): jq on Git-Bash emits CRLF line endings, so each emitted array element is
+  # terminated `\r\n`. Command substitution `$(...)` at the call sites strips only the FINAL trailing
+  # `\r\n`, leaving every element EXCEPT THE LAST carrying a trailing `\r`. The forbidden-list matchers
+  # then compare `origin\r` != `origin` and SILENTLY MISS a denylisted destination listed anywhere but
+  # last — a fail-OPEN on a push to a forbidden/prod remote. A safety check that cannot verify its input
+  # must fail CLOSED, so we strip `\r` from EVERY element AT THE SINGLE PRODUCER SEAM here (one fix
+  # covers all four consumers: forbiddenRemotes/forbiddenRepos/prodPatterns/safeRemotes). `tr -d '\r'`
+  # deletes the CR from every line, not just the last. (Same CRLF class as the source-of-truth-check and
+  # parity-check fixes this session — CRLF on Git-Bash is a systemic fragility; strip it at the boundary.)
   if command -v jq &>/dev/null; then
-    _pfg_jq -r ".branch.${field}[]? // empty" "$cfg" 2>/dev/null || true
+    _pfg_jq -r ".branch.${field}[]? // empty" "$cfg" 2>/dev/null | tr -d '\r' || true
   elif command -v node &>/dev/null; then
-    node -e "try{const c=require('$cfg');const a=(c.branch&&c.branch.$field)||[];a.forEach(x=>console.log(x))}catch(e){}" 2>/dev/null || true
+    node -e "try{const c=require('$cfg');const a=(c.branch&&c.branch.$field)||[];a.forEach(x=>console.log(x))}catch(e){}" 2>/dev/null | tr -d '\r' || true
   else
     # Best-effort grep fallback (labeled): pull quoted strings from the field's array,
     # dropping the first match (the field name itself). jq is the primary path.
     grep -oE "\"$field\"[[:space:]]*:[[:space:]]*\[[^]]*\]" "$cfg" 2>/dev/null \
-      | grep -oE '"[^"]*"' | sed -n '2,$p' | sed 's/^"//; s/"$//' || true
+      | grep -oE '"[^"]*"' | sed -n '2,$p' | sed 's/^"//; s/"$//' | tr -d '\r' || true
   fi
 }
 # Is $1 (a remote NAME) on the forbidden-remotes list $2 (newline-separated names)?

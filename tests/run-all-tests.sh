@@ -855,6 +855,18 @@ run_behavioral_tests() {
   else
     yellow "SKIP: pre-push-gapa-prod-pattern-test.sh not found"
   fi
+
+  local crlf_denylist_test="$SCRIPT_DIR/behavioral/pre-push-crlf-denylist-test.sh"
+  if [ -f "$crlf_denylist_test" ]; then
+    if bash "$crlf_denylist_test"; then
+      PASSES=$((PASSES + 4))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: pre-push-crlf-denylist tests failed (G1: a CRLF-corrupted NON-LAST forbidden remote/repo must still BLOCK — the denylist match must be robust to jq's CRLF on every element, not just the last; fail CLOSED, never silently allow a push to a denylisted prod destination)"
+    fi
+  else
+    yellow "SKIP: pre-push-crlf-denylist-test.sh not found"
+  fi
 }
 
 # ═══════════════════════════════════════════════════════════════
