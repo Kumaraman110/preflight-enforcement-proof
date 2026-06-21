@@ -796,6 +796,18 @@ run_behavioral_tests() {
     yellow "SKIP: coverage-gap-detection-test.sh not found"
   fi
 
+  local sot_test="$SCRIPT_DIR/behavioral/source-of-truth-check-test.sh"
+  if [ -f "$sot_test" ]; then
+    if bash "$sot_test"; then
+      PASSES=$((PASSES + 12))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: source-of-truth-check tests failed (the third gap-detector: a missing/empty/unreadable required source -> ESCALATE not guess; present -> PROCEED; INTEGRITY: presence is computed from the filesystem, immune to the agent's self-assessment — a claim of sufficiency can't override a mechanical absence, and drama can't manufacture a false escalation)"
+    fi
+  else
+    yellow "SKIP: source-of-truth-check-test.sh not found"
+  fi
+
   local parity_exit_test="$SCRIPT_DIR/behavioral/parity-check-exit-codes-test.sh"
   if [ -f "$parity_exit_test" ]; then
     if bash "$parity_exit_test"; then

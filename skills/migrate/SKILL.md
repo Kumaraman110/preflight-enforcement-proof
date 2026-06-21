@@ -99,7 +99,21 @@ Verify from config:
 
 2. **Read the team contract.** `CLAUDE.md` (if it exists), plus the rubric at the configured path, plus the capture files (whichever exist at the paths in `capture.*` from config).
 
-3. **Resolve the legacy repo path.** Read `migration.legacyRepoPath` from `.preflight/config.json`. If the value is a placeholder (e.g. `<set-this-to-...>`), the user has not configured it. Ask them where their legacy clone lives, then proceed.
+3. **Resolve the legacy repo path — and MECHANICALLY verify it (do NOT self-assess "it's probably fine").**
+   Read `migration.legacyRepoPath` from `.preflight/config.json`. The legacy clone is the migration's
+   SOURCE OF TRUTH — every behavior baseline is extracted from it. A wrong/empty/placeholder path would let
+   the run produce an empty-but-plausible baseline (a confabulated source of truth — the exact failure the
+   framework exists to prevent), and "the path looks right to me" is the agent self-assessing what is
+   actually a filesystem fact. Verify it mechanically:
+   ```bash
+   bash "${FRAMEWORK_ROOT}/lib/source-of-truth-check.sh" --agent migrate \
+     --require "dir:legacy repo (migration.legacyRepoPath):<resolved legacyRepoPath>"
+   ```
+   - Exit **0 / `PROCEED`** → the legacy clone exists, is a directory, and is non-empty; continue.
+   - Exit **3 / `ESCALATE`** → the path is missing, empty, unreadable, or still a `<set-this-to-...>`
+     placeholder. **STOP and ask the human** where their legacy clone lives (surface the tool's MISSING
+     line). Do NOT guess a path and do NOT proceed against an empty/absent source. Re-run the check once
+     they provide the path; proceed only on `PROCEED` (or a human-written override token).
 
 4. **Resolve the target service.** From the argument, determine the legacy service folder. Confirm with the user before proceeding: "Migrating `<ServiceName>` from `<legacyRepoPath>` to `<targetFolder>` in this repo. Confirm?"
 

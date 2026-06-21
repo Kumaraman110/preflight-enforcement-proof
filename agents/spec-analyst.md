@@ -98,6 +98,31 @@ You are dispatched with a brief containing:
 
 ### Phase 2 — Scope Determination
 
+**Phase 2.0 — MECHANICAL source-of-truth check (do NOT skip; do NOT self-assess this).** Before reading
+any source, verify MECHANICALLY that the sources of truth you need actually exist and are readable. You
+extract behaviors FROM source files; if the **Source path** is wrong/empty or the **Dependency map path**
+is absent, reading nothing would yield an empty-but-plausible baseline — a confabulated source of truth,
+the exact failure the framework exists to prevent. Run the computed check (it does NOT consult your
+opinion of whether you "have enough" — a missing source is a filesystem fact, not your judgment):
+
+```bash
+# Resolve FRAMEWORK_ROOT (you run as a sub-agent — CLAUDE_PLUGIN_ROOT/CLAUDE_PROJECT_DIR are empty, so
+# the git/pwd fallback resolves; the cwd is the project root in every context):
+FRAMEWORK_ROOT="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/.claude"
+bash "${FRAMEWORK_ROOT}/lib/source-of-truth-check.sh" --agent spec-analyst \
+  --require "dir:source path (where the source files live):<SourcePath from the brief>" \
+  --require "file:dependency map:<DependencyMapPath from the brief>"
+# If an explicit file list was provided INSTEAD of a dependency-map path, --require each listed file as
+#   "file:in-scope file:<path>" rather than the dependency map.
+```
+- Exit **0 / `PROCEED`** → all required sources exist and are readable; continue to step 1.
+- Exit **3 / `ESCALATE`** → a required source is MISSING/empty/unreadable. **STOP. Return BLOCKED to the
+  parent** with the tool's MISSING lines verbatim: name exactly WHICH source is missing and WHAT input is
+  needed (the correct path, or access to it). **Do NOT guess a path, do NOT fall back to an empty scope,
+  do NOT extract from nothing.** Proceed only after the human provides the source (or supplies a
+  human-written override token — never one you mint). Your belief that you "can infer it" does NOT clear a
+  mechanically-absent source.
+
 1. If a dependency map path is provided and the file exists, read it. Scope = files listed in the map's `files` field plus any files referenced in `couplingGroups`.
 2. If an explicit file list is provided instead, use that.
 3. Map each in-scope file to one or more comparison surfaces (by role, not by file name — a file implementing auth logic maps to the "Auth / channel gate" surface regardless of its path).
