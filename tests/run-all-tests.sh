@@ -784,6 +784,18 @@ run_behavioral_tests() {
     yellow "SKIP: spec-divergence-prefilter-test.sh not found"
   fi
 
+  local cov_gap_test="$SCRIPT_DIR/behavioral/coverage-gap-detection-test.sh"
+  if [ -f "$cov_gap_test" ]; then
+    if bash "$cov_gap_test"; then
+      PASSES=$((PASSES + 13))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: coverage-gap-detection tests failed (L1 source-agnostic capture: any source reaches capture; L2 mechanical gap classification: BLIND-SPOT/UNCOVERED-CLASS/NEW-COVERAGE; INTEGRITY: classification is computed from artifacts, immune to the working agent's self-assessment — claims can't suppress or manufacture a gap)"
+    fi
+  else
+    yellow "SKIP: coverage-gap-detection-test.sh not found"
+  fi
+
   local parity_exit_test="$SCRIPT_DIR/behavioral/parity-check-exit-codes-test.sh"
   if [ -f "$parity_exit_test" ]; then
     if bash "$parity_exit_test"; then
