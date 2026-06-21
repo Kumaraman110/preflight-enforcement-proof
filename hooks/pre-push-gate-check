@@ -743,8 +743,23 @@ if [ "$EVIDENCE_RC" -eq 124 ] || [ "$EVIDENCE_RC" -eq 137 ] || [ "$EVIDENCE_RC" 
   echo "  Could not verify gate evidence is fresh for the pushed code; the push is BLOCKED, not allowed." >&2
   exit 2
 fi
+# Evidence-gate result handling — FAIL CLOSED on ANY unexpected code (G6). The PreToolUse protocol blocks
+# ONLY on exit 2; every other code (0 allows, and 1/127/126/… are NON-blocking errors). So the evidence
+# gate's exit must be normalized to {0=fresh, 2=block} and NOTHING else may reach the tool as a verdict.
+# The OLD code passed any non-zero VERBATIM via `exit "$EVIDENCE_RC"` on the assumption it is always 2 —
+# but a missing/non-executable sibling pre-push-gate exits 127, and a `set -e` abort exits 1; both are
+# NON-blocking, so the push would proceed UNGATED past a broken evidence gate (fail-OPEN). Mirror the
+# parity-check 0/1/2/3 discipline: an unexpected code FAILS LOUDLY (block), never passes through as a
+# non-blocking verdict. So: 0 -> proceed; 2 -> hard block (relay); ANY other non-zero -> normalize to 2.
+if [ "$EVIDENCE_RC" -eq 2 ]; then
+  exit 2   # evidence gate blocked (the expected hard-block code) — JSON would be ignored on exit 2 anyway.
+fi
 if [ "$EVIDENCE_RC" -ne 0 ]; then
-  exit "$EVIDENCE_RC"   # evidence gate blocked (exit 2) — hard block, JSON would be ignored anyway.
+  echo "BLOCKED: the pre-push evidence gate exited abnormally (rc=$EVIDENCE_RC) — neither 0 (fresh) nor 2" >&2
+  echo "  (block). A non-0/2 code (e.g. 127 = sibling pre-push-gate missing/non-executable, or 1 = a" >&2
+  echo "  set -e abort) is NON-blocking under the PreToolUse protocol, so passing it through would let the" >&2
+  echo "  push proceed UNGATED. Failing CLOSED: the push is BLOCKED. Fix/restore the evidence gate, then retry." >&2
+  exit 2
 fi
 
 # Evidence is fresh. Now emit the tier decision (exit 0 + JSON, per the PreToolUse protocol).

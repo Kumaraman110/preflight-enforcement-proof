@@ -880,6 +880,18 @@ run_behavioral_tests() {
     yellow "SKIP: pre-push-wedge-failclosed-test.sh not found"
   fi
 
+  local evidence_rc_test="$SCRIPT_DIR/behavioral/pre-push-evidence-rc-failclosed-test.sh"
+  if [ -f "$evidence_rc_test" ]; then
+    if bash "$evidence_rc_test"; then
+      PASSES=$((PASSES + 4))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: pre-push-evidence-rc-failclosed tests failed (G6: an evidence-gate exit that is neither 0 nor 2 — e.g. 127 missing sibling, 1 set-e abort — is NON-blocking under PreToolUse; it must be normalized to a hard BLOCK (exit 2), never passed through; exit 0 and exit 2 paths unchanged)"
+    fi
+  else
+    yellow "SKIP: pre-push-evidence-rc-failclosed-test.sh not found"
+  fi
+
   local gapa_test="$SCRIPT_DIR/behavioral/pre-push-gapa-prod-pattern-test.sh"
   if [ -f "$gapa_test" ]; then
     if bash "$gapa_test"; then
