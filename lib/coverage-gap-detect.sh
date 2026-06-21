@@ -144,18 +144,31 @@ for rb in "${RUBRICS[@]}"; do
   fi
 
   # (3) signal-keyword match against the whole rubric (any rule block) — weakest, only if signal given.
+  # FIX (G3): a detection-signal keyword legitimately lives in a rule BODY (the Detect:/Fix: lines), not
+  # only its header. The old attribution re-grepped ONLY headers, so a token matched in a body but absent
+  # from every header found no header, `hdr` was empty, and the match was SILENTLY DROPPED — the defect
+  # fell through to UNCOVERED-CLASS even though a rule covers it (the less-conservative wrong direction: a
+  # covered miss mislabeled as a brand-new uncovered class). A real rubric match must be honored as
+  # COVERED. So we attribute a body match to the rule block that CONTAINS the matched line: find the
+  # matched line number, then the nearest PRECEDING `### §` header. Only if the token genuinely appears
+  # under no rule header at all (matched before the first §header) do we leave it unattributed and let it
+  # fall through — that is a real "no rule block covers it" case, not a dropped match.
   if [ -z "$MATCHED_RULE" ] && [ -n "$SIGNAL" ]; then
     while IFS= read -r tok; do
       [ -z "$tok" ] && continue
-      if grep -qiE "(^|[^a-z])${tok}([^a-z]|\$)" "$rb" 2>/dev/null; then
-        # find the nearest preceding rule header for attribution (best-effort): first header containing the token
-        hdr="$(grep -iE "^### §" "$rb" 2>/dev/null | grep -iE "(^|[^a-z])${tok}([^a-z]|\$)" | head -1 || true)"
-        if [ -n "$hdr" ]; then
-          MATCHED_RULE="$(printf '%s' "$hdr" | grep -oE '§[A-Za-z0-9.]+' | head -1)"
-          MATCH_BASIS="signal keyword '${tok}' matched rule ${MATCHED_RULE} (${hdr#### })"
-          break
-        fi
+      # First matched line number anywhere in the file (header OR body). (Top-level loop, not a
+      # function — no `local`; match_ln is a transient scratch var reset each iteration.)
+      match_ln="$(grep -niE "(^|[^a-z])${tok}([^a-z]|\$)" "$rb" 2>/dev/null | head -1 | cut -d: -f1 || true)"
+      [ -z "$match_ln" ] && continue
+      # The §id of the rule block containing that line = the nearest `### §` header at or before match_ln.
+      hdr="$(sed -n "1,${match_ln}p" "$rb" 2>/dev/null | grep -E "^### §" | tail -1 || true)"
+      if [ -n "$hdr" ]; then
+        MATCHED_RULE="$(printf '%s' "$hdr" | grep -oE '§[A-Za-z0-9.]+' | head -1)"
+        MATCH_BASIS="signal keyword '${tok}' matched rule ${MATCHED_RULE} (${hdr#### })"
+        break
       fi
+      # else: the token matched only ABOVE the first rule header (preamble) — no rule block covers it;
+      # do NOT attribute, let the next token / fall-through decide (a genuine uncovered case, fail-safe).
     done < <(_tokens "$SIGNAL")
   fi
 

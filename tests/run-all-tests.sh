@@ -796,6 +796,18 @@ run_behavioral_tests() {
     yellow "SKIP: coverage-gap-detection-test.sh not found"
   fi
 
+  local cov_gap_signal_test="$SCRIPT_DIR/behavioral/coverage-gap-signal-body-test.sh"
+  if [ -f "$cov_gap_signal_test" ]; then
+    if bash "$cov_gap_signal_test"; then
+      PASSES=$((PASSES + 3))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: coverage-gap-signal-body tests failed (G3: a detection-signal keyword matched in a rule BODY must classify BLIND-SPOT attributed to the containing rule, not be silently dropped to UNCOVERED-CLASS — a covered miss must not be mislabeled an uncovered class; an absent token must still be UNCOVERED-CLASS, no manufactured coverage)"
+    fi
+  else
+    yellow "SKIP: coverage-gap-signal-body-test.sh not found"
+  fi
+
   local sot_test="$SCRIPT_DIR/behavioral/source-of-truth-check-test.sh"
   if [ -f "$sot_test" ]; then
     if bash "$sot_test"; then
