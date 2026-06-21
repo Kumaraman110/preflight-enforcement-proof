@@ -97,6 +97,23 @@ if [ -n "$JSON" ]; then
       [ -z "$p" ] && continue
       REQ_KINDS+=("${k:-file}"); REQ_LABELS+=("${l:-source}"); REQ_PATHS+=("$p")
     done < <(jq -r '.required[]? | [(.kind // "file"), (.label // "source"), (.path // "")] | @tsv' "$JSON" 2>/dev/null || true)
+  else
+    # FAIL CLOSED (G5): --json was supplied but jq is NOT available to parse it. The OLD code silently
+    # SKIPPED this block (no else) — so the json-declared required[] sources were never added. In a MIXED
+    # call (--json + --require), the CLI sources were still checked and, if present, the tool emitted
+    # PROCEED on a STRICT SUBSET of the operator's declared sources — a fail-OPEN for a fail-CLOSED gate
+    # (a parser-absent gate that cannot read the operator's declared sources must NOT proceed on whatever
+    # subset it happened to parse). A source-of-truth check that cannot read its inputs has not established
+    # it has the ground truth, so it ESCALATES (the same "stop and ask the human" exit-3 as a missing
+    # source / empty set). We do NOT fall back to a partial node/grep parse of arbitrary JSON: a partial
+    # parse risks DROPPING a declared source and re-introducing the subset-PROCEED hole — escalate instead.
+    echo "ESCALATE"
+    echo "  --json was supplied (descriptor: $JSON) but 'jq' is not available to parse it. The declared"
+    echo "  required sources could NOT be read, so sufficient ground truth cannot be confirmed — and any"
+    echo "  --require sources given alongside are only a SUBSET. Failing CLOSED (cannot verify, cannot"
+    echo "  proceed): install jq, or re-express the required sources as --require kind:label:path flags,"
+    echo "  or escalate to a human. (A parser-absent source-of-truth check must not PROCEED on a subset.)"
+    exit 3
   fi
 fi
 

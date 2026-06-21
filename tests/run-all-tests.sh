@@ -832,6 +832,18 @@ run_behavioral_tests() {
     yellow "SKIP: source-of-truth-check-test.sh not found"
   fi
 
+  local sot_jq_test="$SCRIPT_DIR/behavioral/source-of-truth-jq-absent-test.sh"
+  if [ -f "$sot_jq_test" ]; then
+    if bash "$sot_jq_test"; then
+      PASSES=$((PASSES + 3))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: source-of-truth-jq-absent tests failed (G5: when --json is supplied but jq is absent, the gate must FAIL CLOSED — ESCALATE, not silently drop the json-declared sources and PROCEED on a --require subset; the jq-present path must be unchanged)"
+    fi
+  else
+    yellow "SKIP: source-of-truth-jq-absent-test.sh not found"
+  fi
+
   local parity_exit_test="$SCRIPT_DIR/behavioral/parity-check-exit-codes-test.sh"
   if [ -f "$parity_exit_test" ]; then
     if bash "$parity_exit_test"; then
