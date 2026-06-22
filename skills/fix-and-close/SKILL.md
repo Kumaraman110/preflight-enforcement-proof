@@ -132,7 +132,7 @@ guess is wrong. If only one reasonable interpretation exists, proceed without ce
       ```bash
       bash "${FRAMEWORK_ROOT}/hooks/write-active-groups" '<json>'
       ```
-      Where `<json>` is the array of groups with files, findings summary, and `"acknowledged": false`. This activates the coupled-edit-gate — any Edit to a file in an unacknowledged group will be BLOCKED by the PreToolUse hook. This is the mechanical enforcement of "read ALL before fixing ANY."
+      Where `<json>` is the array of groups with files, findings summary, and `"acknowledged": false`. This activates the coupled-edit-gate — any **Write, Edit, or MultiEdit** to a file in an unacknowledged group is BLOCKED by the PreToolUse hook (registered under both the `Write` and `Edit|MultiEdit` matchers). This is the mechanical enforcement of "read ALL before fixing ANY." **Enforcement boundary (honesty label):** the guard covers the agent's file-mutation *tools* (Write/Edit/MultiEdit), not a Bash-shell mutation — a `sed -i`, `tee`, or `>` redirection to a coupled file from a Bash command goes through the `Bash` matcher (which runs only the push gate), so it is NOT intercepted. Mutate coupled files with the Edit/Write tools, not shell redirection, for the gate to apply.
    
    c. **Fix independent findings directly.** Findings that touch isolated files with no interaction (Dockerfile, CI yaml, standalone config) — fix these yourself, one by one. They can't cascade.
    

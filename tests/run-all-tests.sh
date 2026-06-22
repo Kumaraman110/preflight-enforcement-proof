@@ -640,6 +640,18 @@ run_behavioral_tests() {
     yellow "SKIP: coupled-edit-pathform-test.sh not found"
   fi
 
+  local coupled_matcher_test="$SCRIPT_DIR/behavioral/coupled-edit-matcher-test.sh"
+  if [ -f "$coupled_matcher_test" ]; then
+    if bash "$coupled_matcher_test"; then
+      PASSES=$((PASSES + 9))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: coupled-edit-matcher tests failed (M13: coupled-edit-gate must be registered under the Write AND Edit|MultiEdit matchers so a whole-file Write/MultiEdit to a coupled file is gated, not just Edit; a Write to a coupled file in an unacked group must BLOCK, and an unrelated/acknowledged Write must ALLOW; the Bash-seam residual must be honesty-labeled in fix-and-close SKILL.md)"
+    fi
+  else
+    yellow "SKIP: coupled-edit-matcher-test.sh not found"
+  fi
+
   local agent_scorer_test="$SCRIPT_DIR/behavioral/agent-scorer-test.sh"
   if [ -f "$agent_scorer_test" ]; then
     if bash "$agent_scorer_test"; then
