@@ -19,6 +19,37 @@ CODE_FORGE_DIR="${2:-${CODE_FORGE_DIR:-}}"
 CONSUMER_DIR="$(cd "$CONSUMER_DIR" && pwd)"
 MANIFEST="${CONSUMER_DIR}/.preflight/installed.lock"
 
+# (H7) Recompute the git TREE sha of an installed skill directory, to compare against the manifest's stored
+# tree sha (the installer records skills.<name> = `git rev-parse <ref>:skills/<name>`, a TREE object sha;
+# see preflight-install.sh). PRE-FIX, verify only tested `[ -f SKILL.md ]` and printed OK — the tree sha was
+# never compared, so a TAMPERED SKILL.md, an added/removed sibling, or a hollowed skill all passed
+# "Integrity: PASS", and a deleted SKILL.md was a non-DRIFT WARN. Skills are the framework's ONLY invocable
+# surface, so that was a silent false-green on the highest-value surface.
+#
+# Mechanism: copy the installed skill dir into an ISOLATED throwaway git repo (NO dependency on the consumer
+# being a git repo, NO dependency on the framework's GIT_DIR), `git add` + `write-tree`, and read the
+# subtree sha. core.autocrlf=input normalizes CRLF->LF so the recomputed sha matches the committed-object
+# tree sha the manifest stores (the installer's `git rev-parse <ref>:skills/<name>` reads LF committed
+# objects; an install that wrote CRLF on disk would otherwise mismatch). Echoes the tree sha, or "unknown"
+# on any failure (caller treats unknown as DRIFT — fail-closed). git is already a hard dep of verify
+# (git hash-object on every other surface).
+recompute_skill_tree() {  # $1 = installed skill dir ; echoes the tree sha or "unknown". Always returns 0.
+    local d="$1" iso t st
+    [ -d "$d" ] || { echo "unknown"; return 0; }
+    iso="$(mktemp -d 2>/dev/null)" || { echo "unknown"; return 0; }
+    mkdir -p "$iso/s" 2>/dev/null || { echo "unknown"; rm -rf "$iso" 2>/dev/null; return 0; }
+    cp -r "$d"/. "$iso/s/" 2>/dev/null || { echo "unknown"; rm -rf "$iso" 2>/dev/null; return 0; }
+    st="$( cd "$iso" \
+        && git init -q 2>/dev/null \
+        && git config core.autocrlf input 2>/dev/null \
+        && git add s 2>/dev/null \
+        && t="$(git write-tree 2>/dev/null)" \
+        && git rev-parse "${t}:s" 2>/dev/null )"
+    rm -rf "$iso" 2>/dev/null || true
+    [ -n "$st" ] && echo "$st" || echo "unknown"
+    return 0
+}
+
 echo "=== Preflight Framework Verify ==="
 echo "Consumer: ${CONSUMER_DIR}"
 echo ""
@@ -117,13 +148,21 @@ while IFS=$'\t' read -r SKILL_NAME EXPECTED_SHA; do
         continue
     fi
 
-    # For skills (directories), verify the SKILL.md file exists and check its blob.
-    # Full tree-SHA comparison requires git, so we check the primary file as proxy.
-    SKILL_FILE="${SKILL_PATH}/SKILL.md"
-    if [ -f "$SKILL_FILE" ]; then
-        echo "  OK: ${SKILL_NAME}/ (tree ${EXPECTED_SHA:0:7}, SKILL.md present)"
+    # (H7) CONTENT-check: recompute the installed skill's git TREE sha and compare to the manifest's stored
+    # tree sha. This replaces the old `[ -f SKILL.md ]` proxy (which never compared content, so a tampered
+    # SKILL.md, an added/removed sibling, or a deleted SKILL.md all passed). ANY mismatch — tamper, added
+    # file, removed file (incl. a missing SKILL.md) — changes the tree sha => DRIFT (exit-1 class), not a
+    # WARN. An "unknown" recompute (git failure) is treated as DRIFT too (fail-closed). A missing SKILL.md is
+    # now DRIFT via the tree-sha mismatch, not a non-blocking WARN.
+    ACTUAL_TREE="$(recompute_skill_tree "$SKILL_PATH")"
+    if [ "$ACTUAL_TREE" = "unknown" ]; then
+        echo "  DRIFT: ${SKILL_NAME}/ — could not recompute the installed subtree sha (git error) — failing closed (expected tree ${EXPECTED_SHA:0:7})"
+        DRIFT_COUNT=$((DRIFT_COUNT + 1))
+    elif [ "$ACTUAL_TREE" != "$EXPECTED_SHA" ]; then
+        echo "  DRIFT: ${SKILL_NAME}/ — subtree mismatch (installed ${ACTUAL_TREE:0:7} ≠ manifest ${EXPECTED_SHA:0:7}); tampered/added/removed file in the skill dir"
+        DRIFT_COUNT=$((DRIFT_COUNT + 1))
     else
-        echo "  WARN: ${SKILL_NAME}/ exists but SKILL.md missing (tree ${EXPECTED_SHA:0:7})"
+        echo "  OK: ${SKILL_NAME}/ (subtree ${EXPECTED_SHA:0:7} matches)"
     fi
 done < <(jq -r '.artifacts.skills | to_entries[] | [.key, .value] | @tsv' "$MANIFEST")
 

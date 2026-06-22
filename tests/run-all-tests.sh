@@ -568,6 +568,18 @@ run_behavioral_tests() {
     yellow "SKIP: registration-check-test.sh not found"
   fi
 
+  local verify_floor_test="$SCRIPT_DIR/behavioral/verify-manifest-floor-test.sh"
+  if [ -f "$verify_floor_test" ]; then
+    if bash "$verify_floor_test"; then
+      PASSES=$((PASSES + 14))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: verify-manifest-floor tests failed (M11: a degenerate manifest — empty/null/absent/non-object artifacts, or zero files — must FAIL, not 'Integrity: PASS'; H7: a skill must be CONTENT-checked by tree-SHA so a tampered/added/removed/deleted SKILL.md is DRIFT, not a silent OK/WARN; JOINT GUARD: an untampered real install must still PASS)"
+    fi
+  else
+    yellow "SKIP: verify-manifest-floor-test.sh not found"
+  fi
+
   local coverage_default_test="$SCRIPT_DIR/behavioral/coverage-default-consistency-test.sh"
   if [ -f "$coverage_default_test" ]; then
     if bash "$coverage_default_test"; then
