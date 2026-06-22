@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# behavioral-contract-gate — STAGED, NOT-YET-WIRED PreToolUse hook for the spec-analyst dispatch.
+# behavioral-contract-gate — LIVE PreToolUse hook for the spec-analyst dispatch.
 #
 # ┌──────────────────────────────────────────────────────────────────────────────────────────────┐
-# │ AWAITING OWNER DECISION — NOT registered in hooks.json. This artifact is the staged MECHANISM   │
-# │ for the Behavioral-Contract guard. It does NOT fire until the owner approves the hook point and │
-# │ a registration entry is added to hooks/hooks.json. Until then the guard remains prompt-level +  │
-# │ prose-hardened (agents/spec-analyst.md, skills/behavior-spec/SKILL.md). See                     │
+# │ LIVE — registered in hooks/hooks.json under the Agent|Task PreToolUse matcher (commit 611a6e0), │
+# │ merged into a consumer's .claude/settings.json by preflight-install.sh. Fires on every          │
+# │ spec-analyst spawn and fails closed (exit 2) on a missing/DRAFT ## Behavioral Contract.         │
+# │ Honest ceiling: agent-tool-only (PreToolUse on the Agent|Task seam); the platform→hook DELIVERY  │
+# │ is inferred from that shared seam (the sibling rubric-validity-gate is the directly-observed     │
+# │ gate in the same block), not separately re-observed for this gate in-session. See               │
 # │ docs/parity-gate-limitations.md ("Behavioral-Contract guard").                                  │
 # └──────────────────────────────────────────────────────────────────────────────────────────────┘
 #
@@ -17,9 +19,9 @@
 #   MECHANICAL: it intercepts the spec-analyst spawn and blocks it unless a real, non-DRAFT Behavioral
 #   Contract exists in CLAUDE.md at the repo root. The agent cannot talk the analyst past it.
 #
-# RECOMMENDED HOOK POINT (Option 1 — dispatch gate). Mirrors hooks/rubric-validity-gate exactly:
-#   matcher "Agent|Task" -> read tool_input.subagent_type -> act only on a spec-analyst spawn. Fires
-#   EARLY (before any wasted extraction), at the exact decision point that was corrupted. The sibling
+# WIRED HOOK POINT (Option 1 — dispatch gate, the registered one). Mirrors hooks/rubric-validity-gate
+#   exactly: matcher "Agent|Task" -> read tool_input.subagent_type -> act only on a spec-analyst spawn.
+#   Fires EARLY (before any wasted extraction), at the exact decision point that was corrupted. The sibling
 #   Option 2 (a Write|Edit gate on behavior-spec.json) is viable defense-in-depth but fires late and needs
 #   path-scoped matching (a basename match would false-fire on deck/demo/behavior-spec-*.json). See the
 #   Part D investigation in the commit body / docs.

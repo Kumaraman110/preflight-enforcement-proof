@@ -173,13 +173,15 @@ guess is wrong. If only one reasonable interpretation exists, proceed without ce
 
 9. **Stage files using EXPLICIT file paths only** — never `git add .`, never `git add <dir>/`.
 
-   **Artifact rejection gate (pre-commit):** Before running `git commit`, verify no build/test artifacts are staged. Run:
+   **Artifact rejection check (pre-commit, agent-run):** Before running `git commit`, verify no build/test artifacts are staged. Run:
    ```bash
-   git diff --cached --name-only | grep -E '(coverage\.|\.opencover\.xml|/bin/|/obj/|/TestResults/|\.db$|\.mdf$|\.user$)' && echo "BLOCKED: artifact staged" && exit 1
+   git diff --cached --name-only | grep -E '(coverage\.|\.opencover\.xml|/bin/|/obj/|/TestResults/|\.db$|\.mdf$|\.user$)' && echo "artifact staged — do NOT commit" && exit 1
    ```
-   If ANY match is found, the commit is BLOCKED. Unstage the offending file(s) with `git reset HEAD <path>` and report which file was caught. Do NOT commit and warn after the fact — the gate fires BEFORE the commit.
+   If ANY match is found, you MUST NOT proceed to commit. Unstage the offending file(s) with `git reset HEAD <path>` and report which file was caught.
 
-   **Reject list:** `coverage.*`, `*.opencover.xml`, `bin/`, `obj/`, `TestResults/`, `*.db`, `*.mdf`, `*.user`, and anything matching `.gitignore` artifact patterns. If staged paths include any of these, the commit does not proceed.
+   **A note on enforcement (honesty label):** this is a PROMPT-LEVEL discipline you execute in your session BEFORE `git commit` — it is NOT a PreToolUse hook. The `exit 1` ends only this snippet's subshell; nothing mechanically intercepts `git commit` (the only Bash-matcher PreToolUse hook is the push gate, which guards `git push`, not commit). So the protection holds only if you actually run the check and honor it — do not skip it and commit, then warn after the fact.
+
+   **Reject list:** `coverage.*`, `*.opencover.xml`, `bin/`, `obj/`, `TestResults/`, `*.db`, `*.mdf`, `*.user`, and anything matching `.gitignore` artifact patterns. If staged paths include any of these, do not proceed with the commit.
 10. Compose conventional-commit message (biased by user's hint if given). For Copilot-fix-round commits (after Stage 2 returns NEEDS_PARENT_FIXES), use this format:
 
     ```
