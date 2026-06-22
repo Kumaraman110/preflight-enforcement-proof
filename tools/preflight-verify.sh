@@ -37,6 +37,40 @@ INSTALLED_AT=$(jq -r '.installedAt' "$MANIFEST")
 echo "Manifest found: ${PINNED_REF} @ ${RESOLVED_SHA:0:7} (installed ${INSTALLED_AT})"
 echo ""
 
+# ── Step 1b: Manifest-shape + mandatory-surface FLOOR (M11) ──────────────────
+# PRE-FIX, drift detection was a loop over manifest keys with NO lower-bound assertion: an all-empty
+# artifacts.*={} (truncated manifest) drove CHECKED_COUNT=0, DRIFT_COUNT=0 -> "Integrity: PASS" exit 0 with
+# ZERO framework files on disk; artifacts.agents=null made the per-surface jq `to_entries[]` error inside a
+# process substitution (set -e cannot abort a procsub) so the loop iterated nothing -> same PASS; and an
+# absent / non-object artifacts key passed too. "Nothing was checked" was indistinguishable from
+# "everything matched" — a silent false-green of the integrity oracle. This floor runs FIRST (a cheap "is
+# the manifest even shaped like a real install?"), so a degenerate manifest FAILs before any drift loop —
+# and it guarantees the skills loop (H7's content-check) is fed a non-empty object, so H7 needn't defend
+# against a null/empty feeder.
+#   - .artifacts must be an object (catches absent -> "null", and non-object "oops"/array/number).
+#   - {agents, skills} are MANDATORY anchors: the only two surfaces with no sanctioned `// "absent"` legacy
+#     path AND guaranteed >=1 entry in every real install (5 agents, 11 skills). Each must be a NON-EMPTY
+#     object. Anchoring the floor here closes the degenerate-manifest class without misclassifying a
+#     legitimate pre-multi-surface manifest (which still has agents+skills populated; only the OPTIONAL
+#     lib/hooks/examples/docs/defaults may be absent). COUPLING NOTE: if the framework ever legitimately
+#     ships zero agents or zero skills, this mandatory set must be updated in lockstep with
+#     tools/preflight-install.sh's manifest shape.
+ARTIFACTS_TYPE=$(jq -r '.artifacts | type' "$MANIFEST" 2>/dev/null || echo "null")
+if [ "$ARTIFACTS_TYPE" != "object" ]; then
+    echo "FAIL: manifest .artifacts is missing or not an object (got '${ARTIFACTS_TYPE}') — truncated/corrupt manifest."
+    echo "A real install always carries an artifacts object; refusing to attest integrity on it."
+    exit 1
+fi
+for MAND in agents skills; do
+    MAND_TYPE=$(jq -r --arg s "$MAND" '.artifacts[$s] | type' "$MANIFEST" 2>/dev/null || echo "null")
+    MAND_LEN=$(jq -r --arg s "$MAND" '(.artifacts[$s] | objects | length) // -1' "$MANIFEST" 2>/dev/null || echo "-1")
+    if [ "$MAND_TYPE" != "object" ] || [ "$MAND_LEN" -lt 1 ] 2>/dev/null; then
+        echo "FAIL: manifest .artifacts.${MAND} is null/empty/missing (type='${MAND_TYPE}', entries=${MAND_LEN})."
+        echo "A valid install always ships >=1 ${MAND}; this manifest is truncated/corrupt — refusing to attest."
+        exit 1
+    fi
+done
+
 # ── Step 2: Drift detection — compare ALL installed files against manifest ───
 DRIFT_COUNT=0
 CHECKED_COUNT=0
@@ -98,10 +132,20 @@ done < <(jq -r '.artifacts.skills | to_entries[] | [.key, .value] | @tsv' "$MANI
 # .claude/<surface>/<relpath>. Same strict per-file git hash-object compare as
 # agents (CR-strip both fields). Drift in ANY file fails, named with its surface.
 for SURFACE in lib hooks examples docs defaults; do
-    # Skip surfaces absent from the manifest (older installs predating this gate).
-    if [ "$(jq -r --arg s "$SURFACE" '.artifacts[$s] // "absent"' "$MANIFEST")" = "absent" ]; then
+    # (M11 seam 3) Type-classify the OPTIONAL surfaces — distinguish three states instead of the old
+    # `// "absent"` which mapped a NULL (corrupt) surface to "absent" and silently skipped it (a fail-open):
+    #   absent  (key not present)  -> skip  (sanctioned legacy/pre-multi-surface install)
+    #   object  (a real surface)   -> iterate + hash-compare each file
+    #   else    (null / string / array / number — corrupt) -> FAIL loudly, never skip.
+    SURFACE_STATE=$(jq -r --arg s "$SURFACE" 'if (.artifacts | has($s) | not) then "absent" elif (.artifacts[$s] | type) == "object" then "ok" else "bad" end' "$MANIFEST" 2>/dev/null || echo "bad")
+    if [ "$SURFACE_STATE" = "absent" ]; then
         echo ""
         echo "Checking ${SURFACE}... (not in manifest — skipping; pre-multi-surface install)"
+        continue
+    elif [ "$SURFACE_STATE" = "bad" ]; then
+        echo ""
+        echo "FAIL: manifest .artifacts.${SURFACE} is present but null/non-object (corrupt manifest) — refusing to skip."
+        DRIFT_COUNT=$((DRIFT_COUNT + 1))
         continue
     fi
     echo ""
@@ -132,6 +176,17 @@ done
 
 echo ""
 echo "Checked: ${CHECKED_COUNT} artifacts (${DRIFT_COUNT} drifted)"
+
+# (M11 seam 2) CHECKED_COUNT backstop: if literally zero artifacts were examined, nothing was verified —
+# "Integrity: PASS" would be a false attestation. The mandatory-surface floor above already guarantees
+# >=1 agent + >=1 skill, so this is unreachable for a conforming manifest; it is defense-in-depth against
+# a future surface-set change that might slip past the named floor. Never PASS on zero work.
+if [ "$CHECKED_COUNT" -eq 0 ]; then
+    echo ""
+    echo "FAIL: drift check examined 0 artifacts — the manifest is empty/unreadable, nothing was actually verified."
+    echo "Refusing to attest integrity. Re-run preflight-install to produce a valid manifest."
+    exit 1
+fi
 
 if [ $DRIFT_COUNT -gt 0 ]; then
     echo ""
