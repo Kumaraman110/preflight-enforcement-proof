@@ -170,7 +170,17 @@ MODEL_FIELDS=""
 if [ "$HAS_CS" = true ]; then
   MODEL_FILES=$(find "$SOURCE_DIR" \( -name '*Response*.cs' -o -name '*Request*.cs' -o -name '*Model*.cs' \) 2>/dev/null | grep -v '/obj/' | grep -v '/bin/' || true)
   if [ -n "$MODEL_FILES" ]; then
+    # (M7) Drop TYPE-DECLARATION lines BEFORE harvesting a field name. The property regex
+    # `public <type-token> <Name> {` also matches a K&R same-line-brace declaration like
+    # `public class TokenResponse {` — taking the keyword `class` as the type-token and `TokenResponse`
+    # as a phantom "field". With H5's now-active source→spec catch, that phantom false-FAILs an honest
+    # spec (the class name is never a wire field, so it can't be in SPEC_FIELDS). The negative-match
+    # removes any line whose type-position token is a declaration keyword (class/interface/struct/enum/
+    # record, with optional modifiers). The trailing `\b` keeps a REAL field whose TYPE merely STARTS with
+    # a keyword (`public ClassRoom Building {`, `public Record Recorder {`) — those survive and are still
+    # checked. After M7, MODEL_FIELDS = exactly the real-property set, which is what H5 should police.
     MODEL_FIELDS=$(echo "$MODEL_FILES" | xargs grep -hE 'public[[:space:]]+[A-Za-z<>?]+[[:space:]]+[A-Z][a-zA-Z]+[[:space:]]*\{' 2>/dev/null | \
+      grep -vE 'public[[:space:]]+(abstract[[:space:]]+|sealed[[:space:]]+|partial[[:space:]]+|static[[:space:]]+)*(class|interface|struct|enum|record)\b' | \
       sed -E 's/.*public[[:space:]]+[A-Za-z<>?]+[[:space:]]+([A-Z][a-zA-Z]+)[[:space:]]*\{.*/\1/' | \
       sort -u || true)
   fi

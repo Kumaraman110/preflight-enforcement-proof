@@ -760,6 +760,18 @@ run_behavioral_tests() {
     yellow "SKIP: spec-divergence-poc-test.sh not found"
   fi
 
+  local spec_integ_cluster_test="$SCRIPT_DIR/behavioral/spec-integrity-cluster-test.sh"
+  if [ -f "$spec_integ_cluster_test" ]; then
+    if bash "$spec_integ_cluster_test"; then
+      PASSES=$((PASSES + 14))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: spec-integrity-cluster tests failed (M4: a zero-.cs source + a spec declaring an anchor must FAIL could-not-verify, not PASS; H5: an empty/empty-category spec must NOT skip the source->spec forge-catch; M7: a K&R 'public class Foo {' line must NOT yield a phantom field; THE 3-WAY GUARD: a REAL omitted property STILL FAILs after all three — M7's narrowing must not blunt H5's catch)"
+    fi
+  else
+    yellow "SKIP: spec-integrity-cluster-test.sh not found"
+  fi
+
   local spec_div_sem_test="$SCRIPT_DIR/behavioral/spec-divergence-semantic-poc-test.sh"
   if [ -f "$spec_div_sem_test" ]; then
     if bash "$spec_div_sem_test"; then
