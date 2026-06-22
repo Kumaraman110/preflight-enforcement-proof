@@ -284,6 +284,136 @@ _pfg_target_cwd() {  # $1 = command string; echo the cwd the git command runs in
 # config + git resolution below). Computed ONCE from the command string.
 PFG_TARGET_CWD="$(_pfg_target_cwd "$COMMAND")"
 
+# ── STRUCTURAL PUSH PARSER (H1+H2 fix) ─────────────────────────────────────────
+# Replaces the old single-regex detector AND the old grep extractor, which BOTH required the literal
+# adjacency `git\s+push` — so `git -C <dir> push`, `git -c k=v push`, `command git push`, `\git push`,
+# `GIT_DIR=… git push`, `/usr/bin/git push`, a subshell `(git push …)`, etc. ALL evaded the gate (H2: 17
+# of 21 forms bypassed; see .release-audit/H2-FIX-DESIGN.md). The fix PARSES the invocation structurally,
+# mirroring git's own option grammar, instead of pattern-matching one surface spelling.
+#
+# It sets these globals (read by the classification body below):
+#   _PFG_IS_PUSH        = 1 if a `git … push` invocation was found, else 0.
+#   _PFG_PUSH_UNRESOLVED= 1 if a push is PRESENT but could not be cleanly parsed into an arg list
+#                         (an indirection wrapper: eval/bash -c/sh -c/xargs git push) → FAIL CLOSED to
+#                         CONFIRM downstream, never a silent allow. 0 when the args were parsed cleanly.
+#   _PFG_PUSH_ARGS      = the parsed push arg list (tokens AFTER `push`), space-joined, when resolved.
+#
+# Method (per the design's Option B): segment the command on shell separators the hook can SEE
+# (; && || | and a leading ( { and the if/then/while/do/else keywords), then for each segment:
+#   strip leading VAR=val env-assignments and a `command`/`\` prefix → match the program token as
+#   git | */git | */git.exe | \git → skip the global-option run via a small option table (separate-value
+#   opts -C/-c/--git-dir/--work-tree/--namespace/--super-prefix consume the NEXT token; =-joined and bare
+#   flags are single tokens) → if the next token is `push`, the rest are the push args.
+# NOTE: this tokenizes by WORD-SPLITTING ONLY (set -f + IFS); it NEVER eval/executes the command.
+_PFG_IS_PUSH=0
+_PFG_PUSH_UNRESOLVED=0
+_PFG_PUSH_ARGS=""
+# Is $1 a git program token? (git, */git, */git.exe, with an optional leading backslash for `\git`.)
+_pfg_is_git_prog() {
+  case "${1#\\}" in
+    git|git.exe) return 0 ;;
+    */git|*/git.exe) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+# Does the segment's git invocation reach a `push` subcommand? Parses ONE already-tokenized arg vector
+# ("$@" = the segment's words). Echoes the push args (tokens after `push`) on success; return 0 = push
+# found+parsed, 1 = not a push, 2 = git-push present but the program/subcommand could not be resolved.
+_pfg_seg_push_args() {
+  # Strip leading env-assignments (VAR=val) and a `command` prefix (repeatable).
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      [A-Za-z_]*=*) shift ;;       # env-assignment prefix → skip
+      command)      shift ;;       # `command git …` → skip the `command` builtin
+      *) break ;;
+    esac
+  done
+  [ "$#" -gt 0 ] || return 1
+  _pfg_is_git_prog "$1" || return 1
+  shift                            # consume the git program token
+  # Skip the global-option run (mirrors git's option grammar). Separate-value options consume the NEXT
+  # token; =-joined and bare flags are single tokens; the subcommand is the first NON-option token.
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      -C|--git-dir|--work-tree|--namespace|--super-prefix|--exec-path)
+        # separate-value form: consume the option AND its value token (if present).
+        shift; [ "$#" -gt 0 ] && shift ;;
+      -c|--config-env)
+        shift; [ "$#" -gt 0 ] && shift ;;
+      --git-dir=*|--work-tree=*|--namespace=*|--super-prefix=*|--exec-path=*|--config-env=*|-c=*)
+        shift ;;                   # =-joined value: single token
+      -p|--paginate|-P|--no-pager|--bare|--no-replace-objects|--no-lazy-fetch|--no-optional-locks|--no-advice|--literal-pathspecs|--glob-pathspecs|--noglob-pathspecs|--icase-pathspecs|--html-path|--man-path|--info-path|--no-renames)
+        shift ;;                   # bare global flags: single token
+      -[A-Za-z]*|--*)
+        # an UNKNOWN global option before the subcommand. We cannot know if it consumes the next token,
+        # so we cannot safely locate the subcommand → treat as unresolved (fail-closed) rather than guess.
+        return 2 ;;
+      *) break ;;                  # first non-option token = the subcommand
+    esac
+  done
+  [ "$#" -gt 0 ] || return 1       # no subcommand → not a push
+  if [ "$1" = "push" ]; then
+    shift                          # consume `push`; the rest are the push args
+    _pfg_seg_push_out="$*"
+    return 0
+  fi
+  return 1                         # some other subcommand (status/commit/log/…) → not a push
+}
+_pfg_parse_push() {  # $1 = the full command string. Sets the _PFG_* globals. Always returns 0.
+  local cmd="$1"
+  # (1) Indirection wrappers the static parser cannot see INTO: if the command invokes eval / bash -c /
+  # sh -c / xargs AND the literal tokens `git` … `push` appear in order somewhere, a push may be assembled
+  # at runtime → mark PRESENT-but-UNRESOLVED (fail-closed CONFIRM), do not try to parse it.
+  if printf '%s' "$cmd" | grep -qE '(^|[^[:alnum:]_-])(eval|xargs)([^[:alnum:]_-]|$)' \
+     || printf '%s' "$cmd" | grep -qE '(^|[^[:alnum:]_-])(bash|sh|zsh|dash)[[:space:]]+-[a-z]*c([[:space:]]|$)'; then
+    # Ordered git…push token check (NOT mere co-occurrence — see the no-false-positive boundary): a git
+    # program token, then a `push` token later. Word-bounded so `push-docs`/`git commit -m '…push…'` are
+    # not mistaken for a push subcommand.
+    if printf '%s' "$cmd" | grep -qE '(^|[^[:alnum:]/_.-])\\?([^[:space:]]*/)?git(\.exe)?([^[:alnum:]_-].*)?[[:space:]]push([[:space:]]|$)'; then
+      _PFG_IS_PUSH=1; _PFG_PUSH_UNRESOLVED=1; _PFG_PUSH_ARGS=""
+      return 0
+    fi
+  fi
+  # (2) Structural parse: segment on shell separators the hook can see, parse each segment.
+  # Replace separators (; && || | newline) and leading group/keyword tokens with a sentinel newline, then
+  # iterate segments. set -f disables globbing during the deliberate word-split; IFS default splits words.
+  local seg rc
+  local _oldifs="$IFS"
+  set -f
+  # Normalize separators to newlines. Strip subshell/group punctuation and shell keywords so the inner
+  # `git … push` is exposed as its own segment.
+  local norm
+  norm="$(printf '%s' "$cmd" \
+    | sed -E 's/\|\||;|&&|&|\||\(|\)|\{|\}/\n/g' \
+    | sed -E 's/(^|\n)[[:space:]]*(then|do|else|elif|if|while|until|fi|done)([[:space:]]|$)/\n/g')"
+  while IFS= read -r seg; do
+    [ -n "$seg" ] || continue
+    # Word-split the segment into a positional vector (no glob, no eval).
+    # shellcheck disable=SC2086
+    set -- $seg
+    [ "$#" -gt 0 ] || continue
+    _pfg_seg_push_out=""
+    # Tested context: a non-push segment returns 1 (and the unknown-option case returns 2). Capture the
+    # status WITHOUT letting `set -e` abort on the expected non-zero return (`; rc=$?` would not be a tested
+    # context — the function's rc=1 would kill the hook before the assignment, the git-status crash bug).
+    rc=0; _pfg_seg_push_args "$@" || rc=$?
+    if [ "$rc" -eq 0 ]; then
+      _PFG_IS_PUSH=1; _PFG_PUSH_UNRESOLVED=0; _PFG_PUSH_ARGS="$_pfg_seg_push_out"
+      break
+    elif [ "$rc" -eq 2 ]; then
+      # git-push present in this segment but an unknown global option blocked clean resolution.
+      _PFG_IS_PUSH=1; _PFG_PUSH_UNRESOLVED=1; _PFG_PUSH_ARGS=""
+      # keep scanning — a later segment might resolve cleanly, but do not downgrade an unresolved push.
+    fi
+  done <<EOF
+$norm
+EOF
+  set +f
+  IFS="$_oldifs"
+  return 0
+}
+_pfg_parse_push "$COMMAND"
+
 # ── Resolve canonical repo (owner/repo) from config.branch.remote. Fail-open. ─
 # Shared by the #3a pr-create guard below and reused by the #6b push guard.
 # REPO-AWARE: reads config from the PUSH-TARGET repo (PFG_TARGET_CWD), not the session root.
@@ -527,8 +657,10 @@ if printf '%s' "$COMMAND" | grep -qE '(^|&&|\|\||;|")\s*gh[[:space:]]+pr[[:space
   exit 0
 fi
 
-# Only gate on git push commands
-if ! printf '%s' "$COMMAND" | grep -qE '(^|&&|\|\||;|")\s*git\s+push'; then
+# Only gate on git push commands. Detection is now STRUCTURAL (_pfg_parse_push above), not a regex on the
+# raw string — so `git -C <dir> push`, `git -c k=v push`, `command git push`, `\git push`, `GIT_DIR=… git
+# push`, `/usr/bin/git push`, and `(git push …)` are all detected (H2). A non-push command exits 0 here.
+if [ "$_PFG_IS_PUSH" != 1 ]; then
   exit 0
 fi
 
@@ -544,8 +676,11 @@ fi
 # server-side branch protection. It is also FAIL-OPEN: if config is absent/unparseable
 # it does NOT block (additive guard; never newly blocks a repo that didn't opt in).
 
-# Isolate the single `git push …` invocation from any compound command for parsing.
-PUSH_CMD="$(printf '%s' "$COMMAND" | grep -oE 'git[[:space:]]+push[^&|;]*' | head -1 || true)"
+# PUSH_CMD is retained only as a "a push was detected" flag for the bare-push CONFIRM check below
+# (it tests [ -n "$PUSH_CMD" ]). The actual arg parsing comes from the structural parser (_PFG_PUSH_ARGS),
+# NOT a re-grep of the raw command — closing the second-layer extractor bypass (the old grep returned
+# empty on `git -C … push`, silently skipping the forbidden-remote check even when detection succeeded).
+PUSH_CMD="git push"   # non-empty sentinel: _PFG_IS_PUSH==1 is the real signal we got here.
 
 # Resolve config (fail-open on any miss). jq → node → grep fallback, same idiom as other hooks.
 # REPO-AWARE (NEW-2): config comes from the PUSH-TARGET repo, not the session root — so a
@@ -575,24 +710,40 @@ SAFE_REMOTES="$(_pfg_branch_array "$CONFIG" safeRemotes)"
 PROTECTED_BRANCHES="main master"
 [ -n "$BASE" ] && PROTECTED_BRANCHES="$PROTECTED_BRANCHES $BASE"
 
-# Does the push carry a force flag of any kind?
+# Parse the push args from the STRUCTURAL parser's token list (_PFG_PUSH_ARGS = everything after `push`),
+# NOT a re-grep/sed of the raw command. This is the single source for HAS_FORCE / ARG_REMOTE / ARG_REFSPEC,
+# so detection and extraction can never diverge (the old two-layer bug). Word-split the parsed args.
 HAS_FORCE=false
-if printf '%s' "$PUSH_CMD" | grep -qE '(^|[[:space:]])(--force-with-lease([=[:space:]]|$)|--force([[:space:]]|$)|-f([[:space:]]|$))'; then
-  HAS_FORCE=true
-fi
-
-# Token-scan the push args (drop `git push` and any flags) → [remote] [refspec...].
-PUSH_ARGS="$(printf '%s' "$PUSH_CMD" | sed -E 's/^git[[:space:]]+push//')"
+ARG_REMOTE=""
+ARG_REFSPEC=""
+_pfg_oldifs="$IFS"
+set -f
+# shellcheck disable=SC2086
+set -- $_PFG_PUSH_ARGS
+set +f
+IFS="$_pfg_oldifs"
 POSITIONAL=""
-for tok in $PUSH_ARGS; do
+for tok in "$@"; do
   case "$tok" in
-    -*) ;;                       # skip flags (--force, -u, --force-with-lease=…, etc.)
-    *)  POSITIONAL="$POSITIONAL $tok" ;;
+    # (A) explicit force flags.
+    --force|-f|--force-with-lease|--force-with-lease=*|--force-if-includes)
+      HAS_FORCE=true ;;
+    -*) ;;                       # other flags (-u, --tags, --set-upstream, …) — skip.
+    # (H1) a refspec whose SOURCE side begins with '+' is a forced (non-fast-forward) update — git's
+    # documented shorthand (`+main` == `+main:main`, `+src:dst` forces dst). Recognize it as FORCE, and
+    # record the '+'-STRIPPED positional so TARGET_BRANCH derivation below sees the real ref, not '+main'.
+    +*)
+      HAS_FORCE=true
+      POSITIONAL="$POSITIONAL ${tok#+}" ;;   # strip exactly one leading '+'
+    *)  POSITIONAL="$POSITIONAL $tok" ;;     # positional (remote / refspec)
   esac
 done
+set -f
+# shellcheck disable=SC2086
 set -- $POSITIONAL
+set +f
 ARG_REMOTE="${1:-}"             # first positional = remote (if named)
-ARG_REFSPEC="${2:-}"           # second positional = refspec (if named)
+ARG_REFSPEC="${2:-}"           # second positional = refspec ('+' already stripped above if present)
 
 # (B0) FORBIDDEN-DESTINATION pre-check (A1) — fires REGARDLESS of branch.remote.
 # This is the check that holds on an INVERTED clone where branch.remote itself names
@@ -664,6 +815,17 @@ if [ "$HAS_FORCE" = true ]; then
       exit 2
     fi
   done
+fi
+
+# (B-unresolved) FAIL-CLOSED CONFIRM — a push is PRESENT but the parser could NOT cleanly resolve its arg
+# list (an indirection wrapper: eval / bash -c / sh -c / xargs git push; or an unknown global option before
+# the subcommand). The target therefore cannot be validated against the forbidden/wrong-remote checks — so
+# rather than silently allow (the old fail-OPEN), escalate to a human. CONFIRM (not exit 2): a benign
+# false-positive only costs one confirmation, and the actual harm (a SILENT bypass) is removed. Gated on
+# push-gating being opted in (REMOTE set) to preserve the additive-guard posture (no config → inert).
+# This is the H2 design's fail-closed fallback: an unparseable-but-plausibly-a-push command needs the guard.
+if [ -z "$CONFIRM_REASON" ] && [ "$_PFG_PUSH_UNRESOLVED" = 1 ] && [ -n "$REMOTE" ]; then
+  CONFIRM_REASON="A 'git … push' was detected but its target could NOT be parsed — the push is wrapped in an indirection (eval / bash -c / sh -c / xargs) or uses an unrecognized git global option, so the forbidden-remote and protected-branch checks cannot run on it. Failing CLOSED to a human confirmation rather than a silent allow: run the push as a plain 'git push <remote> <refspec>' so it is validatable, or confirm this is intended. (Agent Bash-tool guard only; not server-side protection.)"
 fi
 
 # (B-bare) CONFIRM — bare 'git push' (no named remote): the target is unvalidatable (default/upstream

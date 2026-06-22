@@ -892,6 +892,18 @@ run_behavioral_tests() {
     yellow "SKIP: pre-push-evidence-rc-failclosed-test.sh not found"
   fi
 
+  local parser_bypass_test="$SCRIPT_DIR/behavioral/pre-push-parser-bypass-test.sh"
+  if [ -f "$parser_bypass_test" ]; then
+    if bash "$parser_bypass_test"; then
+      PASSES=$((PASSES + 26))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: pre-push-parser-bypass tests failed (H1+H2: the structural push parser must detect+gate every invocation form — git -C/-c/--git-dir push, command/\\\\/env-prefix/abs-path git push, (git push)/{ git push;}, the '+'-refspec force [H1] — and FAIL CLOSED to CONFIRM on unparseable indirection (eval/bash -c/xargs); benign 'push'-containing commands and a normal safe push must NOT be over-gated)"
+    fi
+  else
+    yellow "SKIP: pre-push-parser-bypass-test.sh not found"
+  fi
+
   local gapa_test="$SCRIPT_DIR/behavioral/pre-push-gapa-prod-pattern-test.sh"
   if [ -f "$gapa_test" ]; then
     if bash "$gapa_test"; then
