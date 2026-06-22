@@ -134,13 +134,16 @@ if [ -n "$SPEC_CODES" ]; then
 fi
 
 # Direction 2: source→spec — THE FORGE-CATCH
+# (H5) NO inner [ -n "$SPEC_CODES" ] guard: the catch must fire whenever the SOURCE emits codes, regardless
+# of whether the SPEC declares any. An empty/empty-category spec is the MOST aggressive forge (drop the
+# whole category to dodge parity) — pre-fix the inner guard SKIPPED the catch on exactly that input, so an
+# empty SPEC_CODES passed GREEN. Now an empty SPEC_CODES means "EVERY source code is missing from spec" and
+# each one fails (grep -qx against an empty list never matches), which is the correct fail-closed behavior.
 if [ -n "$SOURCE_CODES" ]; then
   while IFS= read -r code; do
     [ -z "$code" ] && continue
-    if [ -n "$SPEC_CODES" ]; then
-      if ! echo "$SPEC_CODES" | grep -qx "$code"; then
-        fail "result_code source→spec: '$code' emitted in source but MISSING from spec (possible forge)"
-      fi
+    if ! echo "$SPEC_CODES" | grep -qx "$code"; then
+      fail "result_code source→spec: '$code' emitted in source but MISSING from spec (possible forge)"
     fi
   done <<< "$SOURCE_CODES"
 fi
@@ -184,7 +187,11 @@ if [ -n "$SPEC_FIELDS" ] && [ -n "$MODEL_FIELDS" ]; then
 fi
 
 # Direction 2: source→spec — THE FORGE-CATCH
-if [ -n "$MODEL_FIELDS" ] && [ -n "$SPEC_FIELDS" ]; then
+# (H5) NO inner [ -n "$SPEC_FIELDS" ] guard — fire whenever SOURCE models expose properties (MODEL_FIELDS
+# non-empty), regardless of whether the spec declares any. An empty SPEC_FIELDS means every source property
+# is missing from spec (the dropped-category forge), which now correctly fails. (MODEL_FIELDS non-empty is
+# the SOURCE-side iteration guard — kept; with no source properties there is nothing to forge-check.)
+if [ -n "$MODEL_FIELDS" ]; then
   while IFS= read -r field; do
     [ -z "$field" ] && continue
     if ! echo "$SPEC_FIELDS" | grep -qx "$field"; then
@@ -223,7 +230,10 @@ if [ -n "$SPEC_PROCS" ] && [ -n "$SOURCE_PROCS" ]; then
 fi
 
 # Direction 2: source→spec — THE FORGE-CATCH
-if [ -n "$SOURCE_PROCS" ] && [ -n "$SPEC_PROCS" ]; then
+# (H5) NO inner [ -n "$SPEC_PROCS" ] guard — fire whenever SOURCE invokes procs, regardless of the spec.
+# An empty SPEC_PROCS means every source proc is missing from spec (the dropped-category forge). (The
+# SOURCE-side [ -n "$SOURCE_PROCS" ] guard is kept — with no source procs there is nothing to forge-check.)
+if [ -n "$SOURCE_PROCS" ]; then
   while IFS= read -r proc; do
     [ -z "$proc" ] && continue
     if ! echo "$SPEC_PROCS" | grep -qix "$proc"; then
@@ -272,7 +282,11 @@ if [ -n "$SPEC_ROUTES" ] && [ -n "$SOURCE_ROUTES" ]; then
 fi
 
 # Direction 2: source→spec (source route segments must appear in some spec route)
-if [ -n "$SOURCE_ROUTES" ] && [ -n "$SPEC_ROUTES" ]; then
+# (H5) NO inner [ -n "$SPEC_ROUTES" ] guard — fire whenever SOURCE declares route attributes, regardless of
+# the spec. An empty SPEC_ROUTES means no spec route can contain the segment, so FOUND stays false and the
+# source route is flagged missing (the dropped-category forge). (SOURCE-side guard kept — no source routes,
+# nothing to forge-check.)
+if [ -n "$SOURCE_ROUTES" ]; then
   while IFS= read -r seg; do
     [ -z "$seg" ] && continue
     FOUND=false
