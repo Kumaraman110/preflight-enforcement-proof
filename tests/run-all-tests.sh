@@ -628,6 +628,18 @@ run_behavioral_tests() {
     yellow "SKIP: coupled-gate-failclosed-test.sh not found"
   fi
 
+  local coupled_pathform_test="$SCRIPT_DIR/behavioral/coupled-edit-pathform-test.sh"
+  if [ -f "$coupled_pathform_test" ]; then
+    if bash "$coupled_pathform_test"; then
+      PASSES=$((PASSES + 20))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: coupled-edit-pathform tests failed (H3+H4: membership must match an ABSOLUTE/./-prefixed file_path by canonical /-anchored-suffix — not fail open — without false-blocking a shared-basename file; and a group counts unacknowledged unless acknowledged==true [missing/null/string/0 all BLOCK]; writer normalizes missing acknowledged->false; jq and python backends must agree)"
+    fi
+  else
+    yellow "SKIP: coupled-edit-pathform-test.sh not found"
+  fi
+
   local agent_scorer_test="$SCRIPT_DIR/behavioral/agent-scorer-test.sh"
   if [ -f "$agent_scorer_test" ]; then
     if bash "$agent_scorer_test"; then
