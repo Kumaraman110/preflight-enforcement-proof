@@ -57,6 +57,16 @@ if [ ! -d "$SOURCE_DIR" ]; then
   exit 2
 fi
 
+# (M4) Compute the .cs-presence fact ONCE — the single source for "can we read source to verify against".
+# The source-anchor extraction below is gated on this. PRE-FIX, each category inlined this `find` guard,
+# so a SOURCE_DIR that exists but holds ZERO .cs files (wrong/mistyped-but-real path, partial/shallow
+# checkout, non-.NET target) left every SOURCE_* empty -> BOTH directions skipped -> "PASSED" exit 0:
+# "nothing to compare" read as "verified" (a silent fail-open of an anti-forgery check). With HAS_CS=false
+# AND a spec that DECLARES an anchor of a type, we now emit a could-not-verify FAIL per category (below),
+# so an unverifiable spec FAILS rather than passing green.
+HAS_CS=false
+if find "$SOURCE_DIR" -name '*.cs' -print -quit 2>/dev/null | grep -q .; then HAS_CS=true; fi
+
 FAILURES=0
 FAILURE_DETAILS=""
 
@@ -73,9 +83,14 @@ fail() {
 # Extract result codes from spec
 SPEC_CODES=$(grep -oE '[EWS][0-9]{4}' "$SPEC" | sort -u || true)
 
+# (M4) Could-not-verify: the spec DECLARES result codes but the source has no .cs to check them against.
+if [ "$HAS_CS" = false ] && [ -n "$SPEC_CODES" ]; then
+  fail "result_code could-not-verify: spec declares result codes but the source scan found ZERO .cs files under '$SOURCE_DIR' — cannot confirm consistency (treated as FAIL, not verified)"
+fi
+
 # Find emitted result codes in source
 SOURCE_CODES=""
-if find "$SOURCE_DIR" -name '*.cs' -print -quit 2>/dev/null | grep -q .; then
+if [ "$HAS_CS" = true ]; then
   # Get all lines with result-code pattern in .cs files
   ALL_CODE_LINES=$(grep -rn --include="*.cs" -E '[EWS][0-9]{4}' "$SOURCE_DIR" 2>/dev/null || true)
 
@@ -142,9 +157,14 @@ SPEC_FIELDS_ALT=$(grep -oE '"[A-Z][a-zA-Z]+"[[:space:]]*:[[:space:]]*"(string|in
   grep -oE '^"[A-Z][a-zA-Z]+"' | tr -d '"' | sort -u || true)
 SPEC_FIELDS=$(printf '%s\n%s' "$SPEC_FIELDS" "$SPEC_FIELDS_ALT" | sort -u | grep -v '^$' || true)
 
+# (M4) Could-not-verify: the spec DECLARES wire fields but the source has no .cs to check them against.
+if [ "$HAS_CS" = false ] && [ -n "$SPEC_FIELDS" ]; then
+  fail "wire_contract could-not-verify: spec declares wire fields but the source scan found ZERO .cs files under '$SOURCE_DIR' — cannot confirm consistency (treated as FAIL, not verified)"
+fi
+
 # Find public properties on model/response/request classes
 MODEL_FIELDS=""
-if find "$SOURCE_DIR" -name '*.cs' -print -quit 2>/dev/null | grep -q .; then
+if [ "$HAS_CS" = true ]; then
   MODEL_FILES=$(find "$SOURCE_DIR" \( -name '*Response*.cs' -o -name '*Request*.cs' -o -name '*Model*.cs' \) 2>/dev/null | grep -v '/obj/' | grep -v '/bin/' || true)
   if [ -n "$MODEL_FILES" ]; then
     MODEL_FIELDS=$(echo "$MODEL_FILES" | xargs grep -hE 'public[[:space:]]+[A-Za-z<>?]+[[:space:]]+[A-Z][a-zA-Z]+[[:space:]]*\{' 2>/dev/null | \
@@ -180,9 +200,14 @@ fi
 # Extract proc names from spec
 SPEC_PROCS=$(grep -oE '"(cpsl_|sp_|fn_)[a-zA-Z0-9_]+"' "$SPEC" 2>/dev/null | tr -d '"' | sort -u || true)
 
+# (M4) Could-not-verify: the spec DECLARES proc names but the source has no .cs to check them against.
+if [ "$HAS_CS" = false ] && [ -n "$SPEC_PROCS" ]; then
+  fail "proc_name could-not-verify: spec declares proc names but the source scan found ZERO .cs files under '$SOURCE_DIR' — cannot confirm consistency (treated as FAIL, not verified)"
+fi
+
 # Find proc names in source
 SOURCE_PROCS=""
-if find "$SOURCE_DIR" -name '*.cs' -print -quit 2>/dev/null | grep -q .; then
+if [ "$HAS_CS" = true ]; then
   SOURCE_PROCS=$(grep -rhE '"(cpsl_|sp_|fn_)[a-zA-Z0-9_]+"' "$SOURCE_DIR" --include="*.cs" 2>/dev/null | \
     grep -oE '(cpsl_|sp_|fn_)[a-zA-Z0-9_]+' | sort -u || true)
 fi
@@ -215,9 +240,14 @@ fi
 SPEC_ROUTES=$(grep -oE '"path"[[:space:]]*:[[:space:]]*"[^"]+"' "$SPEC" 2>/dev/null | \
   grep -oE '"[a-z/][^"]*"$' | tr -d '"' | sort -u || true)
 
+# (M4) Could-not-verify: the spec DECLARES routes but the source has no .cs to check them against.
+if [ "$HAS_CS" = false ] && [ -n "$SPEC_ROUTES" ]; then
+  fail "route could-not-verify: spec declares routes but the source scan found ZERO .cs files under '$SOURCE_DIR' — cannot confirm consistency (treated as FAIL, not verified)"
+fi
+
 # Find route segments from source attributes: [Route("x")], [HttpPost("x")], etc.
 SOURCE_ROUTES=""
-if find "$SOURCE_DIR" -name '*.cs' -print -quit 2>/dev/null | grep -q .; then
+if [ "$HAS_CS" = true ]; then
   SOURCE_ROUTES=$(grep -rhE '\[(Route|HttpPost|HttpGet|HttpPut|HttpDelete|HttpPatch)\("[^"]+"\)' "$SOURCE_DIR" --include="*.cs" 2>/dev/null | \
     grep -oE '"[^"]+"' | tr -d '"' | sort -u || true)
 fi
