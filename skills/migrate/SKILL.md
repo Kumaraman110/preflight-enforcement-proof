@@ -839,8 +839,26 @@ fi
 col1_procs() {  # stdin: contract markdown lines; stdout: column-1 identifiers, one per line
   awk -F'|' '/^[[:space:]]*\|/ { c=$2; gsub(/^[[:space:]`]+|[[:space:]`]+$/,"",c); if (c ~ /^[a-zA-Z_][a-zA-Z0-9_]*$/) print c }'
 }
-PROCS=$(col1_procs < "$CONTRACT" | sort -u)
-NOT_REACHABLE_PROCS=$(printf '%s\n' "$UNREACHABLE_LINES" | col1_procs | sort -u)
+# (M15) The contract is DUAL-FORMAT: procs appear as summary-table rows AND as `### <proc>` markdown
+# headings (the param-exclusion sed below depends on the heading form). A REACHABLE proc declared ONLY as
+# a heading — dropped from the summary table — would be MISSED by col1_procs and silently PASS Check 3
+# (an absent REACHABLE proc, the exact false-green this check exists to catch). So extract heading-form
+# procs too and union them. heading_procs reads `### <proc>` / `### \`<proc>\`` headings.
+heading_procs() {  # stdin: contract markdown; stdout: heading-declared proc identifiers
+  grep -oP '^###\s+`?\K[a-zA-Z_][a-zA-Z0-9_]*' || true
+}
+# A heading-form proc is NOT REACHABLE if its section (from its ### heading to the next ### heading)
+# carries a NOT REACHABLE annotation — so a heading-only NR proc is correctly skipped, not flagged.
+heading_not_reachable_procs() {  # $1 = contract path; stdout: heading procs whose section says NOT REACHABLE
+  local contract="$1" hp
+  for hp in $(heading_procs < "$contract"); do
+    if sed -n "/^###[[:space:]]\+\`\?${hp}\`\?/,/^###[[:space:]]/p" "$contract" | grep -qi "NOT REACHABLE"; then
+      echo "$hp"
+    fi
+  done
+}
+PROCS=$( { col1_procs < "$CONTRACT"; heading_procs < "$CONTRACT"; } | sort -u)
+NOT_REACHABLE_PROCS=$( { printf '%s\n' "$UNREACHABLE_LINES" | col1_procs; heading_not_reachable_procs "$CONTRACT"; } | sort -u)
 PARAMS=$(grep -oP '@[a-zA-Z_][a-zA-Z0-9_]*' "$CONTRACT" | sort -u)
 
 # Filter out params that belong to NOT REACHABLE procs

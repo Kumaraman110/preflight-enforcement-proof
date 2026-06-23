@@ -108,6 +108,45 @@ run_check3 "$CONTRACT_USP_NR" 'public class S { void M() { var a = "cpsl_setCCTo
   && ok "M15-reg short NOT-REACHABLE 'usp' absent -> correctly SKIPPED, CHECK 3 PASS (length-independent membership)" \
   || bad "M15-reg usp-NR: expected PASS+exit0, got RC=$RC ($(printf '%s' "$OUT" | grep -i 'MISSING\|CHECK 3' | head -2 | tr '\n' ' '))"
 
+echo "──── M15 HEADING-FORM (adversarial-found defect): a REACHABLE proc declared ONLY as a ### heading ────"
+# The contract is dual-format — procs appear as table rows AND as ### `<proc>` headings (the param-exclusion
+# sed depends on the heading form). A REACHABLE heading-only proc absent from source must FAIL Check 3.
+# Kill-shot: heading-only, NO params (so the param loop cannot incidentally rescue it), absent from source.
+CONTRACT_HEADING_ONLY='# Legacy DB name contract
+
+| Name | Reachable | Path |
+| --- | --- | --- |
+| cpsl_setCCToken_v2 | REACHABLE | controller -> proc |
+
+## Parameter detail
+
+### `usp_HeadingOnlyReachable`
+REACHABLE — controller -> repo -> usp_HeadingOnlyReachable (no params)'
+run_check3 "$CONTRACT_HEADING_ONLY" 'public class S { void M() { var a = "cpsl_setCCToken_v2"; } }'
+{ [ "$RC" -eq 1 ] && printf '%s' "$OUT" | grep -qw 'usp_HeadingOnlyReachable' && printf '%s' "$OUT" | grep -qi 'CHECK 3 FAIL'; } \
+  && ok "M15 heading-only REACHABLE proc absent -> CHECK 3 FAIL naming it (dual-format bypass closed)" \
+  || bad "M15 heading-only: expected FAIL+exit1 naming usp_HeadingOnlyReachable, got RC=$RC ($(printf '%s' "$OUT" | grep -i 'CHECK 3\|MISSING' | head -1))"
+
+# Heading-form proc PRESENT in source -> PASS (no false MISSING on a heading proc that exists).
+run_check3 "$CONTRACT_HEADING_ONLY" 'public class S { void M() { var a = "cpsl_setCCToken_v2"; var b = "usp_HeadingOnlyReachable"; } }'
+{ [ "$RC" -eq 0 ] && printf '%s' "$OUT" | grep -qi 'CHECK 3 PASS'; } \
+  && ok "M15 heading-form REACHABLE proc PRESENT in source -> CHECK 3 PASS (no false MISSING)" \
+  || bad "M15 heading-present: expected PASS+exit0, got RC=$RC"
+
+# Heading-form NOT REACHABLE proc absent from source -> correctly SKIPPED (section-scoped NR detection).
+CONTRACT_HEADING_NR='# Legacy DB name contract
+
+| Name | Reachable | Path |
+| --- | --- | --- |
+| cpsl_setCCToken_v2 | REACHABLE | controller -> proc |
+
+### `usp_HeadingNotReachable`
+NOT REACHABLE — only via SharedServicesController, gated; this entry point never reaches it'
+run_check3 "$CONTRACT_HEADING_NR" 'public class S { void M() { var a = "cpsl_setCCToken_v2"; } }'
+{ [ "$RC" -eq 0 ] && printf '%s' "$OUT" | grep -qi 'CHECK 3 PASS' && ! printf '%s' "$OUT" | grep -qw 'usp_HeadingNotReachable'; } \
+  && ok "M15 heading-form NOT-REACHABLE proc absent -> correctly SKIPPED (section-scoped NR, no false MISSING)" \
+  || bad "M15 heading-NR: expected PASS+exit0 with no MISSING for usp_HeadingNotReachable, got RC=$RC ($(printf '%s' "$OUT" | grep -i 'MISSING\|CHECK 3' | head -2 | tr '\n' ' '))"
+
 echo ""
 echo "migrate-check3-shortproc tests: ${PASS} passed, ${FAIL} failed"
 [ "$FAIL" -eq 0 ]
