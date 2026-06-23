@@ -559,10 +559,10 @@ run_behavioral_tests() {
   local tripwire_test="$SCRIPT_DIR/behavioral/sentinel-tripwire-test.sh"
   if [ -f "$tripwire_test" ]; then
     if bash "$tripwire_test"; then
-      PASSES=$((PASSES + 8))
+      PASSES=$((PASSES + 10))
     else
       FAILURES=$((FAILURES + 1))
-      red "FAIL: sentinel-tripwire tests failed (gap #5 self-approval hardening)"
+      red "FAIL: sentinel-tripwire tests failed (gap #5 self-approval hardening; incl. the line-244 \$[ arithmetic-misparse that silently broke the variable-expansion obfuscation branch)"
     fi
   else
     yellow "SKIP: sentinel-tripwire-test.sh not found"

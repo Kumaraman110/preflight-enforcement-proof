@@ -240,8 +240,13 @@ if printf '%s' "$COMMAND" | grep -qE "$_TRIP_SENT"; then
   if printf '%s' "$COMMAND" | grep -qE "(base64[[:space:]]+(-d|--decode)|python[[:space:]]+-c[[:space:]]*[\\\\\\\"]*base64).*${_TRIP_SENT}"; then
     _trip_block "obfuscated base64 decode into protected sentinel path"
   fi
-  # variable/parameter expansion writing sentinel
-  if printf '%s' "$COMMAND" | grep -qE "(\\$[A-Za-z_][A-Za-z0-9_]*|\\$\\{[A-Za-z_][A-Za-z0-9_]*\\})[[:space:]]*>[[:space:]]*[\\\\\\\"]?[^[:space:]\\\\\\\"]*${_TRIP_SENT}"; then
+  # variable/parameter expansion writing sentinel. NB: the dollar is written as the regex char-class
+  # [$], NOT a bare `\$[`. In a double-quoted string `"\$[..."` collapses to `$[...`, which bash parses
+  # as LEGACY ARITHMETIC EXPANSION `$[expr]` — under `set -u` it then evaluates the first regex atom
+  # (`A`) as an unbound variable (warning to stderr) AND corrupts the pattern so the variable-expansion
+  # obfuscation branch NEVER MATCHED (a silent fail-open in this tripwire). `[$]` matches a literal `$`
+  # and cannot start an arithmetic expansion, fixing both the noise and the missed match.
+  if printf '%s' "$COMMAND" | grep -qE "([\$][A-Za-z_][A-Za-z0-9_]*|[\$]\\{[A-Za-z_][A-Za-z0-9_]*\\})[[:space:]]*>[[:space:]]*[\\\\\\\"]?[^[:space:]\\\\\\\"]*${_TRIP_SENT}"; then
     _trip_block "variable-expanded write into protected sentinel path"
   fi
   # python -c / eval with explicit sentinel path string
