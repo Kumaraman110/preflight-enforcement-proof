@@ -78,8 +78,39 @@ if [ "$CHECK_BLOB_SYNTAX" = true ]; then
       hooks/*) case "$base" in *.*) ;; *) check=true ;; esac ;;  # extensionless basename = a bash hook
     esac
     if [ "$check" = true ]; then
-      if ! git show "HEAD:$f" 2>/dev/null | bash -n 2>/dev/null; then
-        BLOB_BAD="${BLOB_BAD}  ${f}\n"
+      # Capture the committed blob once and run THREE assertions. `bash -n` alone is
+      # blind to a single-statement-per-line "N|" corruption: `1|#!/usr/bin/env bash\n
+      # 2|echo hi\n3|exit 0` parses as valid grammar (command N piped into a comment)
+      # → rc=0. Today's shipped files all have multi-line control flow (so the
+      # c0e01a4 shape trips bash -n), but the gate must not rest on that unenforced
+      # invariant. (M9) Add two STRUCTURAL checks independent of statement structure:
+      #   (1) line-prefix scan — the c0e01a4 corruption prefixes EVERY line with "N|";
+      #       flag if head-1 itself is "N|"-prefixed OR ≥2 CONSECUTIVE lines match
+      #       ^[0-9]+\| (threshold avoids firing on one incidental table-row/heredoc line).
+      #   (2) shebang sanity — head-1 of a shipped executable must start with "#!".
+      # Any of the three failing → the blob is dead/corrupt → record it.
+      BLOB="$(git show "HEAD:$f" 2>/dev/null)"
+      bad_reason=""
+      if ! printf '%s' "$BLOB" | bash -n 2>/dev/null; then
+        bad_reason="bash -n syntax error"
+      fi
+      HEAD1="$(printf '%s\n' "$BLOB" | head -1)"
+      # (1) line-prefix corruption: head-1 itself prefixed, or ≥2 consecutive N| lines.
+      if printf '%s' "$HEAD1" | grep -qE '^[0-9]+\|'; then
+        bad_reason="${bad_reason:+$bad_reason; }line-number 'N|' prefix on the shebang line (corrupted blob)"
+      else
+        MAXRUN="$(printf '%s\n' "$BLOB" | awk '/^[0-9]+\|/{c++; if(c>m)m=c; next}{c=0} END{print m+0}')"
+        if [ "${MAXRUN:-0}" -ge 2 ]; then
+          bad_reason="${bad_reason:+$bad_reason; }${MAXRUN} consecutive 'N|' line-number-prefixed lines (corrupted blob)"
+        fi
+      fi
+      # (2) shebang sanity: a shipped executable's first line must be a shebang.
+      case "$HEAD1" in
+        '#!'*) ;;
+        *) bad_reason="${bad_reason:+$bad_reason; }missing/mangled shebang (head-1 is not '#!...')" ;;
+      esac
+      if [ -n "$bad_reason" ]; then
+        BLOB_BAD="${BLOB_BAD}  ${f} — ${bad_reason}\n"
       fi
     fi
   done < <(git ls-tree -r --name-only HEAD)

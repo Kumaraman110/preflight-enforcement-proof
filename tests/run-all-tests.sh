@@ -676,6 +676,18 @@ run_behavioral_tests() {
     yellow "SKIP: detector-write-failclosed-test.sh not found"
   fi
 
+  local blob_syntax_nprefix_test="$SCRIPT_DIR/behavioral/blob-syntax-nprefix-test.sh"
+  if [ -f "$blob_syntax_nprefix_test" ]; then
+    if bash "$blob_syntax_nprefix_test"; then
+      PASSES=$((PASSES + 5))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: blob-syntax-nprefix tests failed (M9: --check-blob-syntax must catch an 'N|' line-prefix corruption that is valid bash grammar [single-statement-per-line passes bash -n] via a structural scan [head-1 N|-prefixed OR >=2 consecutive ^[0-9]+| lines] + a shebang sanity check — while a clean hook, a single incidental N| heredoc line, and the multi-line c0e01a4 shape behave correctly)"
+    fi
+  else
+    yellow "SKIP: blob-syntax-nprefix-test.sh not found"
+  fi
+
   local coupled_pathform_test="$SCRIPT_DIR/behavioral/coupled-edit-pathform-test.sh"
   if [ -f "$coupled_pathform_test" ]; then
     if bash "$coupled_pathform_test"; then
