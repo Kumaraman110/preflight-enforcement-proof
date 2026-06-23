@@ -664,6 +664,18 @@ run_behavioral_tests() {
     yellow "SKIP: rubric-source-added-failclosed-test.sh not found"
   fi
 
+  local detector_write_test="$SCRIPT_DIR/behavioral/detector-write-failclosed-test.sh"
+  if [ -f "$detector_write_test" ]; then
+    if bash "$detector_write_test"; then
+      PASSES=$((PASSES + 5))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: detector-write-failclosed tests failed (M8: a failed state-file write [redirect/mv error, un-creatable parent, .tmp occupied] must exit 1 with a diagnostic and leave no stale file as 'current' — never the unconditional exit 0 that retained a stale state.json; a normal write still exits 0 with valid JSON)"
+    fi
+  else
+    yellow "SKIP: detector-write-failclosed-test.sh not found"
+  fi
+
   local coupled_pathform_test="$SCRIPT_DIR/behavioral/coupled-edit-pathform-test.sh"
   if [ -f "$coupled_pathform_test" ]; then
     if bash "$coupled_pathform_test"; then
