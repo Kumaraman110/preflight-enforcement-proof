@@ -840,25 +840,31 @@ col1_procs() {  # stdin: contract markdown lines; stdout: column-1 identifiers, 
   awk -F'|' '/^[[:space:]]*\|/ { c=$2; gsub(/^[[:space:]`]+|[[:space:]`]+$/,"",c); if (c ~ /^[a-zA-Z_][a-zA-Z0-9_]*$/) print c }'
 }
 # (M15) The contract is DUAL-FORMAT: procs appear as summary-table rows AND as `### <proc>` markdown
-# headings (the param-exclusion sed below depends on the heading form). A REACHABLE proc declared ONLY as
-# a heading — dropped from the summary table — would be MISSED by col1_procs and silently PASS Check 3
-# (an absent REACHABLE proc, the exact false-green this check exists to catch). So extract heading-form
-# procs too and union them. heading_procs reads `### <proc>` / `### \`<proc>\`` headings.
-heading_procs() {  # stdin: contract markdown; stdout: heading-declared proc identifiers
-  grep -oP '^###\s+`?\K[a-zA-Z_][a-zA-Z0-9_]*' || true
+# headings (the param-exclusion sed below depends on the backtick heading form). A REACHABLE proc
+# declared ONLY as a heading — dropped from the summary table — would be MISSED by col1_procs and
+# silently PASS Check 3 (an absent REACHABLE proc, the exact false-green this check exists to catch).
+# So extract heading-form procs too and union them.
+#
+# heading_procs requires the BACKTICK-DELIMITED form `### \`<proc>\`` — the same convention the
+# param-exclusion sed (below) depends on. Requiring the backticks is load-bearing: an optional-backtick
+# regex would capture the first word of any PROSE heading (`### Overview`, `### Summary`) and report it as
+# a MISSING proc (a false-positive over-block on ordinary documentation sections).
+heading_procs() {  # stdin: contract markdown; stdout: backtick-heading-declared proc identifiers
+  grep -oP '^###\s+`\K[a-zA-Z_][a-zA-Z0-9_]*(?=`)' || true
 }
-# A heading-form proc is NOT REACHABLE if its section (from its ### heading to the next ### heading)
-# carries a NOT REACHABLE annotation — so a heading-only NR proc is correctly skipped, not flagged.
-heading_not_reachable_procs() {  # $1 = contract path; stdout: heading procs whose section says NOT REACHABLE
-  local contract="$1" hp
-  for hp in $(heading_procs < "$contract"); do
-    if sed -n "/^###[[:space:]]\+\`\?${hp}\`\?/,/^###[[:space:]]/p" "$contract" | grep -qi "NOT REACHABLE"; then
-      echo "$hp"
-    fi
-  done
+# NR detection is LINE-SCOPED ONLY — a TABLE ROW marked NOT REACHABLE, or a backtick HEADING LINE that
+# itself carries the NOT REACHABLE marker (`### \`<proc>\` (NOT REACHABLE)`). It deliberately does NOT
+# scan a heading's section BODY: an unanchored free-text scan flips a genuinely-REACHABLE proc to skipped
+# on any incidental "not reachable" prose (a fail-OPEN false-green) and bleeds across heading boundaries
+# (the next proc's NR marker leaking back). A heading proc whose ONLY NR signal is body prose is therefore
+# treated as REACHABLE and OVER-flagged if absent — the SAFE direction (forces a recorded decision; mark
+# it NR on the heading line or in a table row to skip it). Over-flag, never under-flag.
+nr_heading_line_procs() {  # $1 = contract path; stdout: backtick-heading procs whose HEADING LINE says NOT REACHABLE
+  grep -iP '^###\s+`[a-zA-Z_][a-zA-Z0-9_]*`.*NOT REACHABLE' "$1" \
+    | grep -oP '^###\s+`\K[a-zA-Z_][a-zA-Z0-9_]*(?=`)' || true
 }
 PROCS=$( { col1_procs < "$CONTRACT"; heading_procs < "$CONTRACT"; } | sort -u)
-NOT_REACHABLE_PROCS=$( { printf '%s\n' "$UNREACHABLE_LINES" | col1_procs; heading_not_reachable_procs "$CONTRACT"; } | sort -u)
+NOT_REACHABLE_PROCS=$( { printf '%s\n' "$UNREACHABLE_LINES" | col1_procs; nr_heading_line_procs "$CONTRACT"; } | sort -u)
 PARAMS=$(grep -oP '@[a-zA-Z_][a-zA-Z0-9_]*' "$CONTRACT" | sort -u)
 
 # Filter out params that belong to NOT REACHABLE procs

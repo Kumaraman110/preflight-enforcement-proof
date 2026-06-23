@@ -133,19 +133,58 @@ run_check3 "$CONTRACT_HEADING_ONLY" 'public class S { void M() { var a = "cpsl_s
   && ok "M15 heading-form REACHABLE proc PRESENT in source -> CHECK 3 PASS (no false MISSING)" \
   || bad "M15 heading-present: expected PASS+exit0, got RC=$RC"
 
-# Heading-form NOT REACHABLE proc absent from source -> correctly SKIPPED (section-scoped NR detection).
+# Heading-form NOT REACHABLE proc (NR marker ON THE HEADING LINE) absent from source -> correctly SKIPPED.
+# Line-scoped NR detection: the documented skip form is the marker on the heading line itself.
 CONTRACT_HEADING_NR='# Legacy DB name contract
 
 | Name | Reachable | Path |
 | --- | --- | --- |
 | cpsl_setCCToken_v2 | REACHABLE | controller -> proc |
 
-### `usp_HeadingNotReachable`
-NOT REACHABLE — only via SharedServicesController, gated; this entry point never reaches it'
+### `usp_HeadingNotReachable` (NOT REACHABLE)
+only via SharedServicesController, gated; this entry point never reaches it'
 run_check3 "$CONTRACT_HEADING_NR" 'public class S { void M() { var a = "cpsl_setCCToken_v2"; } }'
-{ [ "$RC" -eq 0 ] && printf '%s' "$OUT" | grep -qi 'CHECK 3 PASS' && ! printf '%s' "$OUT" | grep -qw 'usp_HeadingNotReachable'; } \
-  && ok "M15 heading-form NOT-REACHABLE proc absent -> correctly SKIPPED (section-scoped NR, no false MISSING)" \
+# Assert no MISSING line for it (it may legitimately appear in the "Skipping NOT REACHABLE items" echo).
+{ [ "$RC" -eq 0 ] && printf '%s' "$OUT" | grep -qi 'CHECK 3 PASS' && ! printf '%s' "$OUT" | grep -qi "MISSING: 'usp_HeadingNotReachable'"; } \
+  && ok "M15 heading-line NOT-REACHABLE proc absent -> correctly SKIPPED (NR on heading line, no false MISSING)" \
   || bad "M15 heading-NR: expected PASS+exit0 with no MISSING for usp_HeadingNotReachable, got RC=$RC ($(printf '%s' "$OUT" | grep -i 'MISSING\|CHECK 3' | head -2 | tr '\n' ' '))"
+
+echo "──── M15 SAFE-DIRECTION (adversarial round 2: heading-NR machinery must not re-open fail-OPEN holes) ────"
+# DEFECT 1 (was fail-OPEN): incidental body-prose "NOT REACHABLE" must NOT skip a table-REACHABLE absent proc.
+# Line-scoped NR (table row or heading line) only — body prose does not flip reachability. Over-flag is SAFE.
+CONTRACT_BODY_PROSE_NR='| Name | Reachable | Path |
+| --- | --- | --- |
+| usp_RealProc | REACHABLE | controller -> proc |
+
+### `usp_RealProc`
+The @LegacyFlag branch is NOT REACHABLE from the new entry point, but the proc itself is reached.'
+run_check3 "$CONTRACT_BODY_PROSE_NR" 'public class S { void M() {} }'
+{ [ "$RC" -eq 1 ] && printf '%s' "$OUT" | grep -qw 'usp_RealProc'; } \
+  && ok "M15 incidental body-prose 'NOT REACHABLE' does NOT skip a table-REACHABLE absent proc -> FAIL (was fail-OPEN)" \
+  || bad "M15 body-prose-NR: expected FAIL naming usp_RealProc, got RC=$RC ($(printf '%s' "$OUT" | grep -i 'CHECK 3' | head -1))"
+
+# DEFECT 3 (was fail-OPEN): the NEXT proc's heading-line NR marker must NOT bleed back to skip the prior proc.
+CONTRACT_BLEED='### `usp_Prev`
+REACHABLE — controller -> repo -> usp_Prev
+### `usp_Next` (NOT REACHABLE)
+gated; never reached'
+run_check3 "$CONTRACT_BLEED" 'public class S { void M() {} }'
+{ [ "$RC" -eq 1 ] && printf '%s' "$OUT" | grep -qw 'usp_Prev'; } \
+  && ok "M15 next-heading NR marker does NOT bleed back to skip prior absent REACHABLE proc -> FAIL (was fail-OPEN)" \
+  || bad "M15 NR-bleed: expected FAIL naming usp_Prev, got RC=$RC ($(printf '%s' "$OUT" | grep -i 'CHECK 3' | head -1))"
+
+# DEFECT 2 (was fail-CLOSED): prose `### ` headings (no backticks) must NOT be treated as procs.
+CONTRACT_PROSE_HEADINGS='| Name | Reachable | Path |
+| --- | --- | --- |
+| usp_Real | REACHABLE | controller -> proc |
+
+### Overview
+### Summary
+### Reachability analysis'
+run_check3 "$CONTRACT_PROSE_HEADINGS" 'public class S { void M() { var a = "usp_Real"; } }'
+{ [ "$RC" -eq 0 ] && printf '%s' "$OUT" | grep -qi 'CHECK 3 PASS' && ! printf '%s' "$OUT" | grep -qiE "MISSING: '(Overview|Summary|Reachability)'"; } \
+  && ok "M15 prose '### ' headings (no backticks) NOT treated as procs -> no false MISSING (was fail-CLOSED)" \
+  || bad "M15 prose-headings: expected PASS+exit0 with no header-word MISSING, got RC=$RC ($(printf '%s' "$OUT" | grep -i 'MISSING\|CHECK 3' | head -2 | tr '\n' ' '))"
 
 echo ""
 echo "migrate-check3-shortproc tests: ${PASS} passed, ${FAIL} failed"
