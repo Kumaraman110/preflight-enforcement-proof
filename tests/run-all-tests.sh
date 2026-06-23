@@ -640,6 +640,18 @@ run_behavioral_tests() {
     yellow "SKIP: coupled-gate-failclosed-test.sh not found"
   fi
 
+  local wire_golden_delim_test="$SCRIPT_DIR/behavioral/wire-golden-delimiter-safe-test.sh"
+  if [ -f "$wire_golden_delim_test" ]; then
+    if bash "$wire_golden_delim_test"; then
+      PASSES=$((PASSES + 6))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: wire-golden-delimiter-safe tests failed (M10: a '|' in a sample/golden value must NOT yield an assertion-less exit-0 'green' test — the substitution must be an index()-based literal splice [not sed s|…| nor awk gsub, which corrupts &/backslash], with a PIPESTATUS backstop; real clean fixtures must stay byte-identical with one string.Equals per case)"
+    fi
+  else
+    yellow "SKIP: wire-golden-delimiter-safe-test.sh not found"
+  fi
+
   local parity_behaviors_guard_test="$SCRIPT_DIR/behavioral/parity-behaviors-key-guard-test.sh"
   if [ -f "$parity_behaviors_guard_test" ]; then
     if bash "$parity_behaviors_guard_test"; then
