@@ -640,6 +640,18 @@ run_behavioral_tests() {
     yellow "SKIP: coupled-gate-failclosed-test.sh not found"
   fi
 
+  local migrate_check3_test="$SCRIPT_DIR/behavioral/migrate-check3-shortproc-test.sh"
+  if [ -f "$migrate_check3_test" ]; then
+    if bash "$migrate_check3_test"; then
+      PASSES=$((PASSES + 5))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: migrate-check3-shortproc tests failed (M15: Check-3 must FAIL on a genuinely-absent REACHABLE short proc like 'usp' [the <5 length skip dropped it -> false-green PASS] via structured column-1 extraction + deleting the length gate — without false-MISSING on header/marker/call-chain words, and still skipping NOT-REACHABLE procs length-independently)"
+    fi
+  else
+    yellow "SKIP: migrate-check3-shortproc-test.sh not found"
+  fi
+
   local wire_golden_delim_test="$SCRIPT_DIR/behavioral/wire-golden-delimiter-safe-test.sh"
   if [ -f "$wire_golden_delim_test" ]; then
     if bash "$wire_golden_delim_test"; then

@@ -827,8 +827,20 @@ fi
 
 # Extract proc names from REACHABLE items and all parameter names
 # (parameters without a reachability marker inherit from their parent proc's reachability)
-PROCS=$(grep -oP '(?<=\| )`?[a-zA-Z_][a-zA-Z0-9_]*`?' "$CONTRACT" | tr -d '`' | sort -u)
-NOT_REACHABLE_PROCS=$(echo "$UNREACHABLE_LINES" | grep -oP '(?<=\| )`?[a-zA-Z_][a-zA-Z0-9_]*`?' | tr -d '`' | sort -u)
+#
+# (M15) STRUCTURED single-column extraction — parse the proc identifier from COLUMN 1 of each
+# pipe-delimited contract row (the documented format: `| <proc-name> | REACHABLE|NOT REACHABLE | <path> |`).
+# The PRE-FIX scrape `grep -oP '(?<=\| )...'` harvested the FIRST token after EVERY `| `, so it pulled in
+# header words (Name/Type/Reachable), the reachability-cell markers (REACHABLE/NOT), AND call-chain words
+# (CPSLToken/Only) from columns 2 and 3 — noise that was masked only by the `<5` length skip (deleted below)
+# plus the denylist. Extracting column 1 alone keeps that column-2/3 noise out of the existence check, so
+# deleting the `<5` skip cannot spike false MISSING on a long call-chain word like "CPSLToken". The denylist
+# (below) stays as a belt-and-suspenders backstop for a stray column-1 header like "Name".
+col1_procs() {  # stdin: contract markdown lines; stdout: column-1 identifiers, one per line
+  awk -F'|' '/^[[:space:]]*\|/ { c=$2; gsub(/^[[:space:]`]+|[[:space:]`]+$/,"",c); if (c ~ /^[a-zA-Z_][a-zA-Z0-9_]*$/) print c }'
+}
+PROCS=$(col1_procs < "$CONTRACT" | sort -u)
+NOT_REACHABLE_PROCS=$(printf '%s\n' "$UNREACHABLE_LINES" | col1_procs | sort -u)
 PARAMS=$(grep -oP '@[a-zA-Z_][a-zA-Z0-9_]*' "$CONTRACT" | sort -u)
 
 # Filter out params that belong to NOT REACHABLE procs
@@ -842,7 +854,12 @@ done
 
 echo "Checking REACHABLE proc names against migrated source..."
 for PROC in $PROCS; do
-  [ ${#PROC} -lt 5 ] && continue
+  # (M15) DELETED `[ ${#PROC} -lt 5 ] && continue` — it dropped any contracted identifier under 5 chars
+  # from the existence check, so a genuinely-absent REACHABLE proc like `usp` (3 chars) silently passed
+  # (CHECK 3 PASS): a SAFETY-false-green. The skip was also asymmetric (proc loop only; the param loop
+  # below never had it). With column-1 extraction above, header/marker/chain-word noise no longer enters
+  # $PROCS, so the length gate is unnecessary — membership (NOT-REACHABLE) is what skips a proc, and that
+  # test is length-independent. The denylist below remains as a backstop for a stray column-1 header word.
   echo "$PROC" | grep -qiE "^(name|type|order|direction|parameter|procedure|table|column|notes|reachable)$" && continue
   # Skip if this proc is marked NOT REACHABLE
   if echo "$NOT_REACHABLE_PROCS" | grep -qw "$PROC" 2>/dev/null; then
