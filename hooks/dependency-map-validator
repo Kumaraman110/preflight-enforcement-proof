@@ -55,6 +55,19 @@ MAP_FILES=$(node -e "const d=JSON.parse(require('fs').readFileSync(process.argv[
   exit 1
 }
 
+# (M3) NON-VALIDATABLE empty/missing mapFiles → STALE, do NOT re-stamp. A sidecar that declares NO mapFiles
+# gives the comm -12 overlap check nothing to test, so it always found "no overlap" and fell through to
+# Step 3 — declaring FRESH (exit 0) AND re-stamping validAtHEAD to the current HEAD. That re-stamp made the
+# staleness PERMANENT: every subsequent HEAD move on an empty-mapFiles sidecar re-stamped to fresh, silently
+# neutering the gate. An empty/missing mapFiles list cannot establish freshness — so it is STALE (refresh
+# needed), the fail-closed direction, and we exit BEFORE the re-stamp so the bad sidecar is not laundered.
+if ! printf '%s' "$MAP_FILES" | grep -q '[^[:space:]]'; then
+  echo "STALE: sidecar declares no mapFiles — cannot validate freshness against an empty file set. Refresh needed."
+  echo "  (A dependency-map sidecar with no mapFiles cannot prove the map is current; failing closed rather"
+  echo "  than re-stamping it FRESH. Regenerate the dependency map + sidecar.)"
+  exit 1
+fi
+
 # Non-fatal cross-check: compare sidecar mapFiles count against actual map file
 MAP_PATH=$(node -e "const d=JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')); process.stdout.write(d.mapPath||'')" "$SIDECAR" 2>/dev/null || true)
 if [ -n "$MAP_PATH" ] && [ -f "$MAP_PATH" ]; then

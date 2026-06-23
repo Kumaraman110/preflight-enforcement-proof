@@ -640,6 +640,18 @@ run_behavioral_tests() {
     yellow "SKIP: coupled-gate-failclosed-test.sh not found"
   fi
 
+  local depmap_empty_test="$SCRIPT_DIR/behavioral/depmap-empty-mapfiles-test.sh"
+  if [ -f "$depmap_empty_test" ]; then
+    if bash "$depmap_empty_test"; then
+      PASSES=$((PASSES + 5))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: depmap-empty-mapfiles tests failed (M3: empty/missing mapFiles must be STALE exit 1 and NOT re-stamped — never a FRESH exit 0 that launders a non-validatable sidecar; a correct list still validates normally)"
+    fi
+  else
+    yellow "SKIP: depmap-empty-mapfiles-test.sh not found"
+  fi
+
   local coupled_pathform_test="$SCRIPT_DIR/behavioral/coupled-edit-pathform-test.sh"
   if [ -f "$coupled_pathform_test" ]; then
     if bash "$coupled_pathform_test"; then
