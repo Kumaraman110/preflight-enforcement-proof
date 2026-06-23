@@ -688,6 +688,18 @@ run_behavioral_tests() {
     yellow "SKIP: blob-syntax-nprefix-test.sh not found"
   fi
 
+  local selftest_missing_gate_test="$SCRIPT_DIR/behavioral/selftest-missing-gate-test.sh"
+  if [ -f "$selftest_missing_gate_test" ]; then
+    if bash "$selftest_missing_gate_test"; then
+      PASSES=$((PASSES + 4))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: selftest-missing-gate tests failed (M12: preflight-selftest must report a MISSING mandatory gate as DEAD exit 1 [not SKIP+green], and a coverage assertion must catch any PreToolUse gate registered in hooks.json but not self-tested [incl. the prior behavioral-contract-gate omission] — while the genuinely-optional dependency-map-validator stays a legitimate SKIP when absent)"
+    fi
+  else
+    yellow "SKIP: selftest-missing-gate-test.sh not found"
+  fi
+
   local coupled_pathform_test="$SCRIPT_DIR/behavioral/coupled-edit-pathform-test.sh"
   if [ -f "$coupled_pathform_test" ]; then
     if bash "$coupled_pathform_test"; then
