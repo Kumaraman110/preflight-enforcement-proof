@@ -640,6 +640,18 @@ run_behavioral_tests() {
     yellow "SKIP: coupled-gate-failclosed-test.sh not found"
   fi
 
+  local adjudication_citation_test="$SCRIPT_DIR/behavioral/adjudication-citation-regex-test.sh"
+  if [ -f "$adjudication_citation_test" ]; then
+    if bash "$adjudication_citation_test"; then
+      PASSES=$((PASSES + 19))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: adjudication-citation-regex tests failed (M2: the citedEvidence regex must BLOCK prose word:digit tokens [ratio/version/timestamp — was a false-green allow] by anchoring the file:line branch to a real source-extension allow-list, AND must ALLOW genuine letter-prefixed rule ids §G2.1/§M4.3/§D1/§M3 [was wrongly rejected by §[0-9]+] while keeping genuine file:line citations and digit §-ids accepted)"
+    fi
+  else
+    yellow "SKIP: adjudication-citation-regex-test.sh not found"
+  fi
+
   local depmap_empty_test="$SCRIPT_DIR/behavioral/depmap-empty-mapfiles-test.sh"
   if [ -f "$depmap_empty_test" ]; then
     if bash "$depmap_empty_test"; then
