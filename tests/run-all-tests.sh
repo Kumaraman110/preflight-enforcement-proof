@@ -424,6 +424,18 @@ run_behavioral_tests() {
     yellow "SKIP: pre-push-remote-guard-test.sh not found"
   fi
 
+  local cpsl_incident_test="$SCRIPT_DIR/behavioral/pre-push-installed-cpsl-incident-test.sh"
+  if [ -f "$cpsl_incident_test" ]; then
+    if bash "$cpsl_incident_test"; then
+      PASSES=$((PASSES + 12))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: pre-push installed-CPSL-incident tests failed (the inverted-clone repository-target incident, against the INSTALLED artifact: safe-PR allow / forbidden-PR block / implicit-origin-PR block / poc-push passes / origin-push block / alias→CPSL-slug block / direct-CPSL-URL block / no dangerous steering / fresh-install verifies clean / tampered install detected as DRIFT / reinstall restores byte-identical hook / restored hook still blocks the forbidden push). Destination IDENTITY (resolved slug) governs, never the remote-name alias."
+    fi
+  else
+    yellow "SKIP: pre-push-installed-cpsl-incident-test.sh not found"
+  fi
+
   local install_cwd_test="$SCRIPT_DIR/behavioral/install-cwd-independence-test.sh"
   if [ -f "$install_cwd_test" ]; then
     if bash "$install_cwd_test"; then
