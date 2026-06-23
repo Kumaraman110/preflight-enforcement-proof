@@ -652,6 +652,18 @@ run_behavioral_tests() {
     yellow "SKIP: depmap-empty-mapfiles-test.sh not found"
   fi
 
+  local rubric_added_failclosed_test="$SCRIPT_DIR/behavioral/rubric-source-added-failclosed-test.sh"
+  if [ -f "$rubric_added_failclosed_test" ]; then
+    if bash "$rubric_added_failclosed_test"; then
+      PASSES=$((PASSES + 4))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: rubric-source-added-failclosed tests failed (M5: --added mode must check git's real exit status BEFORE the grep — a git failure [bad base-ref, non-git dir, shallow/detached] is could-not-run exit 2, NEVER a swallowed empty-diff CLEAN exit 0; a legitimately-empty diff stays CLEAN exit 0)"
+    fi
+  else
+    yellow "SKIP: rubric-source-added-failclosed-test.sh not found"
+  fi
+
   local coupled_pathform_test="$SCRIPT_DIR/behavioral/coupled-edit-pathform-test.sh"
   if [ -f "$coupled_pathform_test" ]; then
     if bash "$coupled_pathform_test"; then

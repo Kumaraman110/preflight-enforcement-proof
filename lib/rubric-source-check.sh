@@ -66,10 +66,23 @@ FILES=()
 if [ "$MODE" = "added" ]; then
   BASE_REF="${ARGS[0]:-}"
   [ -n "$BASE_REF" ] || { echo "Usage: $0 --added <base-ref>" >&2; exit 2; }
+  # (M5) Run git SEPARATELY and check its REAL exit status BEFORE the grep. PRE-FIX, the file list came
+  # from `git diff … 2>/dev/null | grep … || true`, where the `2>/dev/null` + trailing `|| true` SWALLOWED
+  # any git failure (bad/unknown base-ref, not-a-git-repo, shallow clone where the triple-dot merge-base
+  # can't be computed, detached state) — yielding an empty file list and "no changed rubric files (CLEAN)"
+  # exit 0. A provenance gate that COULD NOT RUN reported clean (fail-open). Now: git failure -> exit 2
+  # (could-not-run), DISTINCT from a legitimately-EMPTY diff (no rubric files changed -> exit 0 CLEAN).
+  GIT_DIFF_OUT="$(git diff --name-only "$BASE_REF"...HEAD 2>/dev/null)"; GIT_RC=$?
+  if [ "$GIT_RC" -ne 0 ]; then
+    echo "rubric-source-check (--added): git diff vs '$BASE_REF' FAILED (rc=$GIT_RC) — could not compute the" >&2
+    echo "  changed-rubric file set (bad/unknown base-ref, not a git repo, shallow clone, or detached state)." >&2
+    echo "  Failing CLOSED (could-not-run): a provenance check that cannot read its input must NOT report CLEAN." >&2
+    exit 2
+  fi
   # Rubric files changed vs base-ref (best-effort: *.md under rubrics/ or examples/rubrics/ or named rubric-*).
   while IFS= read -r f; do
     [ -n "$f" ] && [ -f "$f" ] && FILES+=("$f")
-  done < <(git diff --name-only "$BASE_REF"...HEAD 2>/dev/null | grep -E '(^|/)(rubric|.*rubric.*|overlay).*\.md$' || true)
+  done < <(printf '%s\n' "$GIT_DIFF_OUT" | grep -E '(^|/)(rubric|.*rubric.*|overlay).*\.md$' || true)
   if [ "${#FILES[@]}" -eq 0 ]; then
     echo "rubric-source-check (--added): no changed rubric files vs $BASE_REF — nothing to check (CLEAN)."
     exit 0
