@@ -173,6 +173,16 @@ run_check3 "$CONTRACT_BLEED" 'public class S { void M() {} }'
   && ok "M15 next-heading NR marker does NOT bleed back to skip prior absent REACHABLE proc -> FAIL (was fail-OPEN)" \
   || bad "M15 NR-bleed: expected FAIL naming usp_Prev, got RC=$RC ($(printf '%s' "$OUT" | grep -i 'CHECK 3' | head -1))"
 
+# DEFECT 1a (was fail-OPEN): a REACHABLE-marked row whose NOTES/path cell merely MENTIONS "NOT REACHABLE"
+# must NOT have its (absent) proc skipped — NR is keyed to the COLUMN-2 marker cell, not free text on the line.
+CONTRACT_NOTES_MENTION_NR='| Name | Reachable | Path |
+| --- | --- | --- |
+| cpsl_setCCToken_v2 | REACHABLE | the MP variant is NOT REACHABLE here; this one IS reached |'
+run_check3 "$CONTRACT_NOTES_MENTION_NR" 'public class S { void M() {} }'
+{ [ "$RC" -eq 1 ] && printf '%s' "$OUT" | grep -qw 'cpsl_setCCToken_v2'; } \
+  && ok "M15 REACHABLE row with 'NOT REACHABLE' in the NOTES cell -> absent proc still FAILs (column-2-scoped NR, was fail-OPEN)" \
+  || bad "M15 notes-mention-NR: expected FAIL naming cpsl_setCCToken_v2, got RC=$RC ($(printf '%s' "$OUT" | grep -i 'CHECK 3' | head -1))"
+
 # DEFECT 2 (was fail-CLOSED): prose `### ` headings (no backticks) must NOT be treated as procs.
 CONTRACT_PROSE_HEADINGS='| Name | Reachable | Path |
 | --- | --- | --- |

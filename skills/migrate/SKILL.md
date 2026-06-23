@@ -852,19 +852,35 @@ col1_procs() {  # stdin: contract markdown lines; stdout: column-1 identifiers, 
 heading_procs() {  # stdin: contract markdown; stdout: backtick-heading-declared proc identifiers
   grep -oP '^###\s+`\K[a-zA-Z_][a-zA-Z0-9_]*(?=`)' || true
 }
-# NR detection is LINE-SCOPED ONLY — a TABLE ROW marked NOT REACHABLE, or a backtick HEADING LINE that
-# itself carries the NOT REACHABLE marker (`### \`<proc>\` (NOT REACHABLE)`). It deliberately does NOT
-# scan a heading's section BODY: an unanchored free-text scan flips a genuinely-REACHABLE proc to skipped
-# on any incidental "not reachable" prose (a fail-OPEN false-green) and bleeds across heading boundaries
-# (the next proc's NR marker leaking back). A heading proc whose ONLY NR signal is body prose is therefore
-# treated as REACHABLE and OVER-flagged if absent — the SAFE direction (forces a recorded decision; mark
-# it NR on the heading line or in a table row to skip it). Over-flag, never under-flag.
-nr_heading_line_procs() {  # $1 = contract path; stdout: backtick-heading procs whose HEADING LINE says NOT REACHABLE
-  grep -iP '^###\s+`[a-zA-Z_][a-zA-Z0-9_]*`.*NOT REACHABLE' "$1" \
+# NR detection is MARKER-SCOPED — keyed to the REACHABILITY MARKER, never to free text anywhere on a line.
+# A whole-line `grep "NOT REACHABLE"` is a fail-OPEN false-green: a row explicitly marked REACHABLE in its
+# marker column, whose NOTES/path cell merely MENTIONS "NOT REACHABLE" (e.g. "the MP variant is NOT
+# REACHABLE here" — exactly the cross-referencing prose the worked example invites), would be skipped and
+# its absent proc pass silently. So:
+#   - nr_table_procs: a TABLE ROW is NR only when its COLUMN-2 cell IS the marker "NOT REACHABLE"
+#     (column-scoped via awk -F'|' on $3, not a line grep).
+#   - nr_heading_line_procs: a backtick HEADING is NR only when the marker immediately follows the proc
+#     (e.g. `### \`<proc>\` (NOT REACHABLE)` / `### \`<proc>\` — NOT REACHABLE`), not anywhere later on the
+#     line — so trailing prose like "(replaces the old NOT REACHABLE one)" cannot misclassify it.
+# Neither scans a heading's section BODY (an unanchored body scan flips a REACHABLE proc on incidental
+# prose and bleeds across heading boundaries). A proc whose only NR signal is body prose is treated
+# REACHABLE and OVER-flagged if absent — the SAFE direction (mark it NR in the marker column / on the
+# heading line to skip it). Over-flag, never under-flag.
+nr_table_procs() {  # $1 = contract path; stdout: column-1 procs whose COLUMN-2 marker cell is NOT REACHABLE
+  awk -F'|' '/^[[:space:]]*\|/ {
+    c1=$2; gsub(/^[[:space:]`]+|[[:space:]`]+$/,"",c1)
+    c2=$3; gsub(/^[[:space:]]+|[[:space:]]+$/,"",c2)
+    if (c1 ~ /^[a-zA-Z_][a-zA-Z0-9_]*$/ && toupper(c2) ~ /^NOT[[:space:]]+REACHABLE$/) print c1
+  }' "$1" || true
+}
+nr_heading_line_procs() {  # $1 = contract path; stdout: backtick-heading procs whose marker immediately follows
+  # The NR marker must come right after the closing backtick (optionally inside ()/[] or after a dash/colon),
+  # NOT anywhere later on the line — so trailing prose mentioning "NOT REACHABLE" cannot misclassify.
+  grep -iP '^###\s+`[a-zA-Z_][a-zA-Z0-9_]*`\s*[-(\[:—]*\s*NOT REACHABLE' "$1" \
     | grep -oP '^###\s+`\K[a-zA-Z_][a-zA-Z0-9_]*(?=`)' || true
 }
 PROCS=$( { col1_procs < "$CONTRACT"; heading_procs < "$CONTRACT"; } | sort -u)
-NOT_REACHABLE_PROCS=$( { printf '%s\n' "$UNREACHABLE_LINES" | col1_procs; nr_heading_line_procs "$CONTRACT"; } | sort -u)
+NOT_REACHABLE_PROCS=$( { nr_table_procs "$CONTRACT"; nr_heading_line_procs "$CONTRACT"; } | sort -u)
 PARAMS=$(grep -oP '@[a-zA-Z_][a-zA-Z0-9_]*' "$CONTRACT" | sort -u)
 
 # Filter out params that belong to NOT REACHABLE procs

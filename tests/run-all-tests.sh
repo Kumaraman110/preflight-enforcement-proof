@@ -643,7 +643,7 @@ run_behavioral_tests() {
   local migrate_check3_test="$SCRIPT_DIR/behavioral/migrate-check3-shortproc-test.sh"
   if [ -f "$migrate_check3_test" ]; then
     if bash "$migrate_check3_test"; then
-      PASSES=$((PASSES + 11))
+      PASSES=$((PASSES + 12))
     else
       FAILURES=$((FAILURES + 1))
       red "FAIL: migrate-check3-shortproc tests failed (M15: Check-3 must FAIL on a genuinely-absent REACHABLE proc — short 'usp' [the <5 length skip dropped it] OR a heading-only '### \`<proc>\`' proc absent from the summary table [dual-format bypass] — via column-1 + heading-form extraction with the <5 gate deleted; without false-MISSING on header/marker/call-chain words, and still skipping NOT-REACHABLE procs [table- and heading-form] length-independently)"
