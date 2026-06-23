@@ -640,6 +640,18 @@ run_behavioral_tests() {
     yellow "SKIP: coupled-gate-failclosed-test.sh not found"
   fi
 
+  local parity_behaviors_guard_test="$SCRIPT_DIR/behavioral/parity-behaviors-key-guard-test.sh"
+  if [ -f "$parity_behaviors_guard_test" ]; then
+    if bash "$parity_behaviors_guard_test"; then
+      PASSES=$((PASSES + 9))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: parity-behaviors-key-guard tests failed (M6: a missing/renamed/typo'd or non-list top-level \"behaviors\" key must be could-not-run exit 3 [symmetric on baseline+current] — never a silent .get default that masks a dropped behavior as CLEAN exit 0 or a phantom exit 2; a genuine zero-behavior {\"behaviors\":[]} still passes the guard and keeps its 0/2 verdict)"
+    fi
+  else
+    yellow "SKIP: parity-behaviors-key-guard-test.sh not found"
+  fi
+
   local adjudication_citation_test="$SCRIPT_DIR/behavioral/adjudication-citation-regex-test.sh"
   if [ -f "$adjudication_citation_test" ]; then
     if bash "$adjudication_citation_test"; then

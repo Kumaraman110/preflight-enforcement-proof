@@ -81,6 +81,31 @@ set +e
 import json
 import sys
 
+class ParityCheckError(Exception):
+    """(M6) A could-not-run condition raised from inside main(). Caught by the module-level
+    `except BaseException` arm below, which exits 3 (check-error) — NEVER a 0/1/2 verdict."""
+    pass
+
+def require_behaviors(doc, which):
+    """(M6) Fail CLOSED (could-not-run) if a spec lacks a usable top-level "behaviors" list.
+    PRE-FIX the engine read `doc.get("behaviors", [])`, so a MISSING or RENAMED/typo'd key
+    (e.g. "behaviour"/"behaviors") silently became an EMPTY list — a baseline that dropped+changed
+    high-confidence behaviors then compared as zero-behaviors and the verdict came back CLEAN exit 0
+    (a SAFETY-false-green); a current-side typo produced a PHANTOM exit-2 drift. The MINIMAL
+    non-trivial definition is "key present AND is a list": a genuine zero-behavior service is
+    {"behaviors":[]} (present, list, len 0) and PASSES (normal empty diff). Stronger definitions were
+    deliberately rejected — requiring an envelope (completeness_check/service) would over-block the
+    stack-neutral engine (fixtures feed bare {"behaviors":[...]}), and requiring len>0 would false-fail
+    a real zero-behavior service. Run SYMMETRICALLY on baseline and current."""
+    if "behaviors" not in doc:
+        raise ParityCheckError(
+            "%s spec has no top-level \"behaviors\" key (a missing/renamed/typo'd key would silently "
+            "compare as zero behaviors and mask a real drop — failing closed as could-not-run)." % which)
+    if not isinstance(doc["behaviors"], list):
+        raise ParityCheckError(
+            "%s spec's \"behaviors\" is %s, not a list (cannot iterate behaviors — failing closed as "
+            "could-not-run)." % (which, type(doc["behaviors"]).__name__))
+
 def normalize_observable(obs):
     """Normalize observable for comparison — sort keys, lowercase string values for non-field keys."""
     if not isinstance(obs, dict):
@@ -112,6 +137,11 @@ def main():
     with open(current_path) as f:
         current = json.load(f)
 
+    # (M6) Symmetric presence+type guard — BEFORE building the id maps. A spec missing/typo'ing the
+    # "behaviors" key, or carrying a non-list there, is could-not-run (raises -> exit 3), not a verdict.
+    require_behaviors(baseline, "baseline")
+    require_behaviors(current, "current")
+
     # Defensive canonicalization net (backstop for the spec-analyst id rules).
     # The DURABLE fix lives in agents/spec-analyst.md (deterministic id derivation);
     # this normalizes residual cross-extraction noise so it does not surface as phantom
@@ -129,9 +159,10 @@ def main():
                 return head + ":endpoint:" + method + ":" + path
         return bid
 
-    # Build id -> behavior maps
+    # Build id -> behavior maps. Direct indexing (not .get(...,[])) — presence+type already asserted
+    # by require_behaviors above, so an absent/typo'd key can no longer silently degrade to an empty list.
     base_map = {}
-    for b in baseline.get("behaviors", []):
+    for b in baseline["behaviors"]:
         bid = canonicalize_id(b.get("id", ""))
         obs = b.get("observable", b.get("observables", {}))
         conf = b.get("confidence", "high")
@@ -141,7 +172,7 @@ def main():
         base_map[bid] = {"observable": obs, "confidence": conf, "category": b.get("category", "")}
 
     curr_map = {}
-    for b in current.get("behaviors", []):
+    for b in current["behaviors"]:
         bid = canonicalize_id(b.get("id", ""))
         obs = b.get("observable", b.get("observables", {}))
         conf = b.get("confidence", "high")
