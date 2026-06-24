@@ -14,6 +14,23 @@ The user passed `$ARGUMENTS`. Parse for:
 - Brief functional description (what does this API do?)
 - If insufficient, ask.
 
+## Phase 0 — Spec-Divergence Check (the initial prompt is a fresh-ambiguity entry point)
+
+Before Phase 1 design, run the spec-divergence engine on the user's prompt. This is the ONE fresh-ambiguity
+entry point for scaffold (the initial request) — it closes the spec gap BEFORE design, so a vague prompt
+doesn't cascade into a wrong design. Follow the shared procedure in `${FRAMEWORK_ROOT}/lib/spec-divergence.md`:
+spawn 4 BLIND interpreters, build the blind judge brief (`lib/spec-divergence.sh build-judge-brief` — it
+strips the prompt so judges can't see it), spawn 3 BLIND judges, then `score`/`decision`.
+
+- **PROCEED** (divergence ≤ threshold): the request is specified-enough-in-context — go to Phase 1.
+- **ELICIT** (divergence > threshold): surface the forked axes and ask the targeted questions
+  (`lib/spec-divergence.sh questions`), incorporate the answers, re-evaluate, then pin the result with
+  `write-elicited <service>` → `.preflight/<service>/spec-elicited.md` (Phase 1 design reads it).
+
+**ADVISORY** (do not hard-block): if divergence stays high and the user declines to clarify, proceed with
+a logged note — the threshold is n=5-proven, not yet a hard gate. Do NOT re-run Phase 0 on internal
+dispatches (the design agent etc. operate on the now-pinned spec). Cost: ~7 agents this one fire point.
+
 ## Why This Exists
 
 Net-new development suffers from the same review churn that migration does — except the issues are different:

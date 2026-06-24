@@ -26,6 +26,28 @@ The user passed `$ARGUMENTS` as input. Parse generously:
 - Free-form description (e.g. "migrate the seat lookup thing") → extract the service identifier. Ask for clarification only if genuinely ambiguous (multiple plausible services match).
 - No argument → ask which service.
 
+## Phase 0 — Spec-Divergence Check (the initial prompt is a fresh-ambiguity entry point)
+
+Before Setup/Phase 1, run the spec-divergence engine on the user's migration request. This is the initial
+fresh-ambiguity entry point — closing the spec gap here prevents a vague request from cascading into a
+mis-scoped migration (the costliest failure, per the Phase 1 human-gate note). Follow the shared procedure
+in `${FRAMEWORK_ROOT}/lib/spec-divergence.md`: spawn 4 BLIND interpreters on the load-bearing axes (scope
+boundary, surfaces in/out, core behavior), build the blind judge brief
+(`lib/spec-divergence.sh build-judge-brief` — strips the prompt), spawn 3 BLIND judges, then
+`score`/`decision`.
+
+- **PROCEED** (divergence ≤ threshold): the request is specified-enough-in-context (note: repo/config
+  context often resolves a terse migrate request — low divergence then is CORRECT) → continue to Setup.
+- **ELICIT** (divergence > threshold): surface the forked axes + ask the targeted questions
+  (`lib/spec-divergence.sh questions`), incorporate answers, re-evaluate, then `write-elicited <service>`
+  → `.preflight/<service>/spec-elicited.md`.
+
+**ADVISORY** (do not hard-block): proceed with a logged note if the user declines to clarify — the
+threshold is n=5-proven, not a hard gate yet. **Fire Phase 0 ONLY here (and at a later hand-off that
+introduces NEW external scope)** — do NOT re-run it on the internal discovery-analyst / spec-analyst /
+implementer dispatches; those operate on an already-pinned spec, so re-checking them is cost without
+catch. Cost: ~7 agents per fire; a typical migrate run fires once.
+
 ## A note on enforcement
 
 This skill uses CRITICAL-INSTRUCTION blocks to mark behavioral requirements. These are prose-level instructions — the model is expected to comply, but no mechanical hook prevents the model from proceeding if it doesn't. Mechanical enforcement (hook-level blocks) is provided separately by the pre-push-gate and coupled-edit-gate hooks. Treat CRITICAL-INSTRUCTION blocks as "you must follow this" guidance, not as a system-level block.
@@ -77,7 +99,21 @@ Verify from config:
 
 2. **Read the team contract.** `CLAUDE.md` (if it exists), plus the rubric at the configured path, plus the capture files (whichever exist at the paths in `capture.*` from config).
 
-3. **Resolve the legacy repo path.** Read `migration.legacyRepoPath` from `.preflight/config.json`. If the value is a placeholder (e.g. `<set-this-to-...>`), the user has not configured it. Ask them where their legacy clone lives, then proceed.
+3. **Resolve the legacy repo path — and MECHANICALLY verify it (do NOT self-assess "it's probably fine").**
+   Read `migration.legacyRepoPath` from `.preflight/config.json`. The legacy clone is the migration's
+   SOURCE OF TRUTH — every behavior baseline is extracted from it. A wrong/empty/placeholder path would let
+   the run produce an empty-but-plausible baseline (a confabulated source of truth — the exact failure the
+   framework exists to prevent), and "the path looks right to me" is the agent self-assessing what is
+   actually a filesystem fact. Verify it mechanically:
+   ```bash
+   bash "${FRAMEWORK_ROOT}/lib/source-of-truth-check.sh" --agent migrate \
+     --require "dir:legacy repo (migration.legacyRepoPath):<resolved legacyRepoPath>"
+   ```
+   - Exit **0 / `PROCEED`** → the legacy clone exists, is a directory, and is non-empty; continue.
+   - Exit **3 / `ESCALATE`** → the path is missing, empty, unreadable, or still a `<set-this-to-...>`
+     placeholder. **STOP and ask the human** where their legacy clone lives (surface the tool's MISSING
+     line). Do NOT guess a path and do NOT proceed against an empty/absent source. Re-run the check once
+     they provide the path; proceed only on `PROCEED` (or a human-written override token).
 
 4. **Resolve the target service.** From the argument, determine the legacy service folder. Confirm with the user before proceeding: "Migrating `<ServiceName>` from `<legacyRepoPath>` to `<targetFolder>` in this repo. Confirm?"
 
@@ -546,22 +582,27 @@ jobs:
             exit 0
           fi
           # GitHub Actions runs `run:` steps under `set -e`, so a non-zero exit from
-          # parity-check.sh (1 advisory / 2 blocking) would abort the step AT THE CALL,
-          # BEFORE `$?` is captured — making the exit-code branching below DEAD (the
-          # "BLOCKED:" diagnostic never prints, and the intended exit-2-blocks logic never
-          # runs). Disable errexit ONLY around the call so the code is captured, then decide.
+          # parity-check.sh (1 advisory / 2 blocking / 3 check-error) would abort the step AT
+          # THE CALL, BEFORE `$?` is captured — making the exit-code branching below DEAD.
+          # Disable errexit ONLY around the call so the code is captured, then decide.
           # (Ported from the consumer fix proven live in the SessionToken run — keep here so
           # future consumers do not inherit the dead gate. Single source: this template.)
           set +e
           bash .github/scripts/parity-check.sh "$BASELINE" "$CURRENT"
           PARITY_EXIT=$?
           set -e
-          if [ $PARITY_EXIT -eq 2 ]; then
-            echo "BLOCKED: Blocking parity violations detected."
-            echo "The migrated service has behavioral drift from legacy."
-            exit 1
-          fi
-          exit $PARITY_EXIT
+          # EXHAUSTIVE 0/1/2/3/* mapping. The old `exit $PARITY_EXIT` was a false-green: exit 3
+          # (the engine CRASHED — e.g. a corrupt behavior-spec-current.json) is non-2, so it fell
+          # through to `exit $PARITY_EXIT` = exit 3, which a lenient status check could treat as
+          # non-blocking → a BROKEN flagship gate passing GREEN. Now a check-error FAILS loudly,
+          # and any unexpected code FAILS too. Only 0 (clean) and 1 (advisory) pass.
+          case "$PARITY_EXIT" in
+            0) echo "Parity: CLEAN (exit 0)." ; exit 0 ;;
+            1) echo "Parity: ADVISORY only (exit 1) — non-blocking warnings." ; exit 0 ;;
+            2) echo "BLOCKED: blocking parity violations (exit 2) — behavioral drift from legacy." ; exit 1 ;;
+            3) echo "BLOCKED: parity check COULD NOT RUN (exit 3 = check-error: corrupt/missing spec or engine crash). A broken gate is a FAILURE, never a pass. Fix the spec/engine and re-run." ; exit 1 ;;
+            *) echo "BLOCKED: parity check exited with UNEXPECTED code $PARITY_EXIT (e.g. killed by a signal). Treating as failure." ; exit 1 ;;
+          esac
 
       - name: Wire-fidelity golden test (WIRE-B)
         run: |
@@ -786,8 +827,60 @@ fi
 
 # Extract proc names from REACHABLE items and all parameter names
 # (parameters without a reachability marker inherit from their parent proc's reachability)
-PROCS=$(grep -oP '(?<=\| )`?[a-zA-Z_][a-zA-Z0-9_]*`?' "$CONTRACT" | tr -d '`' | sort -u)
-NOT_REACHABLE_PROCS=$(echo "$UNREACHABLE_LINES" | grep -oP '(?<=\| )`?[a-zA-Z_][a-zA-Z0-9_]*`?' | tr -d '`' | sort -u)
+#
+# (M15) STRUCTURED single-column extraction — parse the proc identifier from COLUMN 1 of each
+# pipe-delimited contract row (the documented format: `| <proc-name> | REACHABLE|NOT REACHABLE | <path> |`).
+# The PRE-FIX scrape `grep -oP '(?<=\| )...'` harvested the FIRST token after EVERY `| `, so it pulled in
+# header words (Name/Type/Reachable), the reachability-cell markers (REACHABLE/NOT), AND call-chain words
+# (CPSLToken/Only) from columns 2 and 3 — noise that was masked only by the `<5` length skip (deleted below)
+# plus the denylist. Extracting column 1 alone keeps that column-2/3 noise out of the existence check, so
+# deleting the `<5` skip cannot spike false MISSING on a long call-chain word like "CPSLToken". The denylist
+# (below) stays as a belt-and-suspenders backstop for a stray column-1 header like "Name".
+col1_procs() {  # stdin: contract markdown lines; stdout: column-1 identifiers, one per line
+  awk -F'|' '/^[[:space:]]*\|/ { c=$2; gsub(/^[[:space:]`]+|[[:space:]`]+$/,"",c); if (c ~ /^[a-zA-Z_][a-zA-Z0-9_]*$/) print c }'
+}
+# (M15) The contract is DUAL-FORMAT: procs appear as summary-table rows AND as `### <proc>` markdown
+# headings (the param-exclusion sed below depends on the backtick heading form). A REACHABLE proc
+# declared ONLY as a heading — dropped from the summary table — would be MISSED by col1_procs and
+# silently PASS Check 3 (an absent REACHABLE proc, the exact false-green this check exists to catch).
+# So extract heading-form procs too and union them.
+#
+# heading_procs requires the BACKTICK-DELIMITED form `### \`<proc>\`` — the same convention the
+# param-exclusion sed (below) depends on. Requiring the backticks is load-bearing: an optional-backtick
+# regex would capture the first word of any PROSE heading (`### Overview`, `### Summary`) and report it as
+# a MISSING proc (a false-positive over-block on ordinary documentation sections).
+heading_procs() {  # stdin: contract markdown; stdout: backtick-heading-declared proc identifiers
+  grep -oP '^###\s+`\K[a-zA-Z_][a-zA-Z0-9_]*(?=`)' || true
+}
+# NR detection is MARKER-SCOPED — keyed to the REACHABILITY MARKER, never to free text anywhere on a line.
+# A whole-line `grep "NOT REACHABLE"` is a fail-OPEN false-green: a row explicitly marked REACHABLE in its
+# marker column, whose NOTES/path cell merely MENTIONS "NOT REACHABLE" (e.g. "the MP variant is NOT
+# REACHABLE here" — exactly the cross-referencing prose the worked example invites), would be skipped and
+# its absent proc pass silently. So:
+#   - nr_table_procs: a TABLE ROW is NR only when its COLUMN-2 cell IS the marker "NOT REACHABLE"
+#     (column-scoped via awk -F'|' on $3, not a line grep).
+#   - nr_heading_line_procs: a backtick HEADING is NR only when the marker immediately follows the proc
+#     (e.g. `### \`<proc>\` (NOT REACHABLE)` / `### \`<proc>\` — NOT REACHABLE`), not anywhere later on the
+#     line — so trailing prose like "(replaces the old NOT REACHABLE one)" cannot misclassify it.
+# Neither scans a heading's section BODY (an unanchored body scan flips a REACHABLE proc on incidental
+# prose and bleeds across heading boundaries). A proc whose only NR signal is body prose is treated
+# REACHABLE and OVER-flagged if absent — the SAFE direction (mark it NR in the marker column / on the
+# heading line to skip it). Over-flag, never under-flag.
+nr_table_procs() {  # $1 = contract path; stdout: column-1 procs whose COLUMN-2 marker cell is NOT REACHABLE
+  awk -F'|' '/^[[:space:]]*\|/ {
+    c1=$2; gsub(/^[[:space:]`]+|[[:space:]`]+$/,"",c1)
+    c2=$3; gsub(/^[[:space:]]+|[[:space:]]+$/,"",c2)
+    if (c1 ~ /^[a-zA-Z_][a-zA-Z0-9_]*$/ && toupper(c2) ~ /^NOT[[:space:]]+REACHABLE$/) print c1
+  }' "$1" || true
+}
+nr_heading_line_procs() {  # $1 = contract path; stdout: backtick-heading procs whose marker immediately follows
+  # The NR marker must come right after the closing backtick (optionally inside ()/[] or after a dash/colon),
+  # NOT anywhere later on the line — so trailing prose mentioning "NOT REACHABLE" cannot misclassify.
+  grep -iP '^###\s+`[a-zA-Z_][a-zA-Z0-9_]*`\s*[-(\[:—]*\s*NOT REACHABLE' "$1" \
+    | grep -oP '^###\s+`\K[a-zA-Z_][a-zA-Z0-9_]*(?=`)' || true
+}
+PROCS=$( { col1_procs < "$CONTRACT"; heading_procs < "$CONTRACT"; } | sort -u)
+NOT_REACHABLE_PROCS=$( { nr_table_procs "$CONTRACT"; nr_heading_line_procs "$CONTRACT"; } | sort -u)
 PARAMS=$(grep -oP '@[a-zA-Z_][a-zA-Z0-9_]*' "$CONTRACT" | sort -u)
 
 # Filter out params that belong to NOT REACHABLE procs
@@ -801,7 +894,12 @@ done
 
 echo "Checking REACHABLE proc names against migrated source..."
 for PROC in $PROCS; do
-  [ ${#PROC} -lt 5 ] && continue
+  # (M15) DELETED `[ ${#PROC} -lt 5 ] && continue` — it dropped any contracted identifier under 5 chars
+  # from the existence check, so a genuinely-absent REACHABLE proc like `usp` (3 chars) silently passed
+  # (CHECK 3 PASS): a SAFETY-false-green. The skip was also asymmetric (proc loop only; the param loop
+  # below never had it). With column-1 extraction above, header/marker/chain-word noise no longer enters
+  # $PROCS, so the length gate is unnecessary — membership (NOT-REACHABLE) is what skips a proc, and that
+  # test is length-independent. The denylist below remains as a backstop for a stray column-1 header word.
   echo "$PROC" | grep -qiE "^(name|type|order|direction|parameter|procedure|table|column|notes|reachable)$" && continue
   # Skip if this proc is marked NOT REACHABLE
   if echo "$NOT_REACHABLE_PROCS" | grep -qw "$PROC" 2>/dev/null; then
@@ -982,9 +1080,19 @@ elif [ $PARITY_EXIT -eq 2 ]; then
   echo "and manually clear the gate. The agent does not authorize overrides."
   echo "═══════════════════════════════════════════════════════════════════════"
   exit 1
-else
-  echo "CHECK 6 FAIL: parity-check.sh exited with unexpected code $PARITY_EXIT"
+elif [ $PARITY_EXIT -eq 3 ]; then
+  echo "CHECK 6 FAIL: parity-check.sh exit 3 (CHECK-ERROR — the gate COULD NOT RUN)."
   echo "$PARITY_OUTPUT"
+  echo ""
+  echo "Exit 3 means a corrupt/missing behavior-spec or an engine crash — NOT a clean result."
+  echo "A broken flagship gate is a FAILURE, never a pass: do NOT proceed to handoff. Fix the"
+  echo "spec/engine (commonly a truncated behavior-spec-current.json) and re-run Check 6."
+  echo "(This is the false-green that exit-1-overloading used to hide — a crash is now distinct.)"
+  exit 1
+else
+  echo "CHECK 6 FAIL: parity-check.sh exited with UNEXPECTED code $PARITY_EXIT (e.g. signal kill)."
+  echo "$PARITY_OUTPUT"
+  echo "An unexpected code is treated as failure, never as a pass."
   exit 1
 fi
 ```

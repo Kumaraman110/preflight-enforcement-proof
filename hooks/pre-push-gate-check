@@ -12,6 +12,73 @@
 # Exit 0 = allow the tool call
 # Exit 2 = block the tool call (stderr fed back to Claude; Claude Code blocks on exit 2)
 
+# ── SELF-WATCHDOG — fail CLOSED on a wedged/slow gate (gap: wedge fail-open) ───
+# This hook is registered with a 10s platform timeout (hooks.json). If a subprocess
+# wedges (git blocked on a credential/SSH prompt, jq on a stalled NFS read, a herestring
+# scan on a pathological blob), the PLATFORM SIGKILLs the hook at 10s. That kill surfaces
+# as exit 124/137 — and per the PreToolUse protocol ONLY exit 2 blocks; any other code
+# (124, 137, 1, 127, …) is a NON-blocking error, so the push then proceeds UNGATED. A
+# safety gate that wedges must NEVER wave a push through.
+#
+# Fix: re-exec the real hook body as a CHILD under a SHORTER internal deadline (default 8s SIGTERM,
+# +1s grace → 9s SIGKILL — under the 10s platform kill, leaving ~1s margin for the parent to emit its
+# decision). If the child reaches a real decision it exits 0 (allow) or 2 (block) and the parent relays
+# that EXACT code + the child's already-written stdout (the AUTO/CONFIRM JSON, inherited straight
+# through) / stderr. If the child does NOT finish in time — timeout's 124, a signal-kill >128, or ANY
+# code that is neither 0 nor 2 — the parent maps it to exit 2 (BLOCK): a wedged or crashed gate fails
+# CLOSED. This is the user-facing guarantee: a gate too slow to RENDER a push-safety verdict in time
+# BLOCKS the push, it never waves it through ungated.
+#
+# DEADLINE is env-tunable via PREFLIGHT_PUSH_GATE_DEADLINE (seconds), clamped to [2,9] so it can never
+# exceed the platform kill. Why tunable: on a pathologically slow subprocess-spawn host (e.g. this
+# Windows/Git-Bash box — the hook makes dozens of grep/jq/git spawns, measured ~13s for a trivial body
+# and ~37s for a full push body, so even a NORMAL unwedged run there far exceeds 10s — meaning the
+# UNFIXED hook ALREADY fails open on that host, killed by the platform at 10s). The behavioral tests do
+# NOT raise this knob; they instead drive the body directly (_PFG_WATCHDOG_CHILD=1) to isolate the
+# DECISION logic from the watchdog, the same posture as their per-probe `timeout 60`. The knob exists for
+# operators on slow hosts who want headroom up to the 9s clamp. Production hosts (sub-second spawns) use
+# the 8s default, safely under the 10s kill.
+#
+# `_PFG_WATCHDOG_CHILD` breaks the re-exec recursion (the child skips this block and runs the body).
+# `timeout` absent (non-coreutils host) → degrade to running the body inline, no worse than the pre-fix
+# behavior. This block runs BEFORE `set -euo pipefail` so the timeout's non-zero return cannot itself
+# abort the parent.
+if [ -z "${_PFG_WATCHDOG_CHILD:-}" ] && command -v timeout >/dev/null 2>&1; then
+  _pfg_deadline="${PREFLIGHT_PUSH_GATE_DEADLINE:-8}"
+  case "$_pfg_deadline" in (*[!0-9]*|'') _pfg_deadline=8 ;; esac   # non-numeric → default
+  [ "$_pfg_deadline" -lt 2 ] && _pfg_deadline=2                    # floor
+  [ "$_pfg_deadline" -gt 9 ] && _pfg_deadline=9                    # ceiling: never exceed the 10s kill
+  # CAPTURE the child's stdout/stderr to FILES rather than letting it inherit the parent's (= the
+  # platform's) stdout pipe. CRITICAL: a wedged git can leave an orphaned grandchild (a credential
+  # helper, ssh-askpass, the test's `sleep`) that INHERITS whatever stdout fd the child had. If that
+  # fd were the platform's stdout pipe, the orphan would hold it open AFTER this hook exits, and a
+  # platform that reads hook stdout to EOF before applying the verdict would BLOCK on that read until
+  # its OWN 10s kill — re-introducing the very fail-open (137) this watchdog exists to remove. Writing
+  # to files means the orphan only ever holds a file fd (harmless); the parent's real stdout is never
+  # inherited downward, so the platform sees EOF the instant the parent exits with its decision.
+  # stdin (the piped hook JSON) is still inherited so the child's `STDIN_JSON="$(cat)"` reads it.
+  _pfg_co="$(mktemp 2>/dev/null)" || _pfg_co="${TMPDIR:-/tmp}/.pfg-co.$$"
+  _pfg_ce="$(mktemp 2>/dev/null)" || _pfg_ce="${TMPDIR:-/tmp}/.pfg-ce.$$"
+  _PFG_WATCHDOG_CHILD=1 timeout -k 1 "$_pfg_deadline" bash "$0" "$@" >"$_pfg_co" 2>"$_pfg_ce"
+  _wd_rc=$?
+  if [ "$_wd_rc" -eq 0 ] || [ "$_wd_rc" -eq 2 ]; then
+    # Real decision — relay the child's captured stdout (AUTO/CONFIRM JSON) + stderr, then its exit code.
+    cat "$_pfg_co" 2>/dev/null; cat "$_pfg_ce" >&2 2>/dev/null
+    rm -f "$_pfg_co" "$_pfg_ce" 2>/dev/null
+    exit "$_wd_rc"
+  fi
+  # 124 (timeout SIGTERM), 137 (SIGKILL after -k grace), 143, or any other abnormal code: the body did
+  # not reach a decision in time → FAIL CLOSED (block), never fall through to allow. Relay any partial
+  # child stderr for diagnosis, then emit the watchdog's own block reason.
+  cat "$_pfg_ce" >&2 2>/dev/null
+  rm -f "$_pfg_co" "$_pfg_ce" 2>/dev/null
+  echo "BLOCKED: pre-push-gate-check did not reach a decision within its ${_pfg_deadline}s safety deadline (rc=${_wd_rc})." >&2
+  echo "  A push-safety subprocess (git/jq) wedged or the gate stalled. Failing CLOSED: the push is" >&2
+  echo "  BLOCKED rather than allowed ungated. Retry; if it persists, run the push from a human shell" >&2
+  echo "  after confirming the target. (Watchdog fail-closed; see docs/parity-gate-limitations.md.)" >&2
+  exit 2
+fi
+
 set -euo pipefail
 
 
@@ -25,6 +92,13 @@ _hb_plugin_root="$(cd "$_hb_self_dir/.." && pwd)"
 # crash the host gate. The diagnostic just goes silent when the lib is absent.
 type _write_heartbeat &>/dev/null || _write_heartbeat() { :; }
 _write_heartbeat "pre-push-gate-check"
+# NOTE on wedge coverage: the heartbeat above (and the config-overlay lib sourced below) make a
+# few git/jq calls INSIDE sourced functions, which the Layer-2 `_pfg_git`/`_pfg_jq` wrappers do
+# NOT intercept. These are local-repo reads (`git rev-parse HEAD`, a config-file `jq`), the LEAST
+# wedge-prone calls (no network/credential round-trip). The Layer-1 self-watchdog above is the
+# COMPREHENSIVE backstop: it wraps the entire body, so a wedge ANYWHERE — including these — still
+# fails CLOSED (exit 2) at the watchdog deadline. Layer 2 is the FAST-PATH for the network-facing
+# push-target resolution (`git remote get-url`), the call that actually wedges in practice.
 
 # Per-clone topology overlay (issue #6): source the shared resolver so branch.base /
 # branch.remote honor a gitignored .preflight/config.local.json. Best-effort — if the
@@ -38,10 +112,67 @@ for _pfg_overlay_lib in "$_PFG_SELF_DIR/../lib/config-overlay.sh" "$_PFG_SELF_DI
   fi
 done
 
+# ── Subprocess wedge-bounding (Layer 2 of the fail-closed conversion) ─────────
+# Each wedge-prone external call (git remote get-url, git rev-parse, jq config read) is run
+# under a SHORT per-call timeout, so a SINGLE stalled subprocess fails closed in ~3s with a
+# precise diagnostic instead of riding the 8s self-watchdog backstop. Fail direction CLOSED:
+# a TIMED-OUT call (124) or signal-kill (137) sets a FILESYSTEM wedge flag — a shell variable
+# would not survive the `$(...)` subshells these calls run inside, but a file write does — and
+# the main shell checks the flag at each allow/ask decision point and BLOCKS (exit 2). A NORMAL
+# non-zero (e.g. `git remote get-url` exit 2 for an absent remote) is NOT a wedge: it is a
+# legitimate empty result, left to the existing `|| true` fail-open-by-design resolution paths.
+_PFG_SUBPROC_TIMEOUT=3
+_PFG_WEDGE_FLAG="${TMPDIR:-/tmp}/.pfg-wedge.$$"
+rm -f "$_PFG_WEDGE_FLAG" 2>/dev/null || true
+trap 'rm -f "$_PFG_WEDGE_FLAG" 2>/dev/null || true' EXIT
+_pfg_have_timeout() { command -v timeout >/dev/null 2>&1; }
+# Bounded subprocess runner. CRITICAL: the timed call writes to a TEMP FILE, never a
+# command-substitution pipe. A wedged subprocess can spawn a child (credential helper, the
+# git-stub's `sleep`) that INHERITS the capture fd; with `$(timeout 3 cmd)` the outer pipe
+# then stays open until that orphaned grandchild dies, so the substitution HANGS for the full
+# wedge despite `timeout` having already reaped the direct child. Writing to a file and reading
+# it AFTER timeout returns waits only on the direct child timeout manages — the orphan lingers
+# harmlessly. `-k 1`: a subprocess that ignores SIGTERM is SIGKILLed 1s later. stdin from
+# /dev/null so a read-blocked subprocess can't stall either.
+_pfg_bounded() {  # $1 = binary (git|jq) ; $@ = its args. Echoes stdout; ALWAYS returns 0.
+  # SHORT-CIRCUIT: once anything has wedged, the decision is already going to BLOCK at the next
+  # checkpoint — don't pay another timeout per remaining call (6+ git/jq lookups would otherwise
+  # stack to >18s and blow the watchdog/platform budget). Return empty instantly.
+  [ -f "$_PFG_WEDGE_FLAG" ] && return 0
+  local bin="$1"; shift
+  local tmp rc; tmp="$(mktemp 2>/dev/null)" || tmp="${TMPDIR:-/tmp}/.pfg-out.$$.$RANDOM"
+  if _pfg_have_timeout; then timeout -k 1 "$_PFG_SUBPROC_TIMEOUT" "$bin" "$@" >"$tmp" 2>/dev/null </dev/null; rc=$?
+  else                       "$bin" "$@" >"$tmp" 2>/dev/null </dev/null; rc=$?; fi
+  if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ] || [ "$rc" -eq 125 ]; then
+    : > "$_PFG_WEDGE_FLAG" 2>/dev/null || true   # 124=timed out, 137=SIGKILLed, 125=timeout internal error
+  fi
+  cat "$tmp" 2>/dev/null || true
+  rm -f "$tmp" 2>/dev/null || true
+  return 0
+}
+_pfg_git() { _pfg_bounded git "$@"; }   # bounded git (remote get-url / rev-parse) — wedge-prone
+_pfg_jq()  { _pfg_bounded jq  "$@"; }   # bounded jq (config-file reads) — wedge-prone on stalled FS
+# Checkpoint: call immediately before ANY allow/ask emission. If a bounded subprocess wedged,
+# the push target could not be fully verified → fail CLOSED (block), never allow/ask on it.
+_pfg_wedge_block_if_flagged() {
+  if [ -f "$_PFG_WEDGE_FLAG" ]; then
+    echo "BLOCKED: a push-safety subprocess (git/jq) timed out (~${_PFG_SUBPROC_TIMEOUT}s) while resolving the" >&2
+    echo "  push target — the destination could not be fully verified. Failing CLOSED: the push is BLOCKED" >&2
+    echo "  rather than allowed on an unresolved target. Retry; if it persists, push from a human shell after" >&2
+    echo "  confirming the remote. (Subprocess wedge-bound; see docs/parity-gate-limitations.md.)" >&2
+    exit 2
+  fi
+}
+
 STDIN_JSON="$(cat)"
 
-# Primary: extract the command field via jq
-COMMAND="$(printf '%s' "$STDIN_JSON" | jq -r '.tool_input.command // empty' 2>/dev/null || true)"
+# Primary: extract the command field via jq (bounded — a wedge here falls to the raw-blob
+# fallback below, which fail-safely greps for 'git push'; no flag needed on this path).
+if _pfg_have_timeout; then
+  COMMAND="$(printf '%s' "$STDIN_JSON" | timeout "$_PFG_SUBPROC_TIMEOUT" jq -r '.tool_input.command // empty' 2>/dev/null || true)"
+else
+  COMMAND="$(printf '%s' "$STDIN_JSON" | jq -r '.tool_input.command // empty' 2>/dev/null || true)"
+fi
 
 # Fallback: if extraction yielded nothing, use the raw blob so a push
 # is still detected (fail-safe for the push case; non-pushes still pass).
@@ -109,8 +240,13 @@ if printf '%s' "$COMMAND" | grep -qE "$_TRIP_SENT"; then
   if printf '%s' "$COMMAND" | grep -qE "(base64[[:space:]]+(-d|--decode)|python[[:space:]]+-c[[:space:]]*[\\\\\\\"]*base64).*${_TRIP_SENT}"; then
     _trip_block "obfuscated base64 decode into protected sentinel path"
   fi
-  # variable/parameter expansion writing sentinel
-  if printf '%s' "$COMMAND" | grep -qE "(\\$[A-Za-z_][A-Za-z0-9_]*|\\$\\{[A-Za-z_][A-Za-z0-9_]*\\})[[:space:]]*>[[:space:]]*[\\\\\\\"]?[^[:space:]\\\\\\\"]*${_TRIP_SENT}"; then
+  # variable/parameter expansion writing sentinel. NB: the dollar is written as the regex char-class
+  # [$], NOT a bare `\$[`. In a double-quoted string `"\$[..."` collapses to `$[...`, which bash parses
+  # as LEGACY ARITHMETIC EXPANSION `$[expr]` — under `set -u` it then evaluates the first regex atom
+  # (`A`) as an unbound variable (warning to stderr) AND corrupts the pattern so the variable-expansion
+  # obfuscation branch NEVER MATCHED (a silent fail-open in this tripwire). `[$]` matches a literal `$`
+  # and cannot start an arithmetic expansion, fixing both the noise and the missed match.
+  if printf '%s' "$COMMAND" | grep -qE "([\$][A-Za-z_][A-Za-z0-9_]*|[\$]\\{[A-Za-z_][A-Za-z0-9_]*\\})[[:space:]]*>[[:space:]]*[\\\\\\\"]?[^[:space:]\\\\\\\"]*${_TRIP_SENT}"; then
     _trip_block "variable-expanded write into protected sentinel path"
   fi
   # python -c / eval with explicit sentinel path string
@@ -153,12 +289,142 @@ _pfg_target_cwd() {  # $1 = command string; echo the cwd the git command runs in
 # config + git resolution below). Computed ONCE from the command string.
 PFG_TARGET_CWD="$(_pfg_target_cwd "$COMMAND")"
 
+# ── STRUCTURAL PUSH PARSER (H1+H2 fix) ─────────────────────────────────────────
+# Replaces the old single-regex detector AND the old grep extractor, which BOTH required the literal
+# adjacency `git\s+push` — so `git -C <dir> push`, `git -c k=v push`, `command git push`, `\git push`,
+# `GIT_DIR=… git push`, `/usr/bin/git push`, a subshell `(git push …)`, etc. ALL evaded the gate (H2: 17
+# of 21 forms bypassed; see .release-audit/H2-FIX-DESIGN.md). The fix PARSES the invocation structurally,
+# mirroring git's own option grammar, instead of pattern-matching one surface spelling.
+#
+# It sets these globals (read by the classification body below):
+#   _PFG_IS_PUSH        = 1 if a `git … push` invocation was found, else 0.
+#   _PFG_PUSH_UNRESOLVED= 1 if a push is PRESENT but could not be cleanly parsed into an arg list
+#                         (an indirection wrapper: eval/bash -c/sh -c/xargs git push) → FAIL CLOSED to
+#                         CONFIRM downstream, never a silent allow. 0 when the args were parsed cleanly.
+#   _PFG_PUSH_ARGS      = the parsed push arg list (tokens AFTER `push`), space-joined, when resolved.
+#
+# Method (per the design's Option B): segment the command on shell separators the hook can SEE
+# (; && || | and a leading ( { and the if/then/while/do/else keywords), then for each segment:
+#   strip leading VAR=val env-assignments and a `command`/`\` prefix → match the program token as
+#   git | */git | */git.exe | \git → skip the global-option run via a small option table (separate-value
+#   opts -C/-c/--git-dir/--work-tree/--namespace/--super-prefix consume the NEXT token; =-joined and bare
+#   flags are single tokens) → if the next token is `push`, the rest are the push args.
+# NOTE: this tokenizes by WORD-SPLITTING ONLY (set -f + IFS); it NEVER eval/executes the command.
+_PFG_IS_PUSH=0
+_PFG_PUSH_UNRESOLVED=0
+_PFG_PUSH_ARGS=""
+# Is $1 a git program token? (git, */git, */git.exe, with an optional leading backslash for `\git`.)
+_pfg_is_git_prog() {
+  case "${1#\\}" in
+    git|git.exe) return 0 ;;
+    */git|*/git.exe) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+# Does the segment's git invocation reach a `push` subcommand? Parses ONE already-tokenized arg vector
+# ("$@" = the segment's words). Echoes the push args (tokens after `push`) on success; return 0 = push
+# found+parsed, 1 = not a push, 2 = git-push present but the program/subcommand could not be resolved.
+_pfg_seg_push_args() {
+  # Strip leading env-assignments (VAR=val) and a `command` prefix (repeatable).
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      [A-Za-z_]*=*) shift ;;       # env-assignment prefix → skip
+      command)      shift ;;       # `command git …` → skip the `command` builtin
+      *) break ;;
+    esac
+  done
+  [ "$#" -gt 0 ] || return 1
+  _pfg_is_git_prog "$1" || return 1
+  shift                            # consume the git program token
+  # Skip the global-option run (mirrors git's option grammar). Separate-value options consume the NEXT
+  # token; =-joined and bare flags are single tokens; the subcommand is the first NON-option token.
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      -C|--git-dir|--work-tree|--namespace|--super-prefix|--exec-path)
+        # separate-value form: consume the option AND its value token (if present).
+        shift; [ "$#" -gt 0 ] && shift ;;
+      -c|--config-env)
+        shift; [ "$#" -gt 0 ] && shift ;;
+      --git-dir=*|--work-tree=*|--namespace=*|--super-prefix=*|--exec-path=*|--config-env=*|-c=*)
+        shift ;;                   # =-joined value: single token
+      -p|--paginate|-P|--no-pager|--bare|--no-replace-objects|--no-lazy-fetch|--no-optional-locks|--no-advice|--literal-pathspecs|--glob-pathspecs|--noglob-pathspecs|--icase-pathspecs|--html-path|--man-path|--info-path|--no-renames)
+        shift ;;                   # bare global flags: single token
+      -[A-Za-z]*|--*)
+        # an UNKNOWN global option before the subcommand. We cannot know if it consumes the next token,
+        # so we cannot safely locate the subcommand → treat as unresolved (fail-closed) rather than guess.
+        return 2 ;;
+      *) break ;;                  # first non-option token = the subcommand
+    esac
+  done
+  [ "$#" -gt 0 ] || return 1       # no subcommand → not a push
+  if [ "$1" = "push" ]; then
+    shift                          # consume `push`; the rest are the push args
+    _pfg_seg_push_out="$*"
+    return 0
+  fi
+  return 1                         # some other subcommand (status/commit/log/…) → not a push
+}
+_pfg_parse_push() {  # $1 = the full command string. Sets the _PFG_* globals. Always returns 0.
+  local cmd="$1"
+  # (1) Indirection wrappers the static parser cannot see INTO: if the command invokes eval / bash -c /
+  # sh -c / xargs AND the literal tokens `git` … `push` appear in order somewhere, a push may be assembled
+  # at runtime → mark PRESENT-but-UNRESOLVED (fail-closed CONFIRM), do not try to parse it.
+  if printf '%s' "$cmd" | grep -qE '(^|[^[:alnum:]_-])(eval|xargs)([^[:alnum:]_-]|$)' \
+     || printf '%s' "$cmd" | grep -qE '(^|[^[:alnum:]_-])(bash|sh|zsh|dash)[[:space:]]+-[a-z]*c([[:space:]]|$)'; then
+    # Ordered git…push token check (NOT mere co-occurrence — see the no-false-positive boundary): a git
+    # program token, then a `push` token later. Word-bounded so `push-docs`/`git commit -m '…push…'` are
+    # not mistaken for a push subcommand.
+    if printf '%s' "$cmd" | grep -qE '(^|[^[:alnum:]/_.-])\\?([^[:space:]]*/)?git(\.exe)?([^[:alnum:]_-].*)?[[:space:]]push([[:space:]]|$)'; then
+      _PFG_IS_PUSH=1; _PFG_PUSH_UNRESOLVED=1; _PFG_PUSH_ARGS=""
+      return 0
+    fi
+  fi
+  # (2) Structural parse: segment on shell separators the hook can see, parse each segment.
+  # Replace separators (; && || | newline) and leading group/keyword tokens with a sentinel newline, then
+  # iterate segments. set -f disables globbing during the deliberate word-split; IFS default splits words.
+  local seg rc
+  local _oldifs="$IFS"
+  set -f
+  # Normalize separators to newlines. Strip subshell/group punctuation and shell keywords so the inner
+  # `git … push` is exposed as its own segment.
+  local norm
+  norm="$(printf '%s' "$cmd" \
+    | sed -E 's/\|\||;|&&|&|\||\(|\)|\{|\}/\n/g' \
+    | sed -E 's/(^|\n)[[:space:]]*(then|do|else|elif|if|while|until|fi|done)([[:space:]]|$)/\n/g')"
+  while IFS= read -r seg; do
+    [ -n "$seg" ] || continue
+    # Word-split the segment into a positional vector (no glob, no eval).
+    # shellcheck disable=SC2086
+    set -- $seg
+    [ "$#" -gt 0 ] || continue
+    _pfg_seg_push_out=""
+    # Tested context: a non-push segment returns 1 (and the unknown-option case returns 2). Capture the
+    # status WITHOUT letting `set -e` abort on the expected non-zero return (`; rc=$?` would not be a tested
+    # context — the function's rc=1 would kill the hook before the assignment, the git-status crash bug).
+    rc=0; _pfg_seg_push_args "$@" || rc=$?
+    if [ "$rc" -eq 0 ]; then
+      _PFG_IS_PUSH=1; _PFG_PUSH_UNRESOLVED=0; _PFG_PUSH_ARGS="$_pfg_seg_push_out"
+      break
+    elif [ "$rc" -eq 2 ]; then
+      # git-push present in this segment but an unknown global option blocked clean resolution.
+      _PFG_IS_PUSH=1; _PFG_PUSH_UNRESOLVED=1; _PFG_PUSH_ARGS=""
+      # keep scanning — a later segment might resolve cleanly, but do not downgrade an unresolved push.
+    fi
+  done <<EOF
+$norm
+EOF
+  set +f
+  IFS="$_oldifs"
+  return 0
+}
+_pfg_parse_push "$COMMAND"
+
 # ── Resolve canonical repo (owner/repo) from config.branch.remote. Fail-open. ─
 # Shared by the #3a pr-create guard below and reused by the #6b push guard.
 # REPO-AWARE: reads config from the PUSH-TARGET repo (PFG_TARGET_CWD), not the session root.
 _pfg_config() {  # echo the resolved .preflight/config.json path, or nothing. Always returns 0.
   local top
-  top="$(git -C "$PFG_TARGET_CWD" rev-parse --show-toplevel 2>/dev/null || echo "")"
+  top="$(_pfg_git -C "$PFG_TARGET_CWD" rev-parse --show-toplevel 2>/dev/null || echo "")"
   [ -z "$top" ] && top="$PFG_TARGET_CWD"
   local c="$top/.preflight/config.json"
   if [ -f "$c" ]; then echo "$c"; fi
@@ -177,7 +443,7 @@ _pfg_branch_field() {  # $1 = base|remote ; echo value or empty (overlay → jq 
     return 0
   fi
   if command -v jq &>/dev/null; then
-    jq -r ".branch.$field // empty" "$cfg" 2>/dev/null || true
+    _pfg_jq -r ".branch.$field // empty" "$cfg" 2>/dev/null || true
   elif command -v node &>/dev/null; then
     node -e "try{const c=require('$cfg');process.stdout.write((c.branch&&c.branch.$field)||'')}catch(e){}" 2>/dev/null || true
   else
@@ -187,6 +453,21 @@ _pfg_branch_field() {  # $1 = base|remote ; echo value or empty (overlay → jq 
 # Normalize a git remote URL (https or ssh) to "owner/repo" (strip .git).
 _pfg_url_to_slug() {
   printf '%s' "$1" | sed -E 's#^git@[^:]+:#https://x/#; s#^https?://[^/]+/##; s#\.git$##' | sed -E 's#^/+##'
+}
+
+# Emit stdin as a JSON string LITERAL (surrounding quotes + escaped) for the permissionDecisionReason
+# value. jq is UTF-8-safe; node is the fallback; a last-ditch sed escapes the JSON-critical chars so the
+# stdout JSON never breaks (a malformed permissionDecision payload would be ignored by the platform →
+# fail-open to normal permission flow, which for a CONFIRM case is acceptable, but we escape properly).
+_pfg_json_string() {
+  if command -v jq &>/dev/null; then
+    jq -Rs . 2>/dev/null && return 0
+  fi
+  if command -v node &>/dev/null; then
+    node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>process.stdout.write(JSON.stringify(d.replace(/\n+$/,''))))" 2>/dev/null && return 0
+  fi
+  # Fallback: escape backslash, double-quote, CR, tab, and newline; wrap in quotes.
+  printf '"%s"' "$(sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/\r//g' -e 's/\t/ /g' | tr '\n' ' ')"
 }
 
 # ── Forbidden-destination denylist (A1 fix) ───────────────────────────────────
@@ -205,15 +486,24 @@ _pfg_url_to_slug() {
 _pfg_branch_array() {  # $1 = cfg path ; $2 = field ; echo array values, one per line.
   local cfg="$1" field="$2"
   [ -z "$cfg" ] || [ ! -f "$cfg" ] && return 0
+  # CRLF FAIL-OPEN FIX (G1): jq on Git-Bash emits CRLF line endings, so each emitted array element is
+  # terminated `\r\n`. Command substitution `$(...)` at the call sites strips only the FINAL trailing
+  # `\r\n`, leaving every element EXCEPT THE LAST carrying a trailing `\r`. The forbidden-list matchers
+  # then compare `origin\r` != `origin` and SILENTLY MISS a denylisted destination listed anywhere but
+  # last — a fail-OPEN on a push to a forbidden/prod remote. A safety check that cannot verify its input
+  # must fail CLOSED, so we strip `\r` from EVERY element AT THE SINGLE PRODUCER SEAM here (one fix
+  # covers all four consumers: forbiddenRemotes/forbiddenRepos/prodPatterns/safeRemotes). `tr -d '\r'`
+  # deletes the CR from every line, not just the last. (Same CRLF class as the source-of-truth-check and
+  # parity-check fixes this session — CRLF on Git-Bash is a systemic fragility; strip it at the boundary.)
   if command -v jq &>/dev/null; then
-    jq -r ".branch.${field}[]? // empty" "$cfg" 2>/dev/null || true
+    _pfg_jq -r ".branch.${field}[]? // empty" "$cfg" 2>/dev/null | tr -d '\r' || true
   elif command -v node &>/dev/null; then
-    node -e "try{const c=require('$cfg');const a=(c.branch&&c.branch.$field)||[];a.forEach(x=>console.log(x))}catch(e){}" 2>/dev/null || true
+    node -e "try{const c=require('$cfg');const a=(c.branch&&c.branch.$field)||[];a.forEach(x=>console.log(x))}catch(e){}" 2>/dev/null | tr -d '\r' || true
   else
     # Best-effort grep fallback (labeled): pull quoted strings from the field's array,
     # dropping the first match (the field name itself). jq is the primary path.
     grep -oE "\"$field\"[[:space:]]*:[[:space:]]*\[[^]]*\]" "$cfg" 2>/dev/null \
-      | grep -oE '"[^"]*"' | sed -n '2,$p' | sed 's/^"//; s/"$//' || true
+      | grep -oE '"[^"]*"' | sed -n '2,$p' | sed 's/^"//; s/"$//' | tr -d '\r' || true
   fi
 }
 # Is $1 (a remote NAME) on the forbidden-remotes list $2 (newline-separated names)?
@@ -234,6 +524,67 @@ _pfg_repo_forbidden() {
     [ -z "$line" ] && continue
     [ "$(_pfg_url_to_slug "$line")" = "$slug" ] && return 0
   done <<< "$hay"
+  return 1
+}
+
+# ── GAP-A hardening: conservative prod-PATTERN heuristic (no explicit denylist needed) ─────────
+# GAP-A was: a configured remote that IS prod but is NOT on forbiddenRepos, on an unprotected
+# branch, classified AUTO → the agent silently auto-pushed to prod. The denylist closed it only
+# when the operator opted in. This adds an ALWAYS-ON conservative net: if the remote's URL/slug
+# carries a HIGH-CONFIDENCE prod signal, flip AUTO → CONFIRM (never BLOCK — a human may still push
+# to prod deliberately, just never SILENTLY). Conservative by design (false-positive here only
+# adds ONE confirmation, never blocks; but a false-positive on a safe remote is still friction, so
+# the patterns are deliberately narrow): a token must appear as a WHOLE path/name SEGMENT — bounded
+# by start/end, '/', '.', '-', '_', or ':' — so 'reproduce'/'product-catalog'/'proddy' do NOT match
+# 'prod', and 'reliable' does NOT match 'live'. Matches: prod, production, prd, release, live,
+# legacy. Case-insensitive on the slug only (the
+# owner/repo + host path), not on arbitrary URL noise.
+# Override/extend via branch.prodPatterns (committed config only; NOT overlayable — same posture as
+# the forbidden lists). HONESTY: this is a NAME heuristic — a prod remote named blandly (e.g.
+# 'app-final') will NOT match; the explicit forbiddenRepos denylist remains the operator's
+# precise tool. Raises the bar on the OBVIOUS case; does not claim completeness.
+# NOTE on the pattern set: only TRULY GENERIC prod tokens are built in. A project-specific legacy-prod
+# repo name (e.g. the migration program's 'CPSL') is DELIBERATELY NOT a built-in — it would false-positive
+# on a safe sibling that merely shares the fragment (observed: 'cyf.cpsl_core', the real migration TARGET,
+# vs 'CPSL', the legacy prod). Project-specific prod repos belong on the operator's explicit
+# branch.forbiddenRepos denylist (precise, no collateral), or in branch.prodPatterns if wanted.
+_PFG_PROD_PATTERNS_BUILTIN='prod production prd release live legacy'
+_pfg_remote_looks_prod() {  # $1 = slug-or-url ; $2 = extra newline-separated patterns (optional). 0 = looks prod.
+  local hay="$1" extra="${2:-}" tok
+  [ -z "$hay" ] && return 1
+  # Lowercase for case-insensitive segment matching.
+  hay="$(printf '%s' "$hay" | tr '[:upper:]' '[:lower:]')"
+  # A segment boundary is: start-of-string, end-of-string, or one of / . - _ :
+  for tok in $_PFG_PROD_PATTERNS_BUILTIN; do
+    printf '%s' "$hay" | grep -qE "(^|[/._:-])${tok}([/._:-]|\$)" && return 0
+  done
+  # Operator-supplied extra patterns (committed branch.prodPatterns), same segment-boundary rule.
+  if [ -n "$extra" ]; then
+    while IFS= read -r tok; do
+      [ -z "$tok" ] && continue
+      tok="$(printf '%s' "$tok" | tr '[:upper:]' '[:lower:]')"
+      printf '%s' "$hay" | grep -qE "(^|[/._:-])${tok}([/._:-]|\$)" && return 0
+    done <<< "$extra"
+  fi
+  return 1
+}
+
+# ── GAP-A hardening (opt-in strict mode): a SAFE-REMOTES allowlist ─────────────────────────────
+# When the operator sets branch.safeRemotes (committed config; NOT overlayable), AUTO is restricted
+# to remotes whose NAME or resolved SLUG is on that list — everything else (including the configured
+# remote, if it isn't listed) → CONFIRM. This inverts the default to fail-SAFE for operators who want
+# it: AUTO only for explicitly-blessed remotes. ABSENT (the default) → this is INERT (returns "on the
+# list" for everything) so the AUTO tier is preserved unchanged for consumers who never opt in — no
+# friction regression. The one cost when ENABLED: the first push to a new safe remote needs one
+# confirmation until it is added to the list (the documented trade for fail-safe AUTO).
+_pfg_remote_on_safelist() {  # $1 = remote name ; $2 = resolved slug ; $3 = safeRemotes (newline list). 0 = allowed/AUTO-ok.
+  local name="$1" slug="$2" list="$3" line
+  [ -z "$list" ] && return 0   # no allowlist configured → INERT (everything is AUTO-eligible)
+  while IFS= read -r line; do
+    [ -z "$line" ] && continue
+    [ "$line" = "$name" ] && return 0
+    [ -n "$slug" ] && [ "$(_pfg_url_to_slug "$line")" = "$slug" ] && return 0
+  done <<< "$list"
   return 1
 }
 
@@ -259,7 +610,7 @@ if printf '%s' "$COMMAND" | grep -qE '(^|&&|\|\||;|")\s*gh[[:space:]]+pr[[:space
   # Resolve canonical slug from the configured remote's URL (fail-open if unresolvable).
   CANON_SLUG=""
   if [ -n "$CANON_REMOTE" ]; then
-    CANON_URL="$(git -C "$PFG_TARGET_CWD" remote get-url "$CANON_REMOTE" 2>/dev/null || true)"
+    CANON_URL="$(_pfg_git -C "$PFG_TARGET_CWD" remote get-url "$CANON_REMOTE" 2>/dev/null || true)"
     [ -n "$CANON_URL" ] && CANON_SLUG="$(_pfg_url_to_slug "$CANON_URL")"
   fi
   # Resolve the slug this pr-create would ACTUALLY target: explicit --repo if present,
@@ -269,7 +620,7 @@ if printf '%s' "$COMMAND" | grep -qE '(^|&&|\|\||;|")\s*gh[[:space:]]+pr[[:space
   if [ -n "$REPO_ARG" ]; then
     TARGET_SLUG="$(_pfg_url_to_slug "$REPO_ARG")"
   else
-    DEFAULT_URL="$(git -C "$PFG_TARGET_CWD" remote get-url origin 2>/dev/null || true)"
+    DEFAULT_URL="$(_pfg_git -C "$PFG_TARGET_CWD" remote get-url origin 2>/dev/null || true)"
     [ -n "$DEFAULT_URL" ] && TARGET_SLUG="$(_pfg_url_to_slug "$DEFAULT_URL")"
   fi
 
@@ -305,11 +656,16 @@ if printf '%s' "$COMMAND" | grep -qE '(^|&&|\|\||;|")\s*gh[[:space:]]+pr[[:space
     fi
   fi
   # Canonical / not-forbidden / fail-open → allow the pr-create. Not a push; nothing more to gate here.
+  # FAIL-CLOSED checkpoint: if remote-slug resolution above wedged, the forbidden/non-canonical checks
+  # ran on UNRESOLVED slugs (could not prove the target is safe) — block rather than allow a pr-create.
+  _pfg_wedge_block_if_flagged
   exit 0
 fi
 
-# Only gate on git push commands
-if ! printf '%s' "$COMMAND" | grep -qE '(^|&&|\|\||;|")\s*git\s+push'; then
+# Only gate on git push commands. Detection is now STRUCTURAL (_pfg_parse_push above), not a regex on the
+# raw string — so `git -C <dir> push`, `git -c k=v push`, `command git push`, `\git push`, `GIT_DIR=… git
+# push`, `/usr/bin/git push`, and `(git push …)` are all detected (H2). A non-push command exits 0 here.
+if [ "$_PFG_IS_PUSH" != 1 ]; then
   exit 0
 fi
 
@@ -325,8 +681,11 @@ fi
 # server-side branch protection. It is also FAIL-OPEN: if config is absent/unparseable
 # it does NOT block (additive guard; never newly blocks a repo that didn't opt in).
 
-# Isolate the single `git push …` invocation from any compound command for parsing.
-PUSH_CMD="$(printf '%s' "$COMMAND" | grep -oE 'git[[:space:]]+push[^&|;]*' | head -1 || true)"
+# PUSH_CMD is retained only as a "a push was detected" flag for the bare-push CONFIRM check below
+# (it tests [ -n "$PUSH_CMD" ]). The actual arg parsing comes from the structural parser (_PFG_PUSH_ARGS),
+# NOT a re-grep of the raw command — closing the second-layer extractor bypass (the old grep returned
+# empty on `git -C … push`, silently skipping the forbidden-remote check even when detection succeeded).
+PUSH_CMD="git push"   # non-empty sentinel: _PFG_IS_PUSH==1 is the real signal we got here.
 
 # Resolve config (fail-open on any miss). jq → node → grep fallback, same idiom as other hooks.
 # REPO-AWARE (NEW-2): config comes from the PUSH-TARGET repo, not the session root — so a
@@ -346,29 +705,50 @@ fi
 # to, REGARDLESS of branch.remote. Read via the shared helpers (jq → node → grep, fail-open).
 FORBIDDEN_REMOTES="$(_pfg_branch_array "$CONFIG" forbiddenRemotes)"
 FORBIDDEN_REPOS="$(_pfg_branch_array "$CONFIG" forbiddenRepos)"
+# GAP-A hardening (committed config only; NOT overlayable — same posture as the forbidden lists):
+#   prodPatterns  — extra segment-tokens that flag a remote as prod (extends the built-in net).
+#   safeRemotes   — opt-in allowlist; when set, AUTO is restricted to listed remotes (fail-safe).
+PROD_PATTERNS="$(_pfg_branch_array "$CONFIG" prodPatterns)"
+SAFE_REMOTES="$(_pfg_branch_array "$CONFIG" safeRemotes)"
 
 # Protected branch names: config base (if any) + main/master always.
 PROTECTED_BRANCHES="main master"
 [ -n "$BASE" ] && PROTECTED_BRANCHES="$PROTECTED_BRANCHES $BASE"
 
-# Does the push carry a force flag of any kind?
+# Parse the push args from the STRUCTURAL parser's token list (_PFG_PUSH_ARGS = everything after `push`),
+# NOT a re-grep/sed of the raw command. This is the single source for HAS_FORCE / ARG_REMOTE / ARG_REFSPEC,
+# so detection and extraction can never diverge (the old two-layer bug). Word-split the parsed args.
 HAS_FORCE=false
-if printf '%s' "$PUSH_CMD" | grep -qE '(^|[[:space:]])(--force-with-lease([=[:space:]]|$)|--force([[:space:]]|$)|-f([[:space:]]|$))'; then
-  HAS_FORCE=true
-fi
-
-# Token-scan the push args (drop `git push` and any flags) → [remote] [refspec...].
-PUSH_ARGS="$(printf '%s' "$PUSH_CMD" | sed -E 's/^git[[:space:]]+push//')"
+ARG_REMOTE=""
+ARG_REFSPEC=""
+_pfg_oldifs="$IFS"
+set -f
+# shellcheck disable=SC2086
+set -- $_PFG_PUSH_ARGS
+set +f
+IFS="$_pfg_oldifs"
 POSITIONAL=""
-for tok in $PUSH_ARGS; do
+for tok in "$@"; do
   case "$tok" in
-    -*) ;;                       # skip flags (--force, -u, --force-with-lease=…, etc.)
-    *)  POSITIONAL="$POSITIONAL $tok" ;;
+    # (A) explicit force flags.
+    --force|-f|--force-with-lease|--force-with-lease=*|--force-if-includes)
+      HAS_FORCE=true ;;
+    -*) ;;                       # other flags (-u, --tags, --set-upstream, …) — skip.
+    # (H1) a refspec whose SOURCE side begins with '+' is a forced (non-fast-forward) update — git's
+    # documented shorthand (`+main` == `+main:main`, `+src:dst` forces dst). Recognize it as FORCE, and
+    # record the '+'-STRIPPED positional so TARGET_BRANCH derivation below sees the real ref, not '+main'.
+    +*)
+      HAS_FORCE=true
+      POSITIONAL="$POSITIONAL ${tok#+}" ;;   # strip exactly one leading '+'
+    *)  POSITIONAL="$POSITIONAL $tok" ;;     # positional (remote / refspec)
   esac
 done
+set -f
+# shellcheck disable=SC2086
 set -- $POSITIONAL
+set +f
 ARG_REMOTE="${1:-}"             # first positional = remote (if named)
-ARG_REFSPEC="${2:-}"           # second positional = refspec (if named)
+ARG_REFSPEC="${2:-}"           # second positional = refspec ('+' already stripped above if present)
 
 # (B0) FORBIDDEN-DESTINATION pre-check (A1) — fires REGARDLESS of branch.remote.
 # This is the check that holds on an INVERTED clone where branch.remote itself names
@@ -377,7 +757,7 @@ ARG_REFSPEC="${2:-}"           # second positional = refspec (if named)
 # remote reached under a different name). De-steered: never recommends a remote.
 if [ -n "$ARG_REMOTE" ]; then
   ARG_REMOTE_SLUG=""
-  ARG_REMOTE_URL="$(git -C "$PFG_TARGET_CWD" remote get-url "$ARG_REMOTE" 2>/dev/null || true)"
+  ARG_REMOTE_URL="$(_pfg_git -C "$PFG_TARGET_CWD" remote get-url "$ARG_REMOTE" 2>/dev/null || true)"
   if [ -n "$ARG_REMOTE_URL" ]; then
     ARG_REMOTE_SLUG="$(_pfg_url_to_slug "$ARG_REMOTE_URL")"
   else
@@ -394,24 +774,44 @@ if [ -n "$ARG_REMOTE" ]; then
   fi
 fi
 
-# (B) wrong-remote: a NAMED remote that isn't the canonical one → block.
-if [ -n "$REMOTE" ] && [ -n "$ARG_REMOTE" ] && [ "$ARG_REMOTE" != "$REMOTE" ]; then
-  echo "BLOCKED: push targets remote '$ARG_REMOTE', not the configured remote '$REMOTE' (config.branch.remote)." >&2
-  echo "  Do NOT assume the configured remote is the safe one — on an inverted clone the configured remote may itself" >&2
-  echo "  be the legacy production repo. Confirm the intended remote with a human before retrying; see docs/parity-gate-limitations.md." >&2
-  echo "  (Agent Bash-tool guard only; not server-side protection — see docs/parity-gate-limitations.md.)" >&2
-  exit 2
+# (B-bare) UNVALIDATABLE BARE PUSH: a `git push` with NO named remote (e.g. bare `git push`,
+# `git push -u`, `git push --force`) resolves to git's DEFAULT remote (the branch's upstream, or
+# `origin`) — a target this guard NEVER SEES, so the forbidden-destination (B0) and wrong-remote (B)
+# checks above are SILENTLY SKIPPED and the push sails through unvalidated. On an inverted clone where
+# the default/upstream remote is legacy PROD, that is an ungated push-to-prod. You cannot confirm a
+# remote you did not name. So: when this repo has OPTED IN to preflight push-gating (a config with
+# branch.remote is present), REQUIRE the remote be named explicitly so it becomes validatable — then
+# the B0/B checks run on it. FAIL-OPEN otherwise: no config / no configured remote → not opted in →
+# do NOT newly block (same additive-guard posture as the rest of this file).
+#
+# ── THREE-TIER REVERSIBILITY POLICY (AUTO / CONFIRM / BLOCK) ──────────────────────────────────────
+# The push-safety tiers below are computed MECHANICALLY from the signals already resolved above
+# (PROTECTED_BRANCHES, REMOTE, FORBIDDEN_*, HAS_FORCE, ARG_REMOTE) — never the agent's judgement.
+#   BLOCK   (exit 2)                : irreversible-and-never-OK → force-push to a protected branch, and
+#                                     the explicit forbidden-destination block (B0, above).
+#   CONFIRM (exit 0 + permissionDecision:ask) : consequential/high-blast-radius but a human MAY choose
+#                                     to proceed → push to a PROTECTED branch, to a PROD/non-canonical
+#                                     remote (closes GAP A — a configured-remote push to a prod-looking
+#                                     target is now ASK, not silent allow), or a BARE push (unvalidatable
+#                                     target). The platform prompts the user; the agent cannot self-approve.
+#   AUTO    (exit 0, fall through to the evidence gate) : reversible/low-blast-radius → named SAFE remote,
+#                                     UNPROTECTED branch, non-force. The friction being removed: the agent
+#                                     just pushes (after the evidence gate), no human copy-paste handoff.
+# PROTOCOL NOTE (Claude Code PreToolUse): exit 0 + JSON on stdout XOR exit 2 — they cannot be combined
+# (JSON is ignored on exit 2). So the HARD BLOCK (force-to-protected) exits 2 here; the CONFIRM tier is
+# deferred until AFTER the evidence gate (a missing/stale-evidence exit 2 is itself a hard block that must
+# win over a CONFIRM). We set CONFIRM_REASON now, run the evidence gate, then emit the tier decision.
+CONFIRM_REASON=""
+
+# Resolve the would-be target branch (refspec dest after ':', else named ref, else current branch).
+TARGET_BRANCH="${ARG_REFSPEC##*:}"
+if [ -z "$TARGET_BRANCH" ]; then
+  TARGET_BRANCH="$(_pfg_git -C "$PFG_TARGET_CWD" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
 fi
 
-# (A) force to a protected branch → block. Target branch = refspec's destination
-# (after a ':' if present, e.g. HEAD:AccountLookUp_POC), else the named ref, else the
-# current branch (bare `git push --force`).
+# (A) HARD BLOCK — force-push to a protected branch (irreversible history rewrite; never auto, never
+# merely-confirm). Preserved exactly as before: exit 2.
 if [ "$HAS_FORCE" = true ]; then
-  TARGET_BRANCH="${ARG_REFSPEC##*:}"
-  if [ -z "$TARGET_BRANCH" ]; then
-    # Bare `git push --force`: the current branch OF THE PUSH-TARGET REPO (repo-aware, NEW-2).
-    TARGET_BRANCH="$(git -C "$PFG_TARGET_CWD" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
-  fi
   for pb in $PROTECTED_BRANCHES; do
     if [ "$TARGET_BRANCH" = "$pb" ]; then
       echo "BLOCKED: force-push (--force/-f/--force-with-lease) to protected branch '$pb'." >&2
@@ -422,7 +822,127 @@ if [ "$HAS_FORCE" = true ]; then
   done
 fi
 
-# Not a blocked operation — fall through to the evidence gate.
-# This IS a git push - run the full pre-push gate
+# (B-unresolved) FAIL-CLOSED CONFIRM — a push is PRESENT but the parser could NOT cleanly resolve its arg
+# list (an indirection wrapper: eval / bash -c / sh -c / xargs git push; or an unknown global option before
+# the subcommand). The target therefore cannot be validated against the forbidden/wrong-remote checks — so
+# rather than silently allow (the old fail-OPEN), escalate to a human. CONFIRM (not exit 2): a benign
+# false-positive only costs one confirmation, and the actual harm (a SILENT bypass) is removed. Gated on
+# push-gating being opted in (REMOTE set) to preserve the additive-guard posture (no config → inert).
+# This is the H2 design's fail-closed fallback: an unparseable-but-plausibly-a-push command needs the guard.
+if [ -z "$CONFIRM_REASON" ] && [ "$_PFG_PUSH_UNRESOLVED" = 1 ] && [ -n "$REMOTE" ]; then
+  CONFIRM_REASON="A 'git … push' was detected but its target could NOT be parsed — the push is wrapped in an indirection (eval / bash -c / sh -c / xargs) or uses an unrecognized git global option, so the forbidden-remote and protected-branch checks cannot run on it. Failing CLOSED to a human confirmation rather than a silent allow: run the push as a plain 'git push <remote> <refspec>' so it is validatable, or confirm this is intended. (Agent Bash-tool guard only; not server-side protection.)"
+fi
+
+# (B-bare) CONFIRM — bare 'git push' (no named remote): the target is unvalidatable (default/upstream
+# remote this guard cannot see → could be prod). Was a hard BLOCK; now CONFIRM so a human can proceed
+# deliberately, never silently. Only when push-gating is opted in (REMOTE set); fail-open otherwise.
+if [ -z "$CONFIRM_REASON" ] && [ -n "$PUSH_CMD" ] && [ -z "$ARG_REMOTE" ] && [ -n "$REMOTE" ]; then
+  CONFIRM_REASON="Bare 'git push' with no named remote — the target is UNVALIDATABLE (git's default/upstream remote, which the guard cannot see, may be the legacy production repo). Name the remote explicitly so it is checked, or confirm this push is intended. (Agent Bash-tool guard only; not server-side protection.)"
+fi
+
+# (B) CONFIRM — push to a PROD/non-canonical remote. A NAMED remote that isn't the configured one, OR
+# (GAP A close) the configured remote itself resolving to a FORBIDDEN/prod slug. Was: wrong-remote → BLOCK,
+# configured-prod → silent ALLOW. Now both → CONFIRM (the human may push to prod deliberately, not silently).
+if [ -z "$CONFIRM_REASON" ] && [ -n "$ARG_REMOTE" ]; then
+  if [ -n "$REMOTE" ] && [ "$ARG_REMOTE" != "$REMOTE" ]; then
+    CONFIRM_REASON="Push targets remote '$ARG_REMOTE', not the configured remote '$REMOTE' (config.branch.remote). On an inverted clone the named remote may be a legacy production repo. Confirm this is the intended target. (Agent Bash-tool guard only; not server-side protection.)"
+  else
+    # GAP A: the configured remote could itself be prod. Resolve its slug ONCE and run three checks,
+    # each of which flips the otherwise-AUTO configured-remote push to CONFIRM (never silent prod push):
+    #   (1) EXPLICIT denylist — the slug is on config.branch.forbiddenRepos (operator's precise tool).
+    #   (2) PROD-PATTERN heuristic (GAP-A hardening) — the slug/URL carries a high-confidence prod
+    #       signal (prod/production/prd/release/live/legacy as a whole segment, + branch.prodPatterns).
+    #       This is the ALWAYS-ON net that closes the silent-auto-push-to-prod hole with NO opt-in.
+    #   (3) SAFE-REMOTES allowlist (GAP-A opt-in strict mode) — if branch.safeRemotes is set and this
+    #       remote/slug is NOT on it → CONFIRM. Inert (no flip) when safeRemotes is absent, so the AUTO
+    #       tier is preserved by default for consumers who never opt in.
+    _AR_URL="$(_pfg_git -C "$PFG_TARGET_CWD" remote get-url "$ARG_REMOTE" 2>/dev/null || true)"
+    _AR_SLUG=""
+    if [ -n "$_AR_URL" ]; then _AR_SLUG="$(_pfg_url_to_slug "$_AR_URL")"
+    else case "$ARG_REMOTE" in *://*|*@*:*|*/*) _AR_SLUG="$(_pfg_url_to_slug "$ARG_REMOTE")" ;; esac; fi
+    # The signal the heuristic inspects: the resolved slug if we have one, else the raw remote URL,
+    # else the remote name itself (covers a remote named e.g. 'prod' with no resolvable URL).
+    _AR_PROBE="${_AR_SLUG:-${_AR_URL:-$ARG_REMOTE}}"
+    if [ -n "$_AR_SLUG" ] && _pfg_repo_forbidden "$_AR_SLUG" "$FORBIDDEN_REPOS"; then
+      CONFIRM_REASON="Push targets '$ARG_REMOTE' (→ $_AR_SLUG), which is on the forbidden/prod denylist (config.branch.forbiddenRepos) — even though it is the configured remote. A push to prod must be a deliberate human confirmation, never silent. (Agent Bash-tool guard only; not server-side protection.)"
+    elif _pfg_remote_looks_prod "$_AR_PROBE" "$PROD_PATTERNS"; then
+      CONFIRM_REASON="Push targets '$ARG_REMOTE' (→ ${_AR_PROBE}), which matches a PRODUCTION-name pattern (prod/production/release/live/legacy/…). Even though it is the configured remote, a push to a prod-looking target must be a deliberate human confirmation, never silent. If this remote is actually safe, add it to config.branch.safeRemotes (or confirm to proceed). (Heuristic name match — agent Bash-tool guard only; not server-side protection.)"
+    elif ! _pfg_remote_on_safelist "$ARG_REMOTE" "$_AR_SLUG" "$SAFE_REMOTES"; then
+      CONFIRM_REASON="Push targets '$ARG_REMOTE' (→ ${_AR_PROBE}), which is NOT on config.branch.safeRemotes (strict-mode allowlist is enabled). AUTO is restricted to explicitly-blessed remotes; confirm this push, or add the remote to safeRemotes. (Agent Bash-tool guard only; not server-side protection.)"
+    fi
+  fi
+fi
+
+# (C) CONFIRM — push to a PROTECTED branch (main/master/config.base), even on the safe remote, non-force.
+# Landing on a protected/shared branch is consequential; the human confirms. (Force-to-protected already
+# hard-blocked above.)
+if [ -z "$CONFIRM_REASON" ] && [ -n "$TARGET_BRANCH" ]; then
+  for pb in $PROTECTED_BRANCHES; do
+    if [ "$TARGET_BRANCH" = "$pb" ]; then
+      CONFIRM_REASON="Push lands on PROTECTED branch '$pb' (a shared/integration branch). Confirm this is intended — safe topic-branch pushes proceed automatically, but a push to a protected branch is consequential. (Agent Bash-tool guard only; not server-side protection.)"
+      break
+    fi
+  done
+fi
+
+# Not a hard-blocked operation — run the evidence gate FIRST (a missing/stale-evidence exit 2 is a hard
+# block that must win over CONFIRM). pre-push-gate exits 2 to block, or returns 0 when evidence is fresh.
+# A wedge during the tier-signal resolution above (remote slugs / target branch) means the CONFIRM/AUTO
+# classification was computed on an unresolved target — block before even running the evidence gate.
+_pfg_wedge_block_if_flagged
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-exec bash "$SCRIPT_DIR/pre-push-gate"
+set +e
+# Redirect stdin from /dev/null: the parent already consumed its stdin (STDIN_JSON="$(cat)" at the top),
+# so the inherited fd is an exhausted pipe. Detaching the child's stdin avoids any downstream git/jq op
+# blocking on it, and matches the original `exec` form's effective behavior without replacing the process.
+# NO separate timeout here: this whole body already runs INSIDE the Layer-1 self-watchdog child, whose
+# deadline bounds the evidence gate's git rev-parse/diff along with everything else (a wedged evidence
+# gate is caught by the watchdog → fail-closed exit 2). A redundant tight sub-timeout was tried and
+# REMOVED — on a slow-spawn host it false-blocked a LEGITIMATE fresh-evidence run (the gate's own
+# spawn tax, not a wedge, exceeded the cap), which is a fail-CLOSED-the-wrong-way regression. The
+# 124/137 remap below stays as defence-in-depth in case a future caller runs this body unwrapped.
+bash "$SCRIPT_DIR/pre-push-gate" </dev/null
+EVIDENCE_RC=$?
+set -e
+if [ "$EVIDENCE_RC" -eq 124 ] || [ "$EVIDENCE_RC" -eq 137 ] || [ "$EVIDENCE_RC" -gt 128 ]; then
+  echo "BLOCKED: the pre-push evidence gate wedged (rc=$EVIDENCE_RC) resolving HEAD/diff — failing CLOSED." >&2
+  echo "  Could not verify gate evidence is fresh for the pushed code; the push is BLOCKED, not allowed." >&2
+  exit 2
+fi
+# Evidence-gate result handling — FAIL CLOSED on ANY unexpected code (G6). The PreToolUse protocol blocks
+# ONLY on exit 2; every other code (0 allows, and 1/127/126/… are NON-blocking errors). So the evidence
+# gate's exit must be normalized to {0=fresh, 2=block} and NOTHING else may reach the tool as a verdict.
+# The OLD code passed any non-zero VERBATIM via `exit "$EVIDENCE_RC"` on the assumption it is always 2 —
+# but a missing/non-executable sibling pre-push-gate exits 127, and a `set -e` abort exits 1; both are
+# NON-blocking, so the push would proceed UNGATED past a broken evidence gate (fail-OPEN). Mirror the
+# parity-check 0/1/2/3 discipline: an unexpected code FAILS LOUDLY (block), never passes through as a
+# non-blocking verdict. So: 0 -> proceed; 2 -> hard block (relay); ANY other non-zero -> normalize to 2.
+if [ "$EVIDENCE_RC" -eq 2 ]; then
+  exit 2   # evidence gate blocked (the expected hard-block code) — JSON would be ignored on exit 2 anyway.
+fi
+if [ "$EVIDENCE_RC" -ne 0 ]; then
+  echo "BLOCKED: the pre-push evidence gate exited abnormally (rc=$EVIDENCE_RC) — neither 0 (fresh) nor 2" >&2
+  echo "  (block). A non-0/2 code (e.g. 127 = sibling pre-push-gate missing/non-executable, or 1 = a" >&2
+  echo "  set -e abort) is NON-blocking under the PreToolUse protocol, so passing it through would let the" >&2
+  echo "  push proceed UNGATED. Failing CLOSED: the push is BLOCKED. Fix/restore the evidence gate, then retry." >&2
+  exit 2
+fi
+
+# Evidence is fresh. Now emit the tier decision (exit 0 + JSON, per the PreToolUse protocol).
+# FINAL fail-closed checkpoint: a CONFIRM (ask) or AUTO (allow) must only be emitted on a FULLY
+# resolved target. If any bounded git/jq call wedged while computing the remote slug / target branch,
+# the tier could be wrong (e.g. a forbidden-prod remote whose slug never resolved) → BLOCK instead.
+_pfg_wedge_block_if_flagged
+if [ -n "$CONFIRM_REASON" ]; then
+  # CONFIRM tier: ask the user. permissionDecision:ask escalates to a human confirmation prompt; the
+  # agent CANNOT self-approve (the accountability property — the consequential push is gated to a human).
+  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":%s}}\n' \
+    "$(printf '%s' "CONSEQUENTIAL PUSH — confirm to proceed. $CONFIRM_REASON" | _pfg_json_string)"
+  exit 0
+fi
+# AUTO tier: reversible/low-blast-radius (named safe remote, unprotected branch, non-force, evidence
+# fresh). Fall through with exit 0 + explicit allow so the safe push proceeds with NO human handoff —
+# the friction being removed.
+printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":"Reversible push: unprotected branch to the configured safe remote, non-force, gate evidence fresh."}}\n'
+exit 0

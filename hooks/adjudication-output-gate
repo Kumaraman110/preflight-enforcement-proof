@@ -122,9 +122,21 @@ fi
 
 # ─── Validate the content JSON via node (portable; does the schema walk) ──
 # Allow-list of per-finding keys (lib/adjudication-record.md). citedEvidence
-# regex accepts: file:line ( .<ext>:<digits> ), rubric §<digits>, or a named
-# design-doc artifact (MIGRATION_PATTERNS.md / behavior-spec* / name-contract /
-# dependency-map.json / legacy-db-name-contract). Bare prose excuses are rejected.
+# regex accepts: a file:line whose left side is a REAL source/spec extension
+# (.cs/.sql/.json/.md/…) at a token boundary, a rubric rule id §<id> (digit OR
+# letter-prefixed: §17, §G2.1, §M4.3), or a named design-doc artifact
+# (MIGRATION_PATTERNS.md / behavior-spec* / name-contract / dependency-map.json /
+# legacy-db-name-contract). Bare prose excuses are rejected.
+#
+# (M2) The PRE-FIX file:line branch was `\.[A-Za-z0-9]+:[0-9]+` — ANY `word:digit`
+# matched, so prose ("2.5:1 retry ratio", "v1.2:3", "2024.10:00 deploy") satisfied a
+# DEFENDED verdict (false-green); and the rule branch `§[0-9]+` WRONGLY REJECTED a
+# genuine letter-prefixed id like §G2.1 (too loose AND too tight at once). Now the
+# file:line branch is anchored to a real-extension allow-list at a token boundary
+# (^, whitespace, /, or '(' on the left; \b on the right), and the rule branch is
+# widened to §[A-Za-z]*[0-9][A-Za-z0-9.]* so real §G2.1/§M4.3 ids match. The gate
+# stays deliberately LEXICAL (a file:line-shaped token suffices; substantive support
+# is the human-audit layer downstream of the SHA-keyed record — lib/adjudication-record.md).
 VALIDATOR_NODE='
 const fs=require("fs");
 let raw;
@@ -132,7 +144,7 @@ try { raw = JSON.parse(process.argv[1]); }
 catch(e){ console.error("BLOCKED: adjudication record is not valid JSON. Failing closed."); process.exit(2); }
 
 const ALLOW = new Set(["commentId","threadNodeId","path","parentVerdict","citedEvidence","handlerStability","securityEscalated","residualUncertainty"]);
-const CITES = /\.[A-Za-z0-9]+:[0-9]+|§[0-9]+|MIGRATION_PATTERNS\.md|behavior-spec[A-Za-z0-9._-]*|name-contract|dependency-map\.json|legacy-db-name-contract/;
+const CITES = /(^|[\s\/(])[\w.\/-]+\.(cs|csproj|sln|cshtml|razor|json|xml|ya?ml|sql|java|ts|js|py|md|sh):[0-9]+\b|§[A-Za-z]*[0-9][A-Za-z0-9.]*|MIGRATION_PATTERNS\.md|behavior-spec[A-Za-z0-9._-]*|name-contract|dependency-map\.json|legacy-db-name-contract/;
 const DEFENDED = new Set(["DEFENDED","AMBIGUOUS-DEFENDED"]);
 
 const entries = Array.isArray(raw.adjudications) ? raw.adjudications : null;

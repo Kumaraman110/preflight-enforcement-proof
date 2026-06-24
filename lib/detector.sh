@@ -196,6 +196,19 @@ detect_framework_version
 detect_source_root
 detect_project_files
 
-mkdir -p "$(dirname "$OUTPUT_PATH")"
-generate_json > "$OUTPUT_PATH.tmp" && mv "$OUTPUT_PATH.tmp" "$OUTPUT_PATH"
-exit 0
+# (M8) Make the exit code honestly track whether state.json was actually written. PRE-FIX, the
+# generate/mv chain was followed by an UNCONDITIONAL `exit 0`: if the redirect or mv failed (ENOSPC,
+# unwritable/RO path, a `.tmp` left as a directory by a crashed run, a parent dir that can't be created),
+# the detector exited 0 with NO state.json written — a stale prior file was retained and reported as
+# "current". The docstring promises "exit 0 on success, exit 1 on critical failure"; this restores that.
+mkdir -p "$(dirname "$OUTPUT_PATH")" || {
+  echo "detector: cannot create $(dirname "$OUTPUT_PATH") — state NOT updated." >&2
+  exit 1
+}
+if generate_json > "$OUTPUT_PATH.tmp" && mv "$OUTPUT_PATH.tmp" "$OUTPUT_PATH"; then
+  exit 0
+else
+  echo "detector: FAILED to write state to $OUTPUT_PATH (disk/permission/path error) — state NOT updated." >&2
+  rm -f "$OUTPUT_PATH.tmp" 2>/dev/null
+  exit 1
+fi

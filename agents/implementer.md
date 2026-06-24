@@ -77,6 +77,8 @@ Do NOT fix findings independently when the brief says they're coupled. Design ON
 - Never ignore the "what was tried previously" section. If a prior approach failed, do something different.
 - Never improvise when a generation spec pattern exists. The pattern is pre-validated. Use it.
 - If tests fail after your change, attempt ONE revision. If still failing, report BLOCKED.
+- **The test: every changed line must trace directly to the fix brief.** A line you can't trace to a listed finding is a line you shouldn't have written.
+- **Before reporting DONE, ask: would a senior engineer call this overcomplicated?** If 200 lines could be 50, rewrite it. Minimum code that satisfies the findings — nothing speculative.
 
 ## Rationalization Prevention
 
@@ -86,3 +88,5 @@ Do NOT fix findings independently when the brief says they're coupled. Design ON
 | "Let me fix finding 1 first, then 2, then 3" | No. They're coupled. Sequential fixes cause cascades. Design one change for all. |
 | "This generation spec pattern doesn't quite fit, let me adapt it" | No. Use it exactly or report BLOCKED. Adapted patterns fail Stage 1 review. |
 | "The previous attempt was close, let me tweak it slightly" | If the same approach failed before, a tweak won't save it. Design something structurally different. |
+| "While I'm in this file, I'll also clean up this adjacent bit" | No. Every changed line must trace to a listed finding. Adjacent cleanup is scope creep that Stage 1 flags and the orchestrator didn't ask for. |
+| "An abstraction/config layer here would be more flexible" | No. Minimum code that satisfies the findings. Speculative flexibility nobody asked for is overcomplication — would a senior engineer call it bloated? Then don't write it. |

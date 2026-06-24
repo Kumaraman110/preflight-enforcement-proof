@@ -424,6 +424,18 @@ run_behavioral_tests() {
     yellow "SKIP: pre-push-remote-guard-test.sh not found"
   fi
 
+  local cpsl_incident_test="$SCRIPT_DIR/behavioral/pre-push-installed-cpsl-incident-test.sh"
+  if [ -f "$cpsl_incident_test" ]; then
+    if bash "$cpsl_incident_test"; then
+      PASSES=$((PASSES + 12))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: pre-push installed-CPSL-incident tests failed (the inverted-clone repository-target incident, against the INSTALLED artifact: safe-PR allow / forbidden-PR block / implicit-origin-PR block / poc-push passes / origin-push block / alias→CPSL-slug block / direct-CPSL-URL block / no dangerous steering / fresh-install verifies clean / tampered install detected as DRIFT / reinstall restores byte-identical hook / restored hook still blocks the forbidden push). Destination IDENTITY (resolved slug) governs, never the remote-name alias."
+    fi
+  else
+    yellow "SKIP: pre-push-installed-cpsl-incident-test.sh not found"
+  fi
+
   local install_cwd_test="$SCRIPT_DIR/behavioral/install-cwd-independence-test.sh"
   if [ -f "$install_cwd_test" ]; then
     if bash "$install_cwd_test"; then
@@ -547,10 +559,10 @@ run_behavioral_tests() {
   local tripwire_test="$SCRIPT_DIR/behavioral/sentinel-tripwire-test.sh"
   if [ -f "$tripwire_test" ]; then
     if bash "$tripwire_test"; then
-      PASSES=$((PASSES + 8))
+      PASSES=$((PASSES + 10))
     else
       FAILURES=$((FAILURES + 1))
-      red "FAIL: sentinel-tripwire tests failed (gap #5 self-approval hardening)"
+      red "FAIL: sentinel-tripwire tests failed (gap #5 self-approval hardening; incl. the line-244 \$[ arithmetic-misparse that silently broke the variable-expansion obfuscation branch)"
     fi
   else
     yellow "SKIP: sentinel-tripwire-test.sh not found"
@@ -566,6 +578,18 @@ run_behavioral_tests() {
     fi
   else
     yellow "SKIP: registration-check-test.sh not found"
+  fi
+
+  local verify_floor_test="$SCRIPT_DIR/behavioral/verify-manifest-floor-test.sh"
+  if [ -f "$verify_floor_test" ]; then
+    if bash "$verify_floor_test"; then
+      PASSES=$((PASSES + 14))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: verify-manifest-floor tests failed (M11: a degenerate manifest — empty/null/absent/non-object artifacts, or zero files — must FAIL, not 'Integrity: PASS'; H7: a skill must be CONTENT-checked by tree-SHA so a tampered/added/removed/deleted SKILL.md is DRIFT, not a silent OK/WARN; JOINT GUARD: an untampered real install must still PASS)"
+    fi
+  else
+    yellow "SKIP: verify-manifest-floor-test.sh not found"
   fi
 
   local coverage_default_test="$SCRIPT_DIR/behavioral/coverage-default-consistency-test.sh"
@@ -626,6 +650,450 @@ run_behavioral_tests() {
     fi
   else
     yellow "SKIP: coupled-gate-failclosed-test.sh not found"
+  fi
+
+  local migrate_check3_test="$SCRIPT_DIR/behavioral/migrate-check3-shortproc-test.sh"
+  if [ -f "$migrate_check3_test" ]; then
+    if bash "$migrate_check3_test"; then
+      PASSES=$((PASSES + 12))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: migrate-check3-shortproc tests failed (M15: Check-3 must FAIL on a genuinely-absent REACHABLE proc — short 'usp' [the <5 length skip dropped it] OR a heading-only '### \`<proc>\`' proc absent from the summary table [dual-format bypass] — via column-1 + heading-form extraction with the <5 gate deleted; without false-MISSING on header/marker/call-chain words, and still skipping NOT-REACHABLE procs [table- and heading-form] length-independently)"
+    fi
+  else
+    yellow "SKIP: migrate-check3-shortproc-test.sh not found"
+  fi
+
+  local wire_golden_delim_test="$SCRIPT_DIR/behavioral/wire-golden-delimiter-safe-test.sh"
+  if [ -f "$wire_golden_delim_test" ]; then
+    if bash "$wire_golden_delim_test"; then
+      PASSES=$((PASSES + 6))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: wire-golden-delimiter-safe tests failed (M10: a '|' in a sample/golden value must NOT yield an assertion-less exit-0 'green' test — the substitution must be an index()-based literal splice [not sed s|…| nor awk gsub, which corrupts &/backslash], with a PIPESTATUS backstop; real clean fixtures must stay byte-identical with one string.Equals per case)"
+    fi
+  else
+    yellow "SKIP: wire-golden-delimiter-safe-test.sh not found"
+  fi
+
+  local parity_behaviors_guard_test="$SCRIPT_DIR/behavioral/parity-behaviors-key-guard-test.sh"
+  if [ -f "$parity_behaviors_guard_test" ]; then
+    if bash "$parity_behaviors_guard_test"; then
+      PASSES=$((PASSES + 9))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: parity-behaviors-key-guard tests failed (M6: a missing/renamed/typo'd or non-list top-level \"behaviors\" key must be could-not-run exit 3 [symmetric on baseline+current] — never a silent .get default that masks a dropped behavior as CLEAN exit 0 or a phantom exit 2; a genuine zero-behavior {\"behaviors\":[]} still passes the guard and keeps its 0/2 verdict)"
+    fi
+  else
+    yellow "SKIP: parity-behaviors-key-guard-test.sh not found"
+  fi
+
+  local adjudication_citation_test="$SCRIPT_DIR/behavioral/adjudication-citation-regex-test.sh"
+  if [ -f "$adjudication_citation_test" ]; then
+    if bash "$adjudication_citation_test"; then
+      PASSES=$((PASSES + 19))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: adjudication-citation-regex tests failed (M2: the citedEvidence regex must BLOCK prose word:digit tokens [ratio/version/timestamp — was a false-green allow] by anchoring the file:line branch to a real source-extension allow-list, AND must ALLOW genuine letter-prefixed rule ids §G2.1/§M4.3/§D1/§M3 [was wrongly rejected by §[0-9]+] while keeping genuine file:line citations and digit §-ids accepted)"
+    fi
+  else
+    yellow "SKIP: adjudication-citation-regex-test.sh not found"
+  fi
+
+  local depmap_empty_test="$SCRIPT_DIR/behavioral/depmap-empty-mapfiles-test.sh"
+  if [ -f "$depmap_empty_test" ]; then
+    if bash "$depmap_empty_test"; then
+      PASSES=$((PASSES + 5))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: depmap-empty-mapfiles tests failed (M3: empty/missing mapFiles must be STALE exit 1 and NOT re-stamped — never a FRESH exit 0 that launders a non-validatable sidecar; a correct list still validates normally)"
+    fi
+  else
+    yellow "SKIP: depmap-empty-mapfiles-test.sh not found"
+  fi
+
+  local rubric_added_failclosed_test="$SCRIPT_DIR/behavioral/rubric-source-added-failclosed-test.sh"
+  if [ -f "$rubric_added_failclosed_test" ]; then
+    if bash "$rubric_added_failclosed_test"; then
+      PASSES=$((PASSES + 4))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: rubric-source-added-failclosed tests failed (M5: --added mode must check git's real exit status BEFORE the grep — a git failure [bad base-ref, non-git dir, shallow/detached] is could-not-run exit 2, NEVER a swallowed empty-diff CLEAN exit 0; a legitimately-empty diff stays CLEAN exit 0)"
+    fi
+  else
+    yellow "SKIP: rubric-source-added-failclosed-test.sh not found"
+  fi
+
+  local detector_write_test="$SCRIPT_DIR/behavioral/detector-write-failclosed-test.sh"
+  if [ -f "$detector_write_test" ]; then
+    if bash "$detector_write_test"; then
+      PASSES=$((PASSES + 5))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: detector-write-failclosed tests failed (M8: a failed state-file write [redirect/mv error, un-creatable parent, .tmp occupied] must exit 1 with a diagnostic and leave no stale file as 'current' — never the unconditional exit 0 that retained a stale state.json; a normal write still exits 0 with valid JSON)"
+    fi
+  else
+    yellow "SKIP: detector-write-failclosed-test.sh not found"
+  fi
+
+  local blob_syntax_nprefix_test="$SCRIPT_DIR/behavioral/blob-syntax-nprefix-test.sh"
+  if [ -f "$blob_syntax_nprefix_test" ]; then
+    if bash "$blob_syntax_nprefix_test"; then
+      PASSES=$((PASSES + 5))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: blob-syntax-nprefix tests failed (M9: --check-blob-syntax must catch an 'N|' line-prefix corruption that is valid bash grammar [single-statement-per-line passes bash -n] via a structural scan [head-1 N|-prefixed OR >=2 consecutive ^[0-9]+| lines] + a shebang sanity check — while a clean hook, a single incidental N| heredoc line, and the multi-line c0e01a4 shape behave correctly)"
+    fi
+  else
+    yellow "SKIP: blob-syntax-nprefix-test.sh not found"
+  fi
+
+  local selftest_missing_gate_test="$SCRIPT_DIR/behavioral/selftest-missing-gate-test.sh"
+  if [ -f "$selftest_missing_gate_test" ]; then
+    if bash "$selftest_missing_gate_test"; then
+      PASSES=$((PASSES + 4))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: selftest-missing-gate tests failed (M12: preflight-selftest must report a MISSING mandatory gate as DEAD exit 1 [not SKIP+green], and a coverage assertion must catch any PreToolUse gate registered in hooks.json but not self-tested [incl. the prior behavioral-contract-gate omission] — while the genuinely-optional dependency-map-validator stays a legitimate SKIP when absent)"
+    fi
+  else
+    yellow "SKIP: selftest-missing-gate-test.sh not found"
+  fi
+
+  local coupled_pathform_test="$SCRIPT_DIR/behavioral/coupled-edit-pathform-test.sh"
+  if [ -f "$coupled_pathform_test" ]; then
+    if bash "$coupled_pathform_test"; then
+      PASSES=$((PASSES + 20))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: coupled-edit-pathform tests failed (H3+H4: membership must match an ABSOLUTE/./-prefixed file_path by canonical /-anchored-suffix — not fail open — without false-blocking a shared-basename file; and a group counts unacknowledged unless acknowledged==true [missing/null/string/0 all BLOCK]; writer normalizes missing acknowledged->false; jq and python backends must agree)"
+    fi
+  else
+    yellow "SKIP: coupled-edit-pathform-test.sh not found"
+  fi
+
+  local coupled_matcher_test="$SCRIPT_DIR/behavioral/coupled-edit-matcher-test.sh"
+  if [ -f "$coupled_matcher_test" ]; then
+    if bash "$coupled_matcher_test"; then
+      PASSES=$((PASSES + 9))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: coupled-edit-matcher tests failed (M13: coupled-edit-gate must be registered under the Write AND Edit|MultiEdit matchers so a whole-file Write/MultiEdit to a coupled file is gated, not just Edit; a Write to a coupled file in an unacked group must BLOCK, and an unrelated/acknowledged Write must ALLOW; the Bash-seam residual must be honesty-labeled in fix-and-close SKILL.md)"
+    fi
+  else
+    yellow "SKIP: coupled-edit-matcher-test.sh not found"
+  fi
+
+  local agent_scorer_test="$SCRIPT_DIR/behavioral/agent-scorer-test.sh"
+  if [ -f "$agent_scorer_test" ]; then
+    if bash "$agent_scorer_test"; then
+      PASSES=$((PASSES + 14))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: agent-scorer tests failed (independent judgment scorer; RED->GREEN overclaim + no-gate-feed)"
+    fi
+  else
+    yellow "SKIP: agent-scorer-test.sh not found"
+  fi
+
+  local decision_emission_test="$SCRIPT_DIR/behavioral/decision-emission-test.sh"
+  if [ -f "$decision_emission_test" ]; then
+    if bash "$decision_emission_test"; then
+      PASSES=$((PASSES + 8))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: decision-emission tests failed (record-claim faithful recorder; verbatim + no-self-assess + end-to-end)"
+    fi
+  else
+    yellow "SKIP: decision-emission-test.sh not found"
+  fi
+
+  local rubric_overlay_test="$SCRIPT_DIR/behavioral/rubric-overlay-check-test.sh"
+  if [ -f "$rubric_overlay_test" ]; then
+    if bash "$rubric_overlay_test"; then
+      PASSES=$((PASSES + 8))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: rubric-overlay-check tests failed (Model B governance POC; overlay must not weaken the base)"
+    fi
+  else
+    yellow "SKIP: rubric-overlay-check-test.sh not found"
+  fi
+
+  local bc_gate_test="$SCRIPT_DIR/behavioral/behavioral-contract-gate-test.sh"
+  if [ -f "$bc_gate_test" ]; then
+    if bash "$bc_gate_test"; then
+      PASSES=$((PASSES + 11))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: behavioral-contract-gate tests failed (staged fail-closed mechanism; bypass must BLOCK, spec-output not accepted as contract)"
+    fi
+  else
+    yellow "SKIP: behavioral-contract-gate-test.sh not found"
+  fi
+
+  local rubric_resolve_test="$SCRIPT_DIR/behavioral/rubric-resolve-test.sh"
+  if [ -f "$rubric_resolve_test" ]; then
+    if bash "$rubric_resolve_test"; then
+      PASSES=$((PASSES + 8))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: rubric-resolve tests failed (Model B merge engine; weakening overlay must ABORT the merge, not silently drop)"
+    fi
+  else
+    yellow "SKIP: rubric-resolve-test.sh not found"
+  fi
+
+  local rubric_source_test="$SCRIPT_DIR/behavioral/rubric-source-check-test.sh"
+  if [ -f "$rubric_source_test" ]; then
+    if bash "$rubric_source_test"; then
+      PASSES=$((PASSES + 9))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: rubric-source-check tests failed (enforced provenance; a rule with no Source line must fail — mechanism not convention)"
+    fi
+  else
+    yellow "SKIP: rubric-source-check-test.sh not found"
+  fi
+
+  local codeowners_test="$SCRIPT_DIR/behavioral/base-owners-codeowners-test.sh"
+  if [ -f "$codeowners_test" ]; then
+    if bash "$codeowners_test"; then
+      PASSES=$((PASSES + 5))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: base-owners-codeowners tests failed (base rubric owner-governed; stub state must be honestly surfaced, not silently fail-open)"
+    fi
+  else
+    yellow "SKIP: base-owners-codeowners-test.sh not found"
+  fi
+
+  local rubric_ci_test="$SCRIPT_DIR/behavioral/rubric-governance-ci-test.sh"
+  if [ -f "$rubric_ci_test" ]; then
+    if bash "$rubric_ci_test"; then
+      PASSES=$((PASSES + 6))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: rubric-governance-ci tests failed (advisory-first CI step; must wire both checks, stay advisory, be dead-gate-safe)"
+    fi
+  else
+    yellow "SKIP: rubric-governance-ci-test.sh not found"
+  fi
+
+  local spec_div_test="$SCRIPT_DIR/behavioral/spec-divergence-poc-test.sh"
+  if [ -f "$spec_div_test" ]; then
+    if bash "$spec_div_test"; then
+      PASSES=$((PASSES + 8))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: spec-divergence-poc tests failed (POC#1 token-Jaccard scorer math; identical->0, maxdiff->1, deterministic, computed-not-self-assessed)"
+    fi
+  else
+    yellow "SKIP: spec-divergence-poc-test.sh not found"
+  fi
+
+  local spec_integ_cluster_test="$SCRIPT_DIR/behavioral/spec-integrity-cluster-test.sh"
+  if [ -f "$spec_integ_cluster_test" ]; then
+    if bash "$spec_integ_cluster_test"; then
+      PASSES=$((PASSES + 14))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: spec-integrity-cluster tests failed (M4: a zero-.cs source + a spec declaring an anchor must FAIL could-not-verify, not PASS; H5: an empty/empty-category spec must NOT skip the source->spec forge-catch; M7: a K&R 'public class Foo {' line must NOT yield a phantom field; THE 3-WAY GUARD: a REAL omitted property STILL FAILs after all three — M7's narrowing must not blunt H5's catch)"
+    fi
+  else
+    yellow "SKIP: spec-integrity-cluster-test.sh not found"
+  fi
+
+  local spec_div_sem_test="$SCRIPT_DIR/behavioral/spec-divergence-semantic-poc-test.sh"
+  if [ -f "$spec_div_sem_test" ]; then
+    if bash "$spec_div_sem_test"; then
+      PASSES=$((PASSES + 8))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: spec-divergence-semantic-poc tests failed (POC#2 semantic aggregator; agree->0, fork->1, p1-inversion-fixed, vague>specified separation)"
+    fi
+  else
+    yellow "SKIP: spec-divergence-semantic-poc-test.sh not found"
+  fi
+
+  local spec_div_eng_test="$SCRIPT_DIR/behavioral/spec-divergence-engine-test.sh"
+  if [ -f "$spec_div_eng_test" ]; then
+    if bash "$spec_div_eng_test"; then
+      PASSES=$((PASSES + 11))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: spec-divergence-engine tests failed (productionized engine; blind-judge-brief, semantic score, ELICIT/PROCEED decision, targeted questions, elicited artifact, advisory threshold)"
+    fi
+  else
+    yellow "SKIP: spec-divergence-engine-test.sh not found"
+  fi
+
+  local spec_div_wire_test="$SCRIPT_DIR/behavioral/spec-divergence-wiring-test.sh"
+  if [ -f "$spec_div_wire_test" ]; then
+    if bash "$spec_div_wire_test"; then
+      PASSES=$((PASSES + 10))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: spec-divergence-wiring tests failed (Phase 0 wired into scaffold+migrate at fresh-ambiguity entry points, advisory, not on internal dispatches)"
+    fi
+  else
+    yellow "SKIP: spec-divergence-wiring-test.sh not found"
+  fi
+
+  local spec_div_pref_test="$SCRIPT_DIR/behavioral/spec-divergence-prefilter-test.sh"
+  if [ -f "$spec_div_pref_test" ]; then
+    if bash "$spec_div_pref_test"; then
+      PASSES=$((PASSES + 7))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: spec-divergence-prefilter tests failed (cheap mechanical pre-check; obviously-detailed->SKIP, vague/padded/borderline/short/empty->RUN-CHECK, conservative; drama can't manufacture a SKIP)"
+    fi
+  else
+    yellow "SKIP: spec-divergence-prefilter-test.sh not found"
+  fi
+
+  local cov_gap_test="$SCRIPT_DIR/behavioral/coverage-gap-detection-test.sh"
+  if [ -f "$cov_gap_test" ]; then
+    if bash "$cov_gap_test"; then
+      PASSES=$((PASSES + 13))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: coverage-gap-detection tests failed (L1 source-agnostic capture: any source reaches capture; L2 mechanical gap classification: BLIND-SPOT/UNCOVERED-CLASS/NEW-COVERAGE; INTEGRITY: classification is computed from artifacts, immune to the working agent's self-assessment — claims can't suppress or manufacture a gap)"
+    fi
+  else
+    yellow "SKIP: coverage-gap-detection-test.sh not found"
+  fi
+
+  local cov_gap_signal_test="$SCRIPT_DIR/behavioral/coverage-gap-signal-body-test.sh"
+  if [ -f "$cov_gap_signal_test" ]; then
+    if bash "$cov_gap_signal_test"; then
+      PASSES=$((PASSES + 3))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: coverage-gap-signal-body tests failed (G3: a detection-signal keyword matched in a rule BODY must classify BLIND-SPOT attributed to the containing rule, not be silently dropped to UNCOVERED-CLASS — a covered miss must not be mislabeled an uncovered class; an absent token must still be UNCOVERED-CLASS, no manufactured coverage)"
+    fi
+  else
+    yellow "SKIP: coverage-gap-signal-body-test.sh not found"
+  fi
+
+  local cap_write_test="$SCRIPT_DIR/behavioral/capture-finding-write-failclosed-test.sh"
+  if [ -f "$cap_write_test" ]; then
+    if bash "$cap_write_test"; then
+      PASSES=$((PASSES + 4))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: capture-finding-write-failclosed tests failed (G4: a FAILED capture write must FAIL CLOSED — error + non-zero exit, no 'captured:' success — never a silent loss; a lost capture is an invisible accountability gap. Normal writable capture and the usage-error path must be unchanged)"
+    fi
+  else
+    yellow "SKIP: capture-finding-write-failclosed-test.sh not found"
+  fi
+
+  local sot_test="$SCRIPT_DIR/behavioral/source-of-truth-check-test.sh"
+  if [ -f "$sot_test" ]; then
+    if bash "$sot_test"; then
+      PASSES=$((PASSES + 12))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: source-of-truth-check tests failed (the third gap-detector: a missing/empty/unreadable required source -> ESCALATE not guess; present -> PROCEED; INTEGRITY: presence is computed from the filesystem, immune to the agent's self-assessment — a claim of sufficiency can't override a mechanical absence, and drama can't manufacture a false escalation)"
+    fi
+  else
+    yellow "SKIP: source-of-truth-check-test.sh not found"
+  fi
+
+  local sot_jq_test="$SCRIPT_DIR/behavioral/source-of-truth-jq-absent-test.sh"
+  if [ -f "$sot_jq_test" ]; then
+    if bash "$sot_jq_test"; then
+      PASSES=$((PASSES + 3))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: source-of-truth-jq-absent tests failed (G5: when --json is supplied but jq is absent, the gate must FAIL CLOSED — ESCALATE, not silently drop the json-declared sources and PROCEED on a --require subset; the jq-present path must be unchanged)"
+    fi
+  else
+    yellow "SKIP: source-of-truth-jq-absent-test.sh not found"
+  fi
+
+  local parity_exit_test="$SCRIPT_DIR/behavioral/parity-check-exit-codes-test.sh"
+  if [ -f "$parity_exit_test" ]; then
+    if bash "$parity_exit_test"; then
+      PASSES=$((PASSES + 9))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: parity-check-exit-codes tests failed (flagship-gate false-green; malformed spec MUST be 3=check-error, never 1=advisory)"
+    fi
+  else
+    yellow "SKIP: parity-check-exit-codes-test.sh not found"
+  fi
+
+  local bare_push_test="$SCRIPT_DIR/behavioral/pre-push-bare-remote-test.sh"
+  if [ -f "$bare_push_test" ]; then
+    if bash "$bare_push_test"; then
+      PASSES=$((PASSES + 10))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: pre-push-bare-remote tests failed (three-tier push policy: AUTO=allow / CONFIRM=ask / BLOCK=exit2; reversible pushes proceed, consequential ones confirm, force-to-protected & forbidden blocked)"
+    fi
+  else
+    yellow "SKIP: pre-push-bare-remote-test.sh not found"
+  fi
+
+  local wedge_failclosed_test="$SCRIPT_DIR/behavioral/pre-push-wedge-failclosed-test.sh"
+  if [ -f "$wedge_failclosed_test" ]; then
+    if bash "$wedge_failclosed_test"; then
+      PASSES=$((PASSES + 6))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: pre-push-wedge-failclosed tests failed (a wedged/slow push-safety hook must BLOCK (exit 2), never fall through to a non-blocking 124/137 that lets the push proceed ungated)"
+    fi
+  else
+    yellow "SKIP: pre-push-wedge-failclosed-test.sh not found"
+  fi
+
+  local evidence_rc_test="$SCRIPT_DIR/behavioral/pre-push-evidence-rc-failclosed-test.sh"
+  if [ -f "$evidence_rc_test" ]; then
+    if bash "$evidence_rc_test"; then
+      PASSES=$((PASSES + 4))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: pre-push-evidence-rc-failclosed tests failed (G6: an evidence-gate exit that is neither 0 nor 2 — e.g. 127 missing sibling, 1 set-e abort — is NON-blocking under PreToolUse; it must be normalized to a hard BLOCK (exit 2), never passed through; exit 0 and exit 2 paths unchanged)"
+    fi
+  else
+    yellow "SKIP: pre-push-evidence-rc-failclosed-test.sh not found"
+  fi
+
+  local parser_bypass_test="$SCRIPT_DIR/behavioral/pre-push-parser-bypass-test.sh"
+  if [ -f "$parser_bypass_test" ]; then
+    if bash "$parser_bypass_test"; then
+      PASSES=$((PASSES + 26))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: pre-push-parser-bypass tests failed (H1+H2: the structural push parser must detect+gate every invocation form — git -C/-c/--git-dir push, command/\\\\/env-prefix/abs-path git push, (git push)/{ git push;}, the '+'-refspec force [H1] — and FAIL CLOSED to CONFIRM on unparseable indirection (eval/bash -c/xargs); benign 'push'-containing commands and a normal safe push must NOT be over-gated)"
+    fi
+  else
+    yellow "SKIP: pre-push-parser-bypass-test.sh not found"
+  fi
+
+  local gapa_test="$SCRIPT_DIR/behavioral/pre-push-gapa-prod-pattern-test.sh"
+  if [ -f "$gapa_test" ]; then
+    if bash "$gapa_test"; then
+      PASSES=$((PASSES + 7))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: pre-push-gapa-prod-pattern tests failed (GAP-A: a configured PROD remote not on the denylist, unprotected branch, must classify CONFIRM not silent AUTO; genuinely-safe remotes must stay AUTO)"
+    fi
+  else
+    yellow "SKIP: pre-push-gapa-prod-pattern-test.sh not found"
+  fi
+
+  local crlf_denylist_test="$SCRIPT_DIR/behavioral/pre-push-crlf-denylist-test.sh"
+  if [ -f "$crlf_denylist_test" ]; then
+    if bash "$crlf_denylist_test"; then
+      PASSES=$((PASSES + 4))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: pre-push-crlf-denylist tests failed (G1: a CRLF-corrupted NON-LAST forbidden remote/repo must still BLOCK — the denylist match must be robust to jq's CRLF on every element, not just the last; fail CLOSED, never silently allow a push to a denylisted prod destination)"
+    fi
+  else
+    yellow "SKIP: pre-push-crlf-denylist-test.sh not found"
   fi
 }
 

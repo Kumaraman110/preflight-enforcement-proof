@@ -30,13 +30,17 @@
     }
   },
 
-  "_comment_branch": "base = the protected target branch; remote = the intended push target. forbiddenRemotes/forbiddenRepos are an EXPLICIT denylist the pre-push guard checks the RESOLVED target against, REGARDLESS of 'remote' — set these on a clone whose 'origin' (or any remote) points at a legacy/production repo that must never be pushed to. forbiddenRemotes = remote NAMES; forbiddenRepos = owner/repo slugs or full URLs. Guard is agent-Bash-tool-only and fail-open (empty lists = inert) — not server-side protection. PER-CLONE OVERRIDE: if THIS clone's topology differs from the committed values (e.g. an inverted clone where the real push target is a different remote), do NOT edit this committed file — create a gitignored .preflight/config.local.json with only the topology keys to override (branch.remote/base/migrationPrefix, migration.*). Gate thresholds, loop/review policy, rubric, and the forbidden lists are NOT overridable locally (see lib/config-overlay.sh).",
+  "_comment_branch": "base = the protected target branch; remote = the intended push target. *** VERIFY 'remote' BEFORE ANY PUSH ***: the pre-push guard treats branch.remote as the INTENDED target and does NOT block a push to it, so if your repo's 'origin' (the default below) is a LEGACY/PRODUCTION repo, leaving remote='origin' points the push pipeline at PROD. This is exactly the SessionToken inversion (committed remote=origin while origin was legacy prod). ON SETUP: (1) confirm 'origin' is the repo you intend to push to; if not, set 'remote' correctly; (2) if 'origin' (or any remote) must NEVER be pushed to, add it to forbiddenRemotes/forbiddenRepos, the denylist the guard checks the RESOLVED target against REGARDLESS of 'remote'. forbiddenRemotes = remote NAMES; forbiddenRepos = owner/repo slugs or full URLs. The guard ALSO blocks a bare 'git push' (no named remote) when push-gating is opted in, because a bare push's default target is unvalidatable. Guard is agent-Bash-tool-only and fail-open (empty lists = inert; no config = no gating), NOT server-side protection. PER-CLONE OVERRIDE: if THIS clone's topology differs from the committed values, do NOT edit this committed file; create a gitignored .preflight/config.local.json with only the topology keys (branch.remote/base/migrationPrefix, migration.*). Gate thresholds, loop/review policy, rubric, and the forbidden lists are NOT overridable locally (see lib/config-overlay.sh).",
   "branch": {
     "base": "main",
     "remote": "origin",
+    "_comment_remote_VERIFY": "DEFAULT is 'origin'. CONFIRM this is your intended push target, NOT a legacy/prod repo, before the pipeline pushes. If origin is prod: change this, or add origin to forbiddenRemotes below.",
     "migrationPrefix": "feature/migrate-",
     "forbiddenRemotes": [],
-    "forbiddenRepos": []
+    "forbiddenRepos": [],
+    "_comment_gapA": "GAP-A hardening (push-autonomy): a configured remote that is PROD but NOT denylisted, on an unprotected branch, used to classify AUTO (silent auto-push to prod). Two layers now flip that to CONFIRM (a human-confirm prompt, never a silent push; never a hard block): (1) prodPatterns = extra name-segment tokens that flag a remote URL/slug as prod; the built-in net already catches prod/production/prd/release/live/legacy as whole segments, this EXTENDS it (e.g. an internal codename). (2) safeRemotes = an OPT-IN allowlist; when non-empty, AUTO is restricted to the listed remote names/slugs and every other configured remote -> CONFIRM (fail-safe strict mode; the first push to a new safe remote then needs one confirmation until you add it). Both are committed-config only (NOT overlayable, same as the forbidden lists). Leaving both empty keeps the always-on prodPatterns net and preserves AUTO for plainly-named safe remotes.",
+    "prodPatterns": [],
+    "safeRemotes": []
   },
 
   "test": {

@@ -13,6 +13,11 @@
 #   - <Service>/             per-service baseline artifacts (behavior-spec, dependency-map,
 #                            name-contract, extraction SQL) — committed migration inputs
 #   - adjudications/         the SHA-keyed verdict-of-record (deliberately tracked)
+#   - decisions/             the orchestrator's append-only CLAIM log (hooks/record-claim writes it;
+#                            tools/preflight-agent-scorer.sh grades it later). Same class as
+#                            adjudications/: a decision-of-record you score later must be DURABLE and
+#                            AUDITABLE, so it is deliberately TRACKED — a claim that vanished before it
+#                            was scored would defeat the accountability thesis. (Spec: lib/agent-scorer.md.)
 #
 # gitignore only excludes UNtracked files from staging, so already-tracked files above
 # are unaffected; this guard exists to stop a broad `git add` from sweeping runtime state
@@ -35,3 +40,8 @@ metrics.json
 
 # Migration progress checkpoint (session-local recovery state)
 migrate-checkpoint.json
+
+# Agent track-record scores (tools/preflight-agent-scorer.sh output) — ADVISORY, regenerable from
+# the judgment + ground-truth artifacts. Per-run, reported to a human; NEVER feeds a gate. Runtime
+# state, not a decision-of-record — never commit. (Spec: lib/agent-scorer.md.)
+track-record/

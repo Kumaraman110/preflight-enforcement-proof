@@ -90,9 +90,12 @@ jq '. + {permissions: {allow: ["Bash(git status)"]}, "$schema": "x"}' \
 OUT=$(bash "$CHECK" "$R1B" "$SRC_HOOKS" 2>&1); RC=$?
 assert "R1b healthy consumer with extra settings keys passes" 0 "$RC" "$OUT" "RESULT: PASS"
 
-# ── R2: MISSING-REGISTRATION (coupled-edit-gate stripped from Edit matcher) ───
+# ── R2: MISSING-REGISTRATION (coupled-edit-gate stripped from EVERY matcher it's registered under) ───
+# coupled-edit-gate is registered under BOTH the Write and the Edit|MultiEdit matchers (M13 — a whole-file
+# Write/MultiEdit to a coupled file must be gated, not just Edit). To genuinely test "missing registration
+# detected," strip the gate from ALL hook blocks (not just one matcher) so the check sees it truly absent.
 R2="${TMP}/r2"; build_consumer "$R2"
-jq '(.hooks.PreToolUse[] | select(.matcher == "Edit") | .hooks)
+jq '(.hooks.PreToolUse[].hooks)
         |= map(select(.command | test("coupled-edit-gate") | not))' \
     "${R2}/.claude/settings.json" > "${R2}/.claude/settings.json.tmp" \
     && mv "${R2}/.claude/settings.json.tmp" "${R2}/.claude/settings.json"

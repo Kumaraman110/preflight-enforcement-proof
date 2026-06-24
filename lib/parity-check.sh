@@ -5,10 +5,23 @@
 #
 # Usage: parity-check.sh <baseline.json> <current.json>
 #
-# Output: JSON parity report to stdout. Exit codes:
-#   0 = clean (no blocking violations)
-#   1 = advisory violations only (warnings, non-blocking)
-#   2 = blocking violations (missing or changed high-confidence behaviors)
+# Output: JSON parity report to stdout. Exit codes (0/1/2/3 — each DISTINCT):
+#   0 = CLEAN          — no blocking and no advisory violations
+#   1 = ADVISORY       — advisory violations ONLY (warnings, non-blocking)
+#   2 = BLOCKING       — blocking violations (missing/changed high-confidence behaviors)
+#   3 = CHECK-ERROR    — the gate COULD NOT RUN (usage error, missing/unreadable/corrupt spec,
+#                        no Python, or any unhandled engine exception). This is NOT a verdict —
+#                        it means the check is broken and the result is unknown.
+#
+# WHY 3 EXISTS (the false-green this closes): exit 1 used to be OVERLOADED — it meant BOTH
+# "advisory verdict" AND "the engine crashed" (a json.load() on a truncated/corrupt
+# behavior-spec-current.json raises JSONDecodeError, and under `set -euo pipefail` Python
+# exits 1 — IDENTICAL to a clean-advisory result). So a CRASHED parity check was
+# indistinguishable from a non-blocking advisory, and any caller treating 1 as non-blocking
+# would pass a BROKEN flagship gate GREEN. Exit 3 makes could-not-run DISTINCT from advisory:
+# a crash now FAILS LOUDLY and can never be confused with a passing-advisory result.
+# CALLER CONTRACT: treat 0 = pass, 1 = pass-with-warning, 2 = FAIL (drift), 3 = FAIL (broken
+# check — fix the spec/engine), and any OTHER code = FAIL (unexpected). Never treat 3 as pass.
 #
 # The engine diffs by canonical-id → observable. It categorizes each diff:
 #   MISSING  — id in baseline, absent in current (dropped behavior)
@@ -25,19 +38,22 @@ set -euo pipefail
 BASELINE="${1:-}"
 CURRENT="${2:-}"
 
+# Pre-flight bash errors are CHECK-ERROR (could-not-run), NOT blocking-violations — they mean
+# the gate could not even start, so they exit 3 (distinct from a real exit-2 drift verdict and
+# from an exit-1 advisory). A caller must fail loudly on 3, never treat it as pass-with-warning.
 if [ -z "$BASELINE" ] || [ -z "$CURRENT" ]; then
-  echo '{"error": "Usage: parity-check.sh <baseline.json> <current.json>"}' >&2
-  exit 2
+  echo '{"error": "Usage: parity-check.sh <baseline.json> <current.json>", "exit_meaning": "check-error"}' >&2
+  exit 3
 fi
 
 if [ ! -f "$BASELINE" ]; then
-  echo "{\"error\": \"Baseline not found: $BASELINE\"}" >&2
-  exit 2
+  echo "{\"error\": \"Baseline not found: $BASELINE\", \"exit_meaning\": \"check-error\"}" >&2
+  exit 3
 fi
 
 if [ ! -f "$CURRENT" ]; then
-  echo "{\"error\": \"Current not found: $CURRENT\"}" >&2
-  exit 2
+  echo "{\"error\": \"Current not found: $CURRENT\", \"exit_meaning\": \"check-error\"}" >&2
+  exit 3
 fi
 
 # Detect a working Python interpreter
@@ -52,13 +68,43 @@ for py_candidate in python python3; do
 done
 
 if [ -z "$PYTHON_CMD" ]; then
-  echo '{"error": "No working Python interpreter found. parity-check requires Python."}' >&2
-  exit 2
+  echo '{"error": "No working Python interpreter found. parity-check requires Python.", "exit_meaning": "check-error"}' >&2
+  exit 3
 fi
 
+# Run the engine WITHOUT letting `set -e` abort before we can remap the exit code. Capture the
+# raw code, then normalize: 0/1/2/3 pass through; ANY other code (e.g. a SIGKILL → 137, or an
+# interpreter-level failure that escaped the in-Python guard) is remapped to 3 (check-error),
+# never to a verdict. This is the trailing backstop the consumer fix added.
+set +e
 "$PYTHON_CMD" - "$BASELINE" "$CURRENT" <<'PYTHON_SCRIPT'
 import json
 import sys
+
+class ParityCheckError(Exception):
+    """(M6) A could-not-run condition raised from inside main(). Caught by the module-level
+    `except BaseException` arm below, which exits 3 (check-error) — NEVER a 0/1/2 verdict."""
+    pass
+
+def require_behaviors(doc, which):
+    """(M6) Fail CLOSED (could-not-run) if a spec lacks a usable top-level "behaviors" list.
+    PRE-FIX the engine read `doc.get("behaviors", [])`, so a MISSING or RENAMED/typo'd key
+    (e.g. "behaviour"/"behaviors") silently became an EMPTY list — a baseline that dropped+changed
+    high-confidence behaviors then compared as zero-behaviors and the verdict came back CLEAN exit 0
+    (a SAFETY-false-green); a current-side typo produced a PHANTOM exit-2 drift. The MINIMAL
+    non-trivial definition is "key present AND is a list": a genuine zero-behavior service is
+    {"behaviors":[]} (present, list, len 0) and PASSES (normal empty diff). Stronger definitions were
+    deliberately rejected — requiring an envelope (completeness_check/service) would over-block the
+    stack-neutral engine (fixtures feed bare {"behaviors":[...]}), and requiring len>0 would false-fail
+    a real zero-behavior service. Run SYMMETRICALLY on baseline and current."""
+    if "behaviors" not in doc:
+        raise ParityCheckError(
+            "%s spec has no top-level \"behaviors\" key (a missing/renamed/typo'd key would silently "
+            "compare as zero behaviors and mask a real drop — failing closed as could-not-run)." % which)
+    if not isinstance(doc["behaviors"], list):
+        raise ParityCheckError(
+            "%s spec's \"behaviors\" is %s, not a list (cannot iterate behaviors — failing closed as "
+            "could-not-run)." % (which, type(doc["behaviors"]).__name__))
 
 def normalize_observable(obs):
     """Normalize observable for comparison — sort keys, lowercase string values for non-field keys."""
@@ -91,6 +137,11 @@ def main():
     with open(current_path) as f:
         current = json.load(f)
 
+    # (M6) Symmetric presence+type guard — BEFORE building the id maps. A spec missing/typo'ing the
+    # "behaviors" key, or carrying a non-list there, is could-not-run (raises -> exit 3), not a verdict.
+    require_behaviors(baseline, "baseline")
+    require_behaviors(current, "current")
+
     # Defensive canonicalization net (backstop for the spec-analyst id rules).
     # The DURABLE fix lives in agents/spec-analyst.md (deterministic id derivation);
     # this normalizes residual cross-extraction noise so it does not surface as phantom
@@ -108,9 +159,10 @@ def main():
                 return head + ":endpoint:" + method + ":" + path
         return bid
 
-    # Build id -> behavior maps
+    # Build id -> behavior maps. Direct indexing (not .get(...,[])) — presence+type already asserted
+    # by require_behaviors above, so an absent/typo'd key can no longer silently degrade to an empty list.
     base_map = {}
-    for b in baseline.get("behaviors", []):
+    for b in baseline["behaviors"]:
         bid = canonicalize_id(b.get("id", ""))
         obs = b.get("observable", b.get("observables", {}))
         conf = b.get("confidence", "high")
@@ -120,7 +172,7 @@ def main():
         base_map[bid] = {"observable": obs, "confidence": conf, "category": b.get("category", "")}
 
     curr_map = {}
-    for b in current.get("behaviors", []):
+    for b in current["behaviors"]:
         bid = canonicalize_id(b.get("id", ""))
         obs = b.get("observable", b.get("observables", {}))
         conf = b.get("confidence", "high")
@@ -251,5 +303,38 @@ def main():
     sys.exit(exit_code)
 
 if __name__ == "__main__":
-    main()
+    # Guard the engine: a verdict (main() calls sys.exit(0|1|2)) re-raises UNCHANGED, so a real
+    # advisory stays 1 and a real drift stays 2. ANY other exception — JSONDecodeError on a
+    # truncated/corrupt spec, a KeyError, an OSError, anything — becomes exit 3 (check-error),
+    # NEVER exit 1. This is the line that closes the false-green: a crashed engine can no longer
+    # masquerade as a clean-advisory result.
+    try:
+        main()
+    except SystemExit as e:
+        code = e.code if isinstance(e.code, int) else (0 if e.code is None else 1)
+        if code in (0, 1, 2):
+            raise                      # genuine verdict — pass through unchanged
+        # An unexpected sys.exit() value from inside main() is treated as could-not-run.
+        sys.stderr.write('{"error": "parity engine exited with an unexpected code", "exit_meaning": "check-error"}\n')
+        sys.exit(3)
+    except BaseException as e:         # noqa: BLE001 — deliberately catch-all; a crash must not look like advisory
+        sys.stderr.write(json.dumps({
+            "error": "parity engine could not run: %s: %s" % (type(e).__name__, str(e)),
+            "exit_meaning": "check-error"
+        }) + "\n")
+        sys.exit(3)
 PYTHON_SCRIPT
+PARITY_EXIT=$?
+set -e
+
+# Trailing remap (the backstop): 0/1/2/3 are the only legitimate codes. Anything else — e.g. the
+# Python process killed by a signal (SIGKILL → 137, SIGTERM → 143) before it could emit 3, or any
+# shell-level failure — is remapped to 3 (check-error). A non-verdict code must NEVER be confused
+# with a verdict (especially not with advisory=1 or clean=0).
+case "$PARITY_EXIT" in
+  0|1|2|3) exit "$PARITY_EXIT" ;;
+  *)
+    echo "{\"error\": \"parity-check terminated with unexpected code $PARITY_EXIT (e.g. killed by a signal)\", \"exit_meaning\": \"check-error\"}" >&2
+    exit 3
+    ;;
+esac

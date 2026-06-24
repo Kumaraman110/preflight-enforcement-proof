@@ -47,7 +47,14 @@ bad()  { echo "FAIL: $1" >&2; FAIL=$((FAIL+1)); }
 run_hook() {
   local cmd="$1" json
   json="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"${cmd}\"}}"
-  OUT="$(printf '%s' "$json" | bash "$HOOK" 2>&1)"; RC=$?
+  # _PFG_WATCHDOG_CHILD=1 drives the hook BODY directly, bypassing the Layer-1 self-watchdog re-exec —
+  # same posture as the sibling pre-push-*-test.sh helpers. This isolates the DECISION logic (what is
+  # under test) from the watchdog's 8s deadline: on a slow-subprocess-spawn host (this Windows/Git-Bash
+  # box, ~1s/spawn under endpoint scan-on-exec) a NORMAL full-body run makes dozens of git/jq spawns and
+  # exceeds the deadline, fail-CLOSED (rc=124->2) — which would mask the decision result behind an
+  # environment artifact (observed: O4/O5 false-failed with the watchdog timeout, not a logic error).
+  # The watchdog's own fail-closed behavior is covered separately by pre-push-wedge-failclosed-test.sh.
+  OUT="$(printf '%s' "$json" | _PFG_WATCHDOG_CHILD=1 bash "$HOOK" 2>&1)"; RC=$?
 }
 
 # ── Build the inverted-topology repo WITH the overlay ─────────────────────────

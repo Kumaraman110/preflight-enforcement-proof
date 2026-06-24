@@ -90,6 +90,36 @@ if [ -z "$ACCESSOR" ]; then
 fi
 CAPTURED_FROM=$(jq -r '.captured_from // "UNRECORDED — golden provenance missing (record it!)"' "$CONTRACT")
 
+# (M10) Delimiter-SAFE placeholder substitution. The PRE-FIX code piped emit_case_body through
+# `sed -e "s|{{SAMPLE}}|$SAMPLE|g" -e "s|{{GOLDEN}}|$GOLDEN|g" …` — a `|` in a sample/golden value
+# (an enum flag "Read|Write", a delimited id) collided with the sed `s|…|` delimiter, sed errored, the
+# pipeline emitted NOTHING for that case, and the case scaffold landed WITHOUT its serialize/compare body
+# — yet "Generated … N case(s)." exit 0 (an assertion-less, always-green test: a SAFETY-false-green). The
+# `/`-delimited {{TYPE}}/{{NAME}} branches were the same class for any `/` in a type/case name.
+#
+# This replaces sed with an index()-based LITERAL awk splice. CRITICAL: it must NOT use awk gsub — gsub
+# treats `&` in the replacement as "the whole matched text" and `\` as an escape, so an `&`/`\` in a
+# golden value would be corrupted even though it solved the `|` collision. index()+substr is a true
+# literal splice: `|`, `&`, `\`, `/` all pass through byte-for-byte. Values are passed via ENVIRON so no
+# shell or awk metacharacter in the data is ever interpreted. All FOUR placeholders are handled.
+subst_placeholders() {  # reads stdin; reads PH_TYPE PH_SAMPLE PH_GOLDEN PH_NAME from the environment
+  awk '
+    function repl(s, ph, val,   out, idx) {
+      out = ""
+      while ((idx = index(s, ph)) > 0) { out = out substr(s, 1, idx - 1) val; s = substr(s, idx + length(ph)) }
+      return out s
+    }
+    {
+      line = $0
+      line = repl(line, "{{TYPE}}",   ENVIRON["PH_TYPE"])
+      line = repl(line, "{{SAMPLE}}", ENVIRON["PH_SAMPLE"])
+      line = repl(line, "{{GOLDEN}}", ENVIRON["PH_GOLDEN"])
+      line = repl(line, "{{NAME}}",   ENVIRON["PH_NAME"])
+      print line
+    }
+  '
+}
+
 emit_case_body() {  # shared per-case check body; $1 = indent
   local ind="$1"
   cat <<EOF
@@ -154,7 +184,16 @@ EOF
     public void Wire_${NAME}()
     {
 EOF
-    emit_case_body "        " | sed -e "s/{{TYPE}}/$TYPE/g" -e "s|{{SAMPLE}}|$SAMPLE|g" -e "s|{{GOLDEN}}|$GOLDEN|g" -e "s/{{NAME}}/$NAME/g"
+    # Export PH_* so BOTH sides of the pipe see them — an env-var prefix on the pipeline's first
+    # command would NOT reach subst_placeholders' awk (which reads ENVIRON) on the consuming side.
+    export PH_TYPE="$TYPE" PH_SAMPLE="$SAMPLE" PH_GOLDEN="$GOLDEN" PH_NAME="$NAME"
+    emit_case_body "        " | subst_placeholders
+    # Snapshot PIPESTATUS into a local array IMMEDIATELY — any later command (incl. `[`) resets it.
+    PS=("${PIPESTATUS[@]}")
+    if [ "${PS[0]}" -ne 0 ] || [ "${PS[1]}" -ne 0 ]; then
+      echo "ERROR: placeholder substitution failed for case '$NAME' (PIPESTATUS=${PS[*]}) — refusing to emit an assertion-less test body." >&2
+      exit 2
+    fi
     cat <<EOF
         Assert.Fail(msg);
         }
@@ -183,7 +222,13 @@ EOF
     SAMPLE=$(jq -c ".cases[$i].sample" "$CONTRACT" | sed 's/"/""/g')
     GOLDEN=$(jq -r ".cases[$i].golden" "$CONTRACT" | sed 's/"/""/g')
     echo "        { // case: $NAME"
-    emit_case_body "            " | sed -e "s/{{TYPE}}/$TYPE/g" -e "s|{{SAMPLE}}|$SAMPLE|g" -e "s|{{GOLDEN}}|$GOLDEN|g" -e "s/{{NAME}}/$NAME/g"
+    export PH_TYPE="$TYPE" PH_SAMPLE="$SAMPLE" PH_GOLDEN="$GOLDEN" PH_NAME="$NAME"
+    emit_case_body "            " | subst_placeholders
+    PS=("${PIPESTATUS[@]}")
+    if [ "${PS[0]}" -ne 0 ] || [ "${PS[1]}" -ne 0 ]; then
+      echo "ERROR: placeholder substitution failed for case '$NAME' (PIPESTATUS=${PS[*]}) — refusing to emit an assertion-less test body." >&2
+      exit 2
+    fi
     cat <<EOF
             Console.Error.WriteLine(msg);
             failures++;

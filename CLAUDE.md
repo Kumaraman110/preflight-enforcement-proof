@@ -37,9 +37,20 @@ wrong in practice — not general good advice.
 5. **Single source of truth.** Installer, manifest, and docs must not diverge — that divergence is
    the dead-gate / dual-source bug class (a gate stale in one source silently never fires). One
    source per fact; if two places state the same thing, one must derive from the other.
-6. **Eyes-on push.** Every push to `origin` is human-verified (correct branch, non-force) before it
-   lands. The agent prepares commits/tags locally; a human runs the network push. NEVER force-push a
-   shared branch or move a published tag — that rewrites public history.
+6. **Eyes-on push — reversibility-tiered (AUTO / CONFIRM / BLOCK).** A push is classified by blast
+   radius, computed mechanically by `hooks/pre-push-gate-check` (not the agent's judgement):
+   **AUTO** (reversible: a non-force push to an UNPROTECTED branch on the SAFE/configured remote) — the
+   agent runs it directly, no human handoff (this is the friction removed); **CONFIRM** (consequential
+   but a human may proceed: a push to a PROTECTED branch `main`/`master`/`config.base`, a non-canonical
+   or denylisted-but-configured remote, or a bare push with no named remote) — the gate escalates to a
+   human confirmation (`permissionDecision:ask`); **BLOCK** (never-OK: force-push to a protected branch,
+   or a push to a remote on the explicit `forbiddenRemotes`/`forbiddenRepos` denylist) — exit 2. So the
+   agent auto-runs the safe/reversible push and the human confirms (or is hard-blocked from) the
+   consequential one — never the agent's *self-assessed* "feels safe"; the tier is computed from
+   protected-branch / forbidden-remote / force / bare signals. NEVER force-push a shared branch or move a
+   published tag — that rewrites public history (the BLOCK tier). Boundary: this guard is
+   agent-Bash-tool-only and fail-open (no config = no gating); it is not server-side branch protection
+   (see `docs/parity-gate-limitations.md`).
 7. **Stopping rules — don't audit infinitely.** REDs → fix and re-verify. YELLOWS-only → static
    review has converged; the live run is the next information, not another static pass. Distinguish
    a real regression from a cosmetic note before blocking on it.

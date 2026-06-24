@@ -98,9 +98,16 @@ From config (or defaults):
 2. Determine diff scope (uncommitted + unpushed).
 3. If nothing to push, inform user and exit.
 
+**Interpretation check (cost-saver, NOT a gate).** If the change you are about to push could
+reasonably address more than one interpretation of the request, state the interpretations and the
+one you proceeded with (and why) — don't pick silently. This is not a mechanical block: the human PR
+review already catches a wrong reading. Surfacing it here just shaves a wasted review cycle when the
+guess is wrong. If only one reasonable interpretation exists, proceed without ceremony.
+
 ### Stage 1 Gate
 
 4. **Run tests.** Must pass. If they fail, fix compilation/test errors FIRST (these are not rubric findings — they're broken code). **On pass:** write gate evidence: `bash "${FRAMEWORK_ROOT}/hooks/write-gate-evidence" tests-pass`
+   - **Record the claim (decision-log, for the agent-scorer):** you just asserted "tests pass". Record it VERBATIM with the actual test output as evidence: `bash "${FRAMEWORK_ROOT}/hooks/record-claim" count-assertion "<the pass/fail summary you assert, e.g. '0 failed'>" "tests pass: <verbatim>" "tests at HEAD" "<test command>" "<the test command's actual output>"`. The recorder logs what you claim; the independent scorer judges later whether it held. Record the claim as made — do not soften it.
 
 5. **Invoke `code-reviewer` sub-agent.** Always. Even for one-line changes.
 
@@ -125,7 +132,7 @@ From config (or defaults):
       ```bash
       bash "${FRAMEWORK_ROOT}/hooks/write-active-groups" '<json>'
       ```
-      Where `<json>` is the array of groups with files, findings summary, and `"acknowledged": false`. This activates the coupled-edit-gate — any Edit to a file in an unacknowledged group will be BLOCKED by the PreToolUse hook. This is the mechanical enforcement of "read ALL before fixing ANY."
+      Where `<json>` is the array of groups with files, findings summary, and `"acknowledged": false`. This activates the coupled-edit-gate — any **Write, Edit, or MultiEdit** to a file in an unacknowledged group is BLOCKED by the PreToolUse hook (registered under both the `Write` and `Edit|MultiEdit` matchers). This is the mechanical enforcement of "read ALL before fixing ANY." **Enforcement boundary (honesty label):** the guard covers the agent's file-mutation *tools* (Write/Edit/MultiEdit), not a Bash-shell mutation — a `sed -i`, `tee`, or `>` redirection to a coupled file from a Bash command goes through the `Bash` matcher (which runs only the push gate), so it is NOT intercepted. Mutate coupled files with the Edit/Write tools, not shell redirection, for the gate to apply.
    
    c. **Fix independent findings directly.** Findings that touch isolated files with no interaction (Dockerfile, CI yaml, standalone config) — fix these yourself, one by one. They can't cascade.
    
@@ -159,19 +166,22 @@ From config (or defaults):
 
 8. **If CLEAN** → write gate evidence: `bash "${FRAMEWORK_ROOT}/hooks/write-gate-evidence" stage1-clean`.
    - **Also write `map-validated` if a dependency map exists.** The pre-push gate (Gate 3) demands `map-validated` whenever a `dependency-map.json` is present — independent of whether Stage 1 found anything. On a CLEAN run the Coupled-Group Protocol (step 6) never executes, so its map-validation step never runs and `map-validated` would otherwise never be written — falsely blocking the push. So on the CLEAN path: if a dependency map exists, run the same structural validation as step 6b (via `${FRAMEWORK_ROOT}/lib/dependency-map-validator.md`), and on pass write `bash "${FRAMEWORK_ROOT}/hooks/write-gate-evidence" map-validated`. (The map is validated, not consumed for coupling, on the clean path — but the gate evidence is required either way.)
+   - **Record the claim (decision-log, for the agent-scorer):** you just asserted "Stage 1 CLEAN". Record it VERBATIM with the code-reviewer's verdict as evidence: `bash "${FRAMEWORK_ROOT}/hooks/record-claim" all-green CLEAN "Stage 1 clean — <verbatim claim>" "diff <base>...HEAD" "code-reviewer (Stage 1)" "<the reviewer's CLEAN/NEEDS_FIXES verdict>"`. Faithful recording, not self-assessment — the scorer grades it.
    - Then proceed to commit/push.
 
 ### Commit and Push
 
 9. **Stage files using EXPLICIT file paths only** — never `git add .`, never `git add <dir>/`.
 
-   **Artifact rejection gate (pre-commit):** Before running `git commit`, verify no build/test artifacts are staged. Run:
+   **Artifact rejection check (pre-commit, agent-run):** Before running `git commit`, verify no build/test artifacts are staged. Run:
    ```bash
-   git diff --cached --name-only | grep -E '(coverage\.|\.opencover\.xml|/bin/|/obj/|/TestResults/|\.db$|\.mdf$|\.user$)' && echo "BLOCKED: artifact staged" && exit 1
+   git diff --cached --name-only | grep -E '(coverage\.|\.opencover\.xml|/bin/|/obj/|/TestResults/|\.db$|\.mdf$|\.user$)' && echo "artifact staged — do NOT commit" && exit 1
    ```
-   If ANY match is found, the commit is BLOCKED. Unstage the offending file(s) with `git reset HEAD <path>` and report which file was caught. Do NOT commit and warn after the fact — the gate fires BEFORE the commit.
+   If ANY match is found, you MUST NOT proceed to commit. Unstage the offending file(s) with `git reset HEAD <path>` and report which file was caught.
 
-   **Reject list:** `coverage.*`, `*.opencover.xml`, `bin/`, `obj/`, `TestResults/`, `*.db`, `*.mdf`, `*.user`, and anything matching `.gitignore` artifact patterns. If staged paths include any of these, the commit does not proceed.
+   **A note on enforcement (honesty label):** this is a PROMPT-LEVEL discipline you execute in your session BEFORE `git commit` — it is NOT a PreToolUse hook. The `exit 1` ends only this snippet's subshell; nothing mechanically intercepts `git commit` (the only Bash-matcher PreToolUse hook is the push gate, which guards `git push`, not commit). So the protection holds only if you actually run the check and honor it — do not skip it and commit, then warn after the fact.
+
+   **Reject list:** `coverage.*`, `*.opencover.xml`, `bin/`, `obj/`, `TestResults/`, `*.db`, `*.mdf`, `*.user`, and anything matching `.gitignore` artifact patterns. If staged paths include any of these, do not proceed with the commit.
 10. Compose conventional-commit message (biased by user's hint if given). For Copilot-fix-round commits (after Stage 2 returns NEEDS_PARENT_FIXES), use this format:
 
     ```
@@ -186,7 +196,15 @@ From config (or defaults):
 
     Include the `Capture:` line counting entries by bucket whenever the external-review-handler sub-agent has written capture entries alongside the fix. Include `Stage 1: clean` as a footer to signal the gate passed.
 
-11. Push to remote feature branch (never `--force`).
+11. Push to the remote feature branch (never `--force`). Run the push directly — do NOT hand the user a
+    "run this command" copy-paste. The push is reversibility-tiered by `pre-push-gate-check` (CLAUDE.md
+    rule #6): a non-force push to your UNPROTECTED feature branch on the configured remote is **AUTO** —
+    it proceeds with no human handoff (the friction removed). If you are pushing to a **protected**
+    branch (`main`/`base`), a **non-canonical/denylisted remote**, or issuing a **bare** push, the gate
+    will escalate to a human **CONFIRM** (`permissionDecision:ask`) — that is expected; let the human
+    confirm. A **force-push to a protected branch** or a push to a **forbidden** remote is **BLOCKED**
+    (exit 2) — do not retarget around it; surface it. Always push a NAMED remote (never bare) so the
+    target is validatable.
 
 ### Stage 2 — Copilot Review Loop
 
@@ -314,6 +332,8 @@ If ANY verification fails, DO NOT declare success. Surface the gap with the actu
     - Outcome and total duration
 
     Create the `.preflight/` directory if it doesn't exist. Do NOT skip metrics because the run failed — failed runs are the most valuable data points (they reveal where the system breaks).
+
+    - **Record the outcome claim (decision-log, for the agent-scorer):** when you assert the run outcome, record it VERBATIM: `bash "${FRAMEWORK_ROOT}/hooks/record-claim" done "<outcome, e.g. SUCCESS>" "<verbatim final-summary claim>"`. Record the outcome you are ACTUALLY asserting — a run that capped or got stuck records CAPPED/STUCK, never a laundered SUCCESS. The recorder logs it as made; the independent scorer (e.g. SUCCESS while stage1.capHit was true) judges whether it held.
 
 ### Stage 2 Resolution Gate (MANDATORY — checked before completion)
 

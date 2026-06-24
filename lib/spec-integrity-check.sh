@@ -57,6 +57,16 @@ if [ ! -d "$SOURCE_DIR" ]; then
   exit 2
 fi
 
+# (M4) Compute the .cs-presence fact ONCE — the single source for "can we read source to verify against".
+# The source-anchor extraction below is gated on this. PRE-FIX, each category inlined this `find` guard,
+# so a SOURCE_DIR that exists but holds ZERO .cs files (wrong/mistyped-but-real path, partial/shallow
+# checkout, non-.NET target) left every SOURCE_* empty -> BOTH directions skipped -> "PASSED" exit 0:
+# "nothing to compare" read as "verified" (a silent fail-open of an anti-forgery check). With HAS_CS=false
+# AND a spec that DECLARES an anchor of a type, we now emit a could-not-verify FAIL per category (below),
+# so an unverifiable spec FAILS rather than passing green.
+HAS_CS=false
+if find "$SOURCE_DIR" -name '*.cs' -print -quit 2>/dev/null | grep -q .; then HAS_CS=true; fi
+
 FAILURES=0
 FAILURE_DETAILS=""
 
@@ -73,9 +83,14 @@ fail() {
 # Extract result codes from spec
 SPEC_CODES=$(grep -oE '[EWS][0-9]{4}' "$SPEC" | sort -u || true)
 
+# (M4) Could-not-verify: the spec DECLARES result codes but the source has no .cs to check them against.
+if [ "$HAS_CS" = false ] && [ -n "$SPEC_CODES" ]; then
+  fail "result_code could-not-verify: spec declares result codes but the source scan found ZERO .cs files under '$SOURCE_DIR' — cannot confirm consistency (treated as FAIL, not verified)"
+fi
+
 # Find emitted result codes in source
 SOURCE_CODES=""
-if find "$SOURCE_DIR" -name '*.cs' -print -quit 2>/dev/null | grep -q .; then
+if [ "$HAS_CS" = true ]; then
   # Get all lines with result-code pattern in .cs files
   ALL_CODE_LINES=$(grep -rn --include="*.cs" -E '[EWS][0-9]{4}' "$SOURCE_DIR" 2>/dev/null || true)
 
@@ -119,13 +134,16 @@ if [ -n "$SPEC_CODES" ]; then
 fi
 
 # Direction 2: source→spec — THE FORGE-CATCH
+# (H5) NO inner [ -n "$SPEC_CODES" ] guard: the catch must fire whenever the SOURCE emits codes, regardless
+# of whether the SPEC declares any. An empty/empty-category spec is the MOST aggressive forge (drop the
+# whole category to dodge parity) — pre-fix the inner guard SKIPPED the catch on exactly that input, so an
+# empty SPEC_CODES passed GREEN. Now an empty SPEC_CODES means "EVERY source code is missing from spec" and
+# each one fails (grep -qx against an empty list never matches), which is the correct fail-closed behavior.
 if [ -n "$SOURCE_CODES" ]; then
   while IFS= read -r code; do
     [ -z "$code" ] && continue
-    if [ -n "$SPEC_CODES" ]; then
-      if ! echo "$SPEC_CODES" | grep -qx "$code"; then
-        fail "result_code source→spec: '$code' emitted in source but MISSING from spec (possible forge)"
-      fi
+    if ! echo "$SPEC_CODES" | grep -qx "$code"; then
+      fail "result_code source→spec: '$code' emitted in source but MISSING from spec (possible forge)"
     fi
   done <<< "$SOURCE_CODES"
 fi
@@ -142,12 +160,27 @@ SPEC_FIELDS_ALT=$(grep -oE '"[A-Z][a-zA-Z]+"[[:space:]]*:[[:space:]]*"(string|in
   grep -oE '^"[A-Z][a-zA-Z]+"' | tr -d '"' | sort -u || true)
 SPEC_FIELDS=$(printf '%s\n%s' "$SPEC_FIELDS" "$SPEC_FIELDS_ALT" | sort -u | grep -v '^$' || true)
 
+# (M4) Could-not-verify: the spec DECLARES wire fields but the source has no .cs to check them against.
+if [ "$HAS_CS" = false ] && [ -n "$SPEC_FIELDS" ]; then
+  fail "wire_contract could-not-verify: spec declares wire fields but the source scan found ZERO .cs files under '$SOURCE_DIR' — cannot confirm consistency (treated as FAIL, not verified)"
+fi
+
 # Find public properties on model/response/request classes
 MODEL_FIELDS=""
-if find "$SOURCE_DIR" -name '*.cs' -print -quit 2>/dev/null | grep -q .; then
+if [ "$HAS_CS" = true ]; then
   MODEL_FILES=$(find "$SOURCE_DIR" \( -name '*Response*.cs' -o -name '*Request*.cs' -o -name '*Model*.cs' \) 2>/dev/null | grep -v '/obj/' | grep -v '/bin/' || true)
   if [ -n "$MODEL_FILES" ]; then
+    # (M7) Drop TYPE-DECLARATION lines BEFORE harvesting a field name. The property regex
+    # `public <type-token> <Name> {` also matches a K&R same-line-brace declaration like
+    # `public class TokenResponse {` — taking the keyword `class` as the type-token and `TokenResponse`
+    # as a phantom "field". With H5's now-active source→spec catch, that phantom false-FAILs an honest
+    # spec (the class name is never a wire field, so it can't be in SPEC_FIELDS). The negative-match
+    # removes any line whose type-position token is a declaration keyword (class/interface/struct/enum/
+    # record, with optional modifiers). The trailing `\b` keeps a REAL field whose TYPE merely STARTS with
+    # a keyword (`public ClassRoom Building {`, `public Record Recorder {`) — those survive and are still
+    # checked. After M7, MODEL_FIELDS = exactly the real-property set, which is what H5 should police.
     MODEL_FIELDS=$(echo "$MODEL_FILES" | xargs grep -hE 'public[[:space:]]+[A-Za-z<>?]+[[:space:]]+[A-Z][a-zA-Z]+[[:space:]]*\{' 2>/dev/null | \
+      grep -vE 'public[[:space:]]+(abstract[[:space:]]+|sealed[[:space:]]+|partial[[:space:]]+|static[[:space:]]+)*(class|interface|struct|enum|record)\b' | \
       sed -E 's/.*public[[:space:]]+[A-Za-z<>?]+[[:space:]]+([A-Z][a-zA-Z]+)[[:space:]]*\{.*/\1/' | \
       sort -u || true)
   fi
@@ -164,7 +197,11 @@ if [ -n "$SPEC_FIELDS" ] && [ -n "$MODEL_FIELDS" ]; then
 fi
 
 # Direction 2: source→spec — THE FORGE-CATCH
-if [ -n "$MODEL_FIELDS" ] && [ -n "$SPEC_FIELDS" ]; then
+# (H5) NO inner [ -n "$SPEC_FIELDS" ] guard — fire whenever SOURCE models expose properties (MODEL_FIELDS
+# non-empty), regardless of whether the spec declares any. An empty SPEC_FIELDS means every source property
+# is missing from spec (the dropped-category forge), which now correctly fails. (MODEL_FIELDS non-empty is
+# the SOURCE-side iteration guard — kept; with no source properties there is nothing to forge-check.)
+if [ -n "$MODEL_FIELDS" ]; then
   while IFS= read -r field; do
     [ -z "$field" ] && continue
     if ! echo "$SPEC_FIELDS" | grep -qx "$field"; then
@@ -180,9 +217,14 @@ fi
 # Extract proc names from spec
 SPEC_PROCS=$(grep -oE '"(cpsl_|sp_|fn_)[a-zA-Z0-9_]+"' "$SPEC" 2>/dev/null | tr -d '"' | sort -u || true)
 
+# (M4) Could-not-verify: the spec DECLARES proc names but the source has no .cs to check them against.
+if [ "$HAS_CS" = false ] && [ -n "$SPEC_PROCS" ]; then
+  fail "proc_name could-not-verify: spec declares proc names but the source scan found ZERO .cs files under '$SOURCE_DIR' — cannot confirm consistency (treated as FAIL, not verified)"
+fi
+
 # Find proc names in source
 SOURCE_PROCS=""
-if find "$SOURCE_DIR" -name '*.cs' -print -quit 2>/dev/null | grep -q .; then
+if [ "$HAS_CS" = true ]; then
   SOURCE_PROCS=$(grep -rhE '"(cpsl_|sp_|fn_)[a-zA-Z0-9_]+"' "$SOURCE_DIR" --include="*.cs" 2>/dev/null | \
     grep -oE '(cpsl_|sp_|fn_)[a-zA-Z0-9_]+' | sort -u || true)
 fi
@@ -198,7 +240,10 @@ if [ -n "$SPEC_PROCS" ] && [ -n "$SOURCE_PROCS" ]; then
 fi
 
 # Direction 2: source→spec — THE FORGE-CATCH
-if [ -n "$SOURCE_PROCS" ] && [ -n "$SPEC_PROCS" ]; then
+# (H5) NO inner [ -n "$SPEC_PROCS" ] guard — fire whenever SOURCE invokes procs, regardless of the spec.
+# An empty SPEC_PROCS means every source proc is missing from spec (the dropped-category forge). (The
+# SOURCE-side [ -n "$SOURCE_PROCS" ] guard is kept — with no source procs there is nothing to forge-check.)
+if [ -n "$SOURCE_PROCS" ]; then
   while IFS= read -r proc; do
     [ -z "$proc" ] && continue
     if ! echo "$SPEC_PROCS" | grep -qix "$proc"; then
@@ -215,9 +260,14 @@ fi
 SPEC_ROUTES=$(grep -oE '"path"[[:space:]]*:[[:space:]]*"[^"]+"' "$SPEC" 2>/dev/null | \
   grep -oE '"[a-z/][^"]*"$' | tr -d '"' | sort -u || true)
 
+# (M4) Could-not-verify: the spec DECLARES routes but the source has no .cs to check them against.
+if [ "$HAS_CS" = false ] && [ -n "$SPEC_ROUTES" ]; then
+  fail "route could-not-verify: spec declares routes but the source scan found ZERO .cs files under '$SOURCE_DIR' — cannot confirm consistency (treated as FAIL, not verified)"
+fi
+
 # Find route segments from source attributes: [Route("x")], [HttpPost("x")], etc.
 SOURCE_ROUTES=""
-if find "$SOURCE_DIR" -name '*.cs' -print -quit 2>/dev/null | grep -q .; then
+if [ "$HAS_CS" = true ]; then
   SOURCE_ROUTES=$(grep -rhE '\[(Route|HttpPost|HttpGet|HttpPut|HttpDelete|HttpPatch)\("[^"]+"\)' "$SOURCE_DIR" --include="*.cs" 2>/dev/null | \
     grep -oE '"[^"]+"' | tr -d '"' | sort -u || true)
 fi
@@ -242,7 +292,11 @@ if [ -n "$SPEC_ROUTES" ] && [ -n "$SOURCE_ROUTES" ]; then
 fi
 
 # Direction 2: source→spec (source route segments must appear in some spec route)
-if [ -n "$SOURCE_ROUTES" ] && [ -n "$SPEC_ROUTES" ]; then
+# (H5) NO inner [ -n "$SPEC_ROUTES" ] guard — fire whenever SOURCE declares route attributes, regardless of
+# the spec. An empty SPEC_ROUTES means no spec route can contain the segment, so FOUND stays false and the
+# source route is flagged missing (the dropped-category forge). (SOURCE-side guard kept — no source routes,
+# nothing to forge-check.)
+if [ -n "$SOURCE_ROUTES" ]; then
   while IFS= read -r seg; do
     [ -z "$seg" ] && continue
     FOUND=false

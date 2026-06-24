@@ -41,7 +41,12 @@ bad() { echo "FAIL: $1" >&2; FAIL=$((FAIL+1)); }
 run_bash_hook() {
   local cmd="$1" json
   json="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"${cmd}\"}}"
-  OUT="$(printf '%s' "$json" | bash "$HOOK" 2>&1)"; RC=$?
+  # _PFG_WATCHDOG_CHILD=1 drives the hook BODY directly, bypassing the Layer-1 self-watchdog re-exec —
+  # same posture as the sibling pre-push-*-test.sh helpers. This isolates the tripwire DECISION logic
+  # (what is under test) from the watchdog's 8s deadline, which a normal full-body run exceeds on this
+  # slow-subprocess-spawn host (fail-CLOSED rc=124->2, an environment artifact, not a logic error). The
+  # watchdog's own fail-closed behavior is covered by pre-push-wedge-failclosed-test.sh.
+  OUT="$(printf '%s' "$json" | _PFG_WATCHDOG_CHILD=1 bash "$HOOK" 2>&1)"; RC=$?
 }
 
 # ── Workspace: temp dir with an EXISTING CLAUDE.md (no sentinel) ──────────────
@@ -102,6 +107,28 @@ run_bash_hook 'sed -i s/a/b/ .preflight/gate/parity-clean'
 if [ "$RC1" -eq 2 ] && [ "$RC" -eq 2 ]; then
   ok "G8 tripwire blocks tee and sed -i mint variants of parity-clean"
 else bad "G8 expected BLOCK(2)+BLOCK(2), got tee RC=$RC1 OUT=$OUT1 / sed RC=$RC OUT=$OUT"; fi
+
+# G9: the read-shaped reference must NOT emit the 'line 244: A: unbound variable' warning. PRE-FIX, the
+# variable-expansion grep was written `"\$[A-Za-z_]..."` which collapses to a bash ARITHMETIC expansion
+# `$[...]` — under `set -u` it warned to stderr AND corrupted the pattern (silent fail-open). Assert the
+# warning is gone (the [$] char-class fix).
+run_bash_hook 'cat .preflight/gate/parity-clean'
+if printf '%s' "$OUT" | grep -qi 'unbound variable'; then
+  bad "G9 read-shaped command emitted an 'unbound variable' warning (the \$[ arithmetic-misparse at line 244): $OUT"
+else
+  ok "G9 no 'unbound variable' warning on a read-shaped command ([\$] char-class fix; arithmetic misparse closed)"
+fi
+
+# G10: a var-expanded write to the sentinel is BLOCKED (exit 2). NOTE: a `$VAR > sentinel` write is also
+# caught by the redirection branch (a), which keys on the `>` regardless of the var-expansion branch — so
+# this case stays blocked both pre- and post-fix. The line-244 fix's real, isolated proof is G9 (the
+# stderr warning gone): the [$] char-class also REPAIRS the var-expansion pattern so it now matches
+# (verified directly: OLD `$[A-Za-z_]` pattern -> no-match on `$VAR>sentinel`; NEW `[$]` pattern -> match),
+# restoring defence-in-depth even if branch (a) were ever narrowed. G10 asserts the end-to-end block holds.
+run_bash_hook '$MINT>.preflight/gate/parity-clean'
+if [ "$RC" -eq 2 ]; then
+  ok "G10 variable-expanded write '\$MINT>...parity-clean' is BLOCKED (exit 2)"
+else bad "G10 expected BLOCK(2) for the var-expansion obfuscation, got RC=$RC OUT=$OUT"; fi
 
 echo ""
 echo "sentinel-tripwire tests: ${PASS} passed, ${FAIL} failed"

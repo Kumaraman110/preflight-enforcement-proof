@@ -75,6 +75,33 @@ if [ ! -f "$GROUPS_FILE" ]; then
   exit 0
 fi
 
+# ─── H3: canonicalize the incoming path to repo-relative form ─────────────────
+# The real Edit/Write tool sends an ABSOLUTE file_path (e.g. /repo/Services/Token.cs), but
+# active-groups.json stores repo-RELATIVE paths (Services/Token.cs). The old exact-string compare
+# (gsub "\\"→"/" only, no canonicalization) MISSED the absolute and ./-prefixed forms → UNACKED=0 →
+# silent ALLOW on every coupled block (the live path). Fix: LEXICALLY canonicalize the incoming path
+# to repo-relative (no realpath/on-disk dependency — an Edit may target a not-yet-created file), then
+# match by exact-equality OR /-anchored-suffix against each (likewise-canonicalized) stored path.
+# LEXICAL only: \→/, strip a leading repo-root prefix, strip a leading ./, collapse // and trailing /.
+REPO_TOP="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+_canon_path() {  # $1 = a path; echoes its lexical repo-relative canonical form. Always returns 0.
+  local p="$1"
+  p="${p//\\//}"                      # backslash -> forward slash
+  p="${p//\/\///}"                    # collapse any // into /
+  # Strip the repo-root prefix if the path is absolute and under the repo (so /repo/Services/X -> Services/X).
+  if [ -n "$REPO_TOP" ]; then
+    local top="${REPO_TOP//\\//}"
+    case "$p" in
+      "$top"/*) p="${p#"$top"/}" ;;   # exact repo-root prefix + /
+    esac
+  fi
+  while [ "${p#./}" != "$p" ]; do p="${p#./}"; done   # strip leading ./ (repeatable)
+  p="${p#/}"                           # strip a single leading / (path outside repo-root, best-effort)
+  printf '%s' "$p"
+  return 0
+}
+CANON_FP="$(_canon_path "$FILE_PATH")"
+
 # FAIL CLOSED on unreadable state (L1): the groups file EXISTS (coupling
 # enforcement is active) but may be corrupt or wrong-shape. The old
 # `jq ... || echo "0"` turned any parse failure into count-zero-and-ALLOW —
@@ -118,30 +145,60 @@ if ! grep -q "$(basename "$FILE_PATH")" "$GROUPS_FILE" 2>/dev/null; then
   exit 0
 fi
 
-# Find which group this file belongs to and check acknowledgment
-# Claude Code sends Windows paths with backslashes; active-groups.json may have
-# either separator. Normalize both to forward slashes inside comparison.
-# (Shape already validated above; a parse failure here is still unreadable state.)
+# Find which group this file belongs to and check acknowledgment.
+# H3 (path-form robustness): a group MEMBERSHIP match is now exact-canonical OR a /-anchored suffix —
+#   the incoming path is canonicalized to repo-relative (CANON_FP, above) and each stored path is
+#   canonicalized the same way (backslash->slash, strip leading ./ and /); a stored repo-relative path
+#   matches when it EQUALS the incoming canonical path OR is a /-anchored suffix of it (covers the
+#   absolute and ./-prefixed forms the real Edit tool sends). The /-anchor (the leading "/" in the
+#   endswith) prevents a shared-basename false positive: "Services/Token.cs" is a suffix of
+#   "/repo/Services/Token.cs" but NOT of "/repo/OtherDir/Token.cs" (no "/Services/Token.cs" tail) nor of
+#   ".../XServices/Token.cs" (the char before "Services" is "X", not "/").
+# H4 (acknowledgement robustness): a group counts as UNACKNOWLEDGED unless acknowledged is the explicit
+#   boolean true — `!= true` (jq) / `is not True` (python) / a count-based all-true check (grep). So
+#   false / missing / null / "false"-string / 0 ALL block; only an affirmative true clears. This closes
+#   the missing-acknowledged fail-open (jq `== false` treated a missing field as null != false -> allow).
+# All three backends use the SAME canonical-suffix + non-true semantics (parity requirement).
 if command -v jq &>/dev/null; then
-  UNACKED=$(jq -r --arg fp "$FILE_PATH" '
-    [.[] | select(.acknowledged == false) | select(.files[] | gsub("\\\\"; "/") == ($fp | gsub("\\\\"; "/")))] | length
+  UNACKED=$(jq -r --arg fp "$CANON_FP" '
+    def canon: gsub("\\\\"; "/") | sub("^(\\./)+"; "") | sub("^/+"; "");
+    [ .[]
+      | select(.acknowledged != true)
+      | select(.files[]? | canon as $sf | ($sf != "") and (($fp == $sf) or ($fp | endswith("/" + $sf))))
+    ] | length
   ' "$GROUPS_FILE" 2>/dev/null) || _groups_unreadable_block
 elif python3 -c "pass" &>/dev/null || python -c "pass" &>/dev/null; then
   PY=$(python3 -c "pass" 2>/dev/null && echo "python3" || echo "python")
-  UNACKED=$($PY -c "
-import json,sys
-fp='$FILE_PATH'.replace('\\\\','/')
-groups=json.load(open('$GROUPS_FILE'))
-count=sum(1 for g in groups if not g.get('acknowledged',False) and any(f.replace('\\\\','/')==fp for f in g.get('files',[])))
+  UNACKED=$(CANON_FP="$CANON_FP" GROUPS_FILE="$GROUPS_FILE" $PY -c "
+import json,os,re
+fp=os.environ['CANON_FP']
+def canon(s):
+    s=s.replace('\\\\','/')
+    s=re.sub(r'^(\\./)+','',s)
+    s=re.sub(r'^/+','',s)
+    return s
+groups=json.load(open(os.environ['GROUPS_FILE']))
+def member(g):
+    for f in g.get('files',[]):
+        sf=canon(f)
+        if sf and (fp==sf or fp.endswith('/'+sf)):
+            return True
+    return False
+# acknowledged clears ONLY on the explicit boolean True (mirrors jq != true): missing/false/null/'false'/0 block.
+count=sum(1 for g in groups if (g.get('acknowledged',False) is not True) and member(g))
 print(count)
 " 2>/dev/null) || _groups_unreadable_block
 else
-  # Last resort: grep for the file + check if "acknowledged": false nearby
-  # Imprecise but safe (false positives = extra blocks, never false negatives = missed blocks)
-  if grep -B5 "$(basename "$FILE_PATH")" "$GROUPS_FILE" | grep -q '"acknowledged": false'; then
-    UNACKED="1"
-  else
+  # Last resort: no jq AND no python. Imprecise but FAIL-CLOSED (extra blocks OK; never a missed block).
+  # We are past the basename fast-path, so the file IS mentioned. Allow ONLY if EVERY group is explicitly
+  # acknowledged:true (acknowledged-true count >= group count) — a missing/false/null acknowledged on ANY
+  # group (which grep cannot correlate to a specific file) blocks all coupled edits, the safe direction.
+  GROUP_CT=$(grep -oE '"files"' "$GROUPS_FILE" | grep -c . 2>/dev/null || echo 0)
+  ACKTRUE_CT=$(grep -oE '"acknowledged"[[:space:]]*:[[:space:]]*true' "$GROUPS_FILE" | grep -c . 2>/dev/null || echo 0)
+  if [ "$GROUP_CT" -gt 0 ] && [ "$ACKTRUE_CT" -ge "$GROUP_CT" ]; then
     UNACKED="0"
+  else
+    UNACKED="1"
   fi
 fi
 
