@@ -71,20 +71,16 @@ probe() {
   local ws="$1" cmd="$2"
   local json; json="$(printf '{"tool_name":"Bash","tool_input":{"command":"%s"}}' "$cmd")"
   local outf errf; outf="$(mktemp)"; errf="$(mktemp)"
-  # Per-probe timeout: on this Git-Bash box the hook's git/jq subprocesses can intermittently wedge under
-  # heavy concurrent load (an environmental flake in the pre-push-gate chain, NOT in the tier logic — it
-  # runs clean unloaded). The timeout makes a wedge surface as a clear FAIL (RC=124) instead of hanging
-  # the whole suite. 60s is far above the normal sub-second runtime.
-  #
-  # _PFG_WATCHDOG_CHILD=1 drives the hook BODY directly, bypassing the Layer-1 self-watchdog re-exec.
-  # The watchdog kills the body at an internal deadline (default 8s, < the 10s platform kill) and fails
-  # CLOSED — correct in production (sub-second body) but on THIS pathologically slow-spawn box (~1.3s per
-  # subprocess; the full push body takes ~37s) the watchdog would kill every legitimate run and turn each
-  # tier outcome into a spurious exit-2 BLOCK. Bypassing it tests the exact code that runs AS the watchdog
-  # child in production, isolating the DECISION logic from the box's spawn tax — the same compensation the
-  # `timeout 60` above already makes. The watchdog's own fail-closed behavior is proven separately in
-  # pre-push-wedge-failclosed-test.sh (which exercises it WITH a real injected wedge).
-  ( cd "$ws" && printf '%s' "$json" | CLAUDE_PROJECT_DIR="$ws" _PFG_WATCHDOG_CHILD=1 timeout 60 bash "$HOOK" "$json" >"$outf" 2>"$errf" ); RC=$?
+  # Per-probe timeout: this drives the ENGINE body directly to isolate the tier DECISION from the box's
+  # spawn tax. On THIS pathologically slow scan-on-exec host the full target-resolution path (AUTO/CONFIRM
+  # tiers do the most work — remote slug + branch + evidence) measures 117–166s PER push under suite load,
+  # so the old 60s cap turned legitimate AUTO/CONFIRM verdicts into spurious RC=124 timeouts (B3/B4). The
+  # cap is now generous (300s default) and env-overridable; it ONLY bounds this direct-body probe and is NOT
+  # a product SLO. The router's PRODUCTION candidate deadline (platform-derived, fail-closed) is a separate
+  # concern, proven in router-timeout-budget-test.sh. (_PFG_WATCHDOG_CHILD=1 is a legacy no-op for the
+  # split engine, which carries no self-watchdog; kept harmless for older-shape invocations.)
+  local _probe_to="${PREFLIGHT_TIER_PROBE_TIMEOUT:-300}"
+  ( cd "$ws" && printf '%s' "$json" | CLAUDE_PROJECT_DIR="$ws" _PFG_WATCHDOG_CHILD=1 timeout "$_probe_to" bash "$HOOK" "$json" >"$outf" 2>"$errf" ); RC=$?
   DEC="$(jq -r '.hookSpecificOutput.permissionDecision // ""' "$outf" 2>/dev/null || echo "")"
   ERR1="$(head -1 "$errf")"
   rm -f "$outf" "$errf"
