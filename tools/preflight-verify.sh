@@ -239,11 +239,13 @@ echo "Integrity: PASS — all installed artifacts match manifest blobs."
 echo ""
 
 # ── Step 2.5: Branch-stable runtime hazard detection (P0 Part B / defect #3) ─────────────────────────────
-# Detect the legacy/duplicate Bash-gate hazards the branch-stable-runtime model introduces. A DUPLICATE
-# (tracked AND local Preflight Bash hook both active) must NEVER be reported healthy — it is the residual
-# branch-swap hazard. These checks are ADVISORY about the runtime model and do not change the integrity
-# verdict above, BUT a duplicate/legacy hazard sets a non-zero RUNTIME_HAZARD that makes the final verdict
-# FAIL (exit 1) — a half-migrated consumer is not "intact" for defect-#3 purposes.
+# Distinguish three states without red-lining the supported legacy baseline:
+#   • DUPLICATE (tracked AND local Preflight Bash hook both present) → genuine residual branch-swap hazard,
+#     never healthy → RUNTIME_HAZARD=1 → verify FAILs. A half-migrated consumer is not "intact".
+#   • LOCAL-ONLY but the pinned runtime is missing / not the ACTIVE sha → broken migration → FAIL.
+#   • TRACKED-ONLY, no local pin → the LEGACY BASELINE (how preflight-install.sh still ships the gate) →
+#     ADVISORY NOTE only, NOT a failure (flagging every pre-migration consumer FAIL would be over-broad).
+#   • LOCAL-ONLY pinned to the ACTIVE runtime → the migrated branch-stable model → ✓ healthy.
 RUNTIME_HAZARD=0
 PFG_BASH_OWN_RE='run-hook\.cmd.*(pre-push-gate-check|pre-bash-risk-router)'
 TRACKED="${CONSUMER_DIR}/.claude/settings.json"
@@ -273,15 +275,22 @@ if [ "$TRACKED_BASH" -ge 1 ] && [ "$LOCAL_BASH" -ge 1 ]; then
     echo "    to migrate (it removes the Preflight-owned tracked Bash entry). NOT healthy."
     RUNTIME_HAZARD=1
 elif [ "$TRACKED_BASH" -ge 1 ]; then
+    # Tracked-only, NO local pin = the LEGACY BASELINE install (the pre-branch-stable model, which is how
+    # preflight-install.sh still ships the Bash gate). This is NOT a verify FAILURE — it is the supported
+    # legacy posture, advisory only. It becomes a true hazard ONLY when a local pin ALSO exists (the
+    # DUPLICATE case above, which DOES fail). Flagging every legacy install as FAIL would wrongly red-line
+    # every existing consumer that has not opted into the branch-stable runtime. Advisory NOTE, no FAIL.
     if _pfg_tracked_points_in_tree; then
-        echo "  HAZARD (legacy): the tracked .claude/settings.json registers a Preflight Bash hook pointing into"
-        echo "    branch-controlled .claude/hooks/ — a git checkout can swap this live runtime. This is the"
-        echo "    pre-migration (legacy) model. Migrate with tools/preflight-runtime-install.sh."
+        echo "  NOTE (legacy baseline): the tracked .claude/settings.json registers the Preflight Bash hook in"
+        echo "    branch-controlled .claude/hooks/ (the pre-branch-stable model). A git checkout could swap this"
+        echo "    live runtime. OPTIONAL hardening: tools/preflight-runtime-install.sh moves it to a SHA-pinned,"
+        echo "    branch-stable local-layer runtime (defect #3). Not a failure — this is the supported baseline."
     else
-        echo "  HAZARD (legacy): the tracked .claude/settings.json registers a Preflight Bash hook (branch-swappable)."
-        echo "    Migrate with tools/preflight-runtime-install.sh to move it to the local layer + pinned runtime."
+        echo "  NOTE (legacy baseline): the tracked .claude/settings.json registers the Preflight Bash hook."
+        echo "    OPTIONAL hardening: migrate to the branch-stable local-layer runtime with"
+        echo "    tools/preflight-runtime-install.sh. Not a failure — this is the supported baseline."
     fi
-    RUNTIME_HAZARD=1
+    # RUNTIME_HAZARD stays 0 — legacy baseline is advisory, not a verify failure.
 elif [ "$LOCAL_BASH" -ge 1 ]; then
     # Local-only registration — the migrated, branch-stable model. Validate the pinned runtime it points at.
     COMMON_DIR=""
