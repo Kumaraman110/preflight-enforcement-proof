@@ -77,15 +77,38 @@ reviewable.
 
 ---
 
+## Unified installation contract (one command produces the safe state)
+
+**The standard installer is the only command a normal first-install or upgrade needs.**
+`tools/preflight-install.sh <CONSUMER> [REF]` now, as its final step, invokes the branch-stable runtime
+install at the **same resolved SHA** it just installed. So one documented operation yields:
+1. non-Bash framework surfaces in `.claude/`, 2. the active Bash runtime under `<git-common-dir>` pinned to
+the install SHA, 3. the Preflight Bash gate registered only in untracked `settings.local.json`, 4. the
+Preflight-owned Bash entry narrowly migrated OUT of the tracked `.claude/settings.json` (non-Bash hooks +
+non-Preflight settings preserved), 5. a single coherent manifest/runtime SHA (no version split-brain),
+6. `preflight-verify` clean (integrity PASS, 0 drift, branch-stable section ✓).
+
+**Degrade-safely:** if the runtime step cannot run (consumer is not a git worktree, runtime installer
+absent on an older checkout, or `PREFLIGHT_SKIP_RUNTIME=1`), the install does NOT fail — it leaves the
+LEGACY-but-functional tracked Bash gate (the supported baseline; the gate still enforces, it is merely
+branch-controlled until migrated). This is not fail-open.
+
+The **specialized runtime installer below remains available** for repair / rollback / runtime-only
+maintenance, but it is NOT required knowledge for a normal install or upgrade.
+
 ## Tools
 
-- `tools/preflight-runtime-install.sh <CONSUMER> [REF]` — materialize the SHA-pinned runtime, register the
+- `tools/preflight-install.sh <CONSUMER> [REF]` — **the standard one-command install/upgrade.** Installs all
+  surfaces AND (final step) the branch-stable runtime + ownership-aware Bash migration at the same SHA.
+- `tools/preflight-runtime-install.sh <CONSUMER> [REF]` — the runtime-only installer (invoked by the
+  standard installer; also usable standalone for repair): materialize the SHA-pinned runtime, register the
   Bash gate in `settings.local.json` (atomic temp+rename), advance ACTIVE/PREVIOUS, gitignore the local
   layer, and perform the ownership-aware tracked-layer migration.
 - `… --rollback <CONSUMER>` — re-point the local layer at the PREVIOUS runtime SHA.
 - `… --uninstall <CONSUMER>` — remove ONLY the Preflight-owned Bash local registration (leaves runtimes +
   the tracked project layer untouched).
 - `… --list <CONSUMER>` — list materialized runtimes + the ACTIVE/PREVIOUS SHAs.
+- `… --scan-local-branches <CONSUMER>` — read-only legacy-registration inventory across local branches.
 - `preflight-verify.sh` — extended to detect the legacy/duplicate hazards (below).
 
 ---

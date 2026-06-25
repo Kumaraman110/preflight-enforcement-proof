@@ -403,17 +403,55 @@ echo "Manifest written: ${MANIFEST_PATH}"
 echo "  (artifacts: agents=$(echo "$AGENTS_JSON" | jq 'length'), skills=$(echo "$SKILLS_JSON" | jq 'length'), lib=$(echo "$LIB_JSON" | jq 'length'), hooks=$(echo "$HOOKS_JSON" | jq 'length'), examples=$(echo "$EXAMPLES_JSON" | jq 'length'), docs=$(echo "$DOCS_JSON" | jq 'length'), defaults=$(echo "$DEFAULTS_JSON" | jq 'length'))"
 echo ""
 
+# ── Step 7.5: Branch-stable runtime — the ONE-COMMAND safe state (P0 defect #3) ───────────────────────────
+# UNIFIED INSTALLATION CONTRACT: the standard installer must, by itself, produce the branch-stable model —
+# the user must NOT have to discover and run a second command. We invoke the runtime installer at the SAME
+# resolved SHA we just installed, so the full-framework manifest SHA and the active-runtime SHA are
+# IDENTICAL (no version split-brain). The runtime installer:
+#   • materializes the pinned runtime under <git-common-dir>/preflight/runtime/<sha>/ (outside branch control)
+#   • registers the Bash PreToolUse gate ONLY in the untracked .claude/settings.local.json (pinned, absolute)
+#   • ownership-aware-migrates the Preflight Bash entry OUT of the tracked .claude/settings.json (Step 6 wrote
+#     the full hooks block including Bash; this narrowly removes ONLY the Preflight-owned Bash entry, leaving
+#     every non-Bash gate and all non-Preflight settings intact).
+# DEGRADE-SAFELY: if the runtime step cannot run (no git worktree, runtime installer absent on an older
+# checkout, or PREFLIGHT_SKIP_RUNTIME=1 for runtime-only/repair flows), we DO NOT fail the whole install —
+# the consumer is left with the LEGACY-but-functional tracked Bash gate (Step 6). That is the supported
+# baseline (not fail-open: the Bash gate still enforces; it is merely branch-controlled until migrated).
+RUNTIME_INSTALLER="${CODE_FORGE_DIR}/tools/preflight-runtime-install.sh"
+RUNTIME_STATE="legacy-tracked"   # reported in the summary
+if [ "${PREFLIGHT_SKIP_RUNTIME:-0}" = "1" ]; then
+    echo "Branch-stable runtime: SKIPPED (PREFLIGHT_SKIP_RUNTIME=1). The Bash gate remains in the tracked"
+    echo "  settings.json (legacy baseline). Run tools/preflight-runtime-install.sh later to harden."
+    echo ""
+elif [ -f "$RUNTIME_INSTALLER" ] && git -C "$CONSUMER_DIR" rev-parse --git-dir >/dev/null 2>&1; then
+    echo "Installing branch-stable runtime (one-command safe state) at ${RESOLVED_SHA:0:7}…"
+    if CODE_FORGE_DIR="$CODE_FORGE_DIR" bash "$RUNTIME_INSTALLER" "$CONSUMER_DIR" "$RESOLVED_SHA"; then
+        RUNTIME_STATE="branch-stable"
+    else
+        echo "WARN: the branch-stable runtime step did not complete. The consumer is left with the"
+        echo "  LEGACY tracked Bash gate (functional, but branch-controlled). Re-run"
+        echo "  tools/preflight-runtime-install.sh ${CONSUMER_DIR} ${RESOLVED_SHA:0:7} to harden."
+        RUNTIME_STATE="legacy-tracked (runtime step failed)"
+    fi
+    echo ""
+else
+    echo "Branch-stable runtime: NOT APPLICABLE (no runtime installer or consumer is not a git worktree)."
+    echo "  The Bash gate remains in the tracked settings.json (legacy baseline)."
+    echo ""
+fi
+
 # ── Step 8: Summary ──────────────────────────────────────────────────────────
 echo "=== Install Complete ==="
-echo "  Ref:      ${PINNED_REF}"
-echo "  SHA:      ${RESOLVED_SHA}"
-echo "  Agents:   ${AGENT_COUNT}"
-echo "  Skills:   ${SKILL_COUNT}"
+echo "  Ref:           ${PINNED_REF}"
+echo "  SHA:           ${RESOLVED_SHA}"
+echo "  Agents:        ${AGENT_COUNT}"
+echo "  Skills:        ${SKILL_COUNT}"
+echo "  Bash runtime:  ${RUNTIME_STATE}"
 echo "  lib/hooks/examples/docs/defaults + hooks block merged into settings.json"
 echo ""
 echo "Next steps:"
 echo "  cd ${CONSUMER_DIR}"
-echo "  git add .claude/ .preflight/installed.lock"
+echo "  git add .claude/ .preflight/installed.lock          # NOTE: .claude/settings.local.json is gitignored (machine-local)"
 echo "  git commit -m \"chore: pin preflight framework at ${PINNED_REF} (${RESOLVED_SHA:0:7})\""
 echo ""
 echo "To verify integrity later: tools/preflight-verify.sh ${CONSUMER_DIR}"
