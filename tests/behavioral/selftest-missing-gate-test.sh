@@ -32,13 +32,25 @@ bad() { echo "FAIL: $1" >&2; FAIL=$((FAIL+1)); }
 command -v jq >/dev/null 2>&1 || { echo "SKIP: jq required for the coverage assertion"; echo ""; echo "selftest-missing-gate tests: ${PASS} passed, ${FAIL} failed"; exit 0; }
 
 # Build a fresh fake repo each time: a copy of the selftest under test + the real hooks.json + stub gates.
-GATES="pre-push-gate-check coupled-edit-gate bootstrap-write-gate adjudication-output-gate rubric-validity-gate write-gate-evidence behavioral-contract-gate dependency-map-validator"
+# NOTE (P0 split): the selftest now probes pre-bash-risk-router (the registered Bash gate) AND the
+# pre-push-gate-check shim with an ORDINARY command expecting exit 0 (fast allow) — so their stubs must
+# return 0 for an ordinary command, NOT a blanket exit 2. All the OTHER gates are block-gates whose probes
+# expect exit 2, so they keep the simple `exit 2` stub. (The blanket-2 stub predated the split and made the
+# router/shim probes read as DEAD.)
+GATES="coupled-edit-gate bootstrap-write-gate adjudication-output-gate rubric-validity-gate write-gate-evidence behavioral-contract-gate dependency-map-validator"
+ALLOW_GATES="pre-bash-risk-router pre-push-gate-check"   # probed with an ordinary cmd → must exit 0
 build_fake() {
   local d; d="$(mktemp -d)/r"; mkdir -p "$d/tools" "$d/hooks"
   cp "$SELFTEST" "$d/tools/preflight-selftest.sh"
   cp "$HOOKS_JSON_SRC" "$d/hooks/hooks.json"
   local g
   for g in $GATES; do printf '#!/usr/bin/env bash\nexit 2\n' > "$d/hooks/$g"; chmod +x "$d/hooks/$g" 2>/dev/null; done
+  # router/shim stubs: allow ordinary (exit 0), block a candidate (exit 2) — mirrors the real fast-path
+  # contract so the selftest's ordinary-command liveness probe sees the expected exit 0.
+  for g in $ALLOW_GATES; do
+    printf '#!/usr/bin/env bash\nIFS= read -r -d '"'"''"'"' _b || true\ncase "$_b" in *push*|*gh*pr*create*|*parity-clean*|*bootstrap-write-approved*|*write-gate-evidence*|*.preflight/gate/*) exit 2;; *) exit 0;; esac\n' > "$d/hooks/$g"
+    chmod +x "$d/hooks/$g" 2>/dev/null
+  done
   FAKE="$d"
 }
 run_fake() { OUT="$(bash "$FAKE/tools/preflight-selftest.sh" 2>&1)"; RC=$?; }

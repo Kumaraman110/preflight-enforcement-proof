@@ -97,10 +97,22 @@ test_gate "$REPO_ROOT/hooks/rubric-validity-gate" \
   '{"tool_name":"Agent","tool_input":{"subagent_type":"code-reviewer","prompt":"review"}}' \
   2 "rubric-validity-gate (no config)"
 
-# 5. pre-push-gate-check: push to forbidden remote should BLOCK
+# 5. pre-bash-risk-router: the REGISTERED Bash PreToolUse gate (P0 split). LIVENESS is probed with an
+#    ORDINARY command — the router answers it on its builtins-only fast path with exit 0 (allow), instantly
+#    and with ZERO external spawns. This is the right granularity for a liveness self-test: it proves the
+#    registered gate is present and responsive WITHOUT driving the heavy engine (whose full candidate
+#    adjudication can exceed this driver's 10s probe cap on a slow-spawn host — and whose forbidden-push
+#    BLOCK behavior is exhaustively covered by the pre-push-* behavioral suites, not here). A router that
+#    fast-allows an ordinary command is exactly the P0 autonomy property; a hung/dead router would time out.
+test_gate "$REPO_ROOT/hooks/pre-bash-risk-router" \
+  '{"tool_name":"Bash","tool_input":{"command":"echo selftest-liveness"}}' \
+  0 "pre-bash-risk-router (ordinary cmd → fast allow)"
+
+# 5b. pre-push-gate-check: the compatibility SHIM delegates to the router; same ordinary-command liveness.
+#     Not a registered gate anymore, but a stale install may still invoke this name — keep it honest + fast.
 test_gate "$REPO_ROOT/hooks/pre-push-gate-check" \
-  '{"tool_name":"Bash","tool_input":{"command":"git push --force origin main"}}' \
-  2 "pre-push-gate-check (force push)"
+  '{"tool_name":"Bash","tool_input":{"command":"echo selftest-liveness"}}' \
+  0 "pre-push-gate-check shim (ordinary cmd → fast allow via router)"
 
 # 6. write-gate-evidence: malformed sentinel should BLOCK
 mkdir -p .preflight/gate
