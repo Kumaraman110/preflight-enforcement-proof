@@ -370,6 +370,33 @@ roles, external-review loop, and manifest/integrity concepts are **unchanged**.
 
 ---
 
+## 4c. P0 ACCEPTANCE GATES — status at head `22fd039` (draft PR #12)
+
+Four acceptance gates were defined; Gates 1–3 are closed, Gate 4 is intentionally deferred. The eight P0
+commits are `b43cabd` (split), `67d68ab` (branch-stable runtime), `9d63fa9` (E/F docs), `dcf7786`
+(verify-advisory fix), `4a794f2` (selftest router coverage), `baabee5` + `22fd039` (slow-host test
+tolerance), `72728f9` (unified one-command installer).
+
+| Gate | What | Status |
+| --- | --- | --- |
+| 1 | Complete behavioral suite at exact final head `22fd039` (clean worktree, `all` incl. spawn-delay) | **PASSED — 699 passed, 0 failed, exit 0** |
+| 2 | Unified installation contract — one `preflight-install.sh` command produces the branch-stable model | **PASSED** (fresh-consumer end-to-end: tracked Bash removed, local pin added, manifest==runtime, verify PASS+0 drift, idempotent, rollback coherent) |
+| 3 | Eliminate consumer split-brain — real consumer upgraded to `22fd039` | **PASSED** (manifest==runtime==`22fd039`, verify PASS, 0 drift; app work byte-identical, 10/10 stashes, archives preserved) |
+| 4 | Live Claude Code platform validation | **NOT YET PERFORMED** (requires a real CC session rooted in the consumer; a headless agent cannot observe CC's own PreToolUse dispatch) |
+
+**Status distinction (the required honest framing):**
+- Mechanical acceptance: **passed**
+- Exact final-head full suite: **passed (699/0)**
+- Installation coherence: **passed**
+- Live Claude Code delivery: **pending**
+
+> **P0 mechanical acceptance passed; live platform acceptance not yet performed.**
+
+v0.9.1 remains **blocked** on Gate 4 (the live session) — NOT on any failed test. Do not call the release
+cut-ready, and do not promote PR #12 from draft, until the live Claude Code consumer session passes.
+
+---
+
 ## 5. CUT DECISION INPUTS (for the owner)
 
 - **Go-ahead-able:** the 4 mediums + all prior HIGHs/MEDIUMs are harness-proven and backed up; M15 converged
