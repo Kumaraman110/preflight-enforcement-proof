@@ -33,7 +33,7 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REAL_HOOK="${SCRIPT_DIR}/../../hooks/pre-push-gate-check"
+REAL_HOOK="${SCRIPT_DIR}/../../hooks/pre-push-gate-engine"
 
 PASS=0; FAIL=0
 ok()  { echo "PASS: $1"; PASS=$((PASS+1)); }
@@ -61,11 +61,11 @@ make_repo() {
 run_with_stub_evidence() {  # $1 = stub exit code ; $2 = repo dir
   local code="$1" repo="$2" hd
   hd="$(mktemp -d)/hookdir"; mkdir -p "$hd"
-  cp "$REAL_HOOK" "$hd/pre-push-gate-check"
+  cp "$REAL_HOOK" "$hd/pre-push-gate-engine"
   printf '#!/usr/bin/env bash\nexit %s\n' "$code" > "$hd/pre-push-gate"
   chmod +x "$hd/pre-push-gate" 2>/dev/null || true
   local json="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git push origin HEAD:topic-work\"}}"
-  OUT="$( cd "$repo" && printf '%s' "$json" | _PFG_WATCHDOG_CHILD=1 bash "$hd/pre-push-gate-check" 2>&1 )"; RC=$?
+  OUT="$( cd "$repo" && printf '%s' "$json" | _PFG_WATCHDOG_CHILD=1 bash "$hd/pre-push-gate-engine" 2>&1 )"; RC=$?
 }
 
 REPO="$(make_repo)"

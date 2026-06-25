@@ -1048,6 +1048,52 @@ run_behavioral_tests() {
     yellow "SKIP: pre-push-wedge-failclosed-test.sh not found"
   fi
 
+  # ── P0 router/engine split — timeout-budget invariant (the lost-invariant fail-OPEN RED guard) ──
+  local rtr_budget_test="$SCRIPT_DIR/behavioral/router-timeout-budget-test.sh"
+  if [ -f "$rtr_budget_test" ]; then
+    if bash "$rtr_budget_test"; then
+      PASSES=$((PASSES + 4))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: router-timeout-budget tests failed (the router's candidate deadline must be DERIVED from the hooks.json platform timeout so its fail-closed exit 2 always fires BEFORE the platform SIGKILL — a 137 is non-blocking = fail-OPEN)"
+    fi
+  else
+    yellow "SKIP: router-timeout-budget-test.sh not found"
+  fi
+
+  # ── P0 router/engine split — fast-path latency SLO (zero external spawns on the ordinary path) ──
+  local rtr_fastpath_test="$SCRIPT_DIR/behavioral/router-fastpath-latency-test.sh"
+  if [ -f "$rtr_fastpath_test" ]; then
+    if bash "$rtr_fastpath_test"; then
+      PASSES=$((PASSES + 5))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: router-fastpath-latency tests failed (the ordinary Bash fast path must spawn ZERO external processes and never invoke the engine — the structural fix for the every-Bash-denial incident)"
+    fi
+  else
+    yellow "SKIP: router-fastpath-latency-test.sh not found"
+  fi
+
+  # ── P0 router/engine split — spawn-delay deterministic regression harness (the incident recreation) ──
+  # NOTE: this harness injects a +1s/spawn tax and runs the REAL engine on candidate pushes, so on a
+  # slow-spawn host it can take several minutes. It is registered but gated behind PREFLIGHT_RUN_SPAWN_DELAY
+  # so the default suite run stays fast; CI / a deliberate slow-host run sets the flag to include it.
+  local spawn_delay_test="$SCRIPT_DIR/behavioral/spawn-delay-harness-test.sh"
+  if [ -f "$spawn_delay_test" ]; then
+    if [ "${PREFLIGHT_RUN_SPAWN_DELAY:-0}" = "1" ]; then
+      if bash "$spawn_delay_test"; then
+        PASSES=$((PASSES + 15))
+      else
+        FAILURES=$((FAILURES + 1))
+        red "FAIL: spawn-delay-harness tests failed (ordinary Bash must stay fast+allowed under an artificial per-spawn tax; candidate timeouts must be scoped; the every-Bash-denial incident must not recur)"
+      fi
+    else
+      yellow "SKIP: spawn-delay-harness-test.sh (set PREFLIGHT_RUN_SPAWN_DELAY=1 to run; it is slow — injects a +1s/spawn tax through the real engine)"
+    fi
+  else
+    yellow "SKIP: spawn-delay-harness-test.sh not found"
+  fi
+
   local evidence_rc_test="$SCRIPT_DIR/behavioral/pre-push-evidence-rc-failclosed-test.sh"
   if [ -f "$evidence_rc_test" ]; then
     if bash "$evidence_rc_test"; then

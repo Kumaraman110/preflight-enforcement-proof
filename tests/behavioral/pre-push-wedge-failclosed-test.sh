@@ -1,26 +1,18 @@
 #!/usr/bin/env bash
-# Behavioral test: pre-push-gate-check FAILS CLOSED when it wedges/stalls.
+# Behavioral test: the push-safety control plane FAILS CLOSED when it wedges/stalls — AND a wedge can
+# never disable ordinary Bash (the P0 router/engine split).
 #
-# THE HOLE (RED, pre-fix): the hook is registered with a 10s platform timeout. If a push-safety
-# subprocess wedges (git blocked on a credential/SSH prompt, jq on a stalled FS read), the PLATFORM
-# SIGKILLs the hook at 10s. That kill surfaces as exit 124/137 — and per the PreToolUse protocol ONLY
-# exit 2 blocks; 124/137 are NON-blocking errors, so the push then proceeds UNGATED. A safety gate that
-# wedges must NEVER wave a push through.
+# ARCHITECTURE (post-P0 split):
+#   pre-bash-risk-router  — owns the CANDIDATE deadline (PREFLIGHT_ENGINE_DEADLINE, default 30s). A
+#       candidate (push/PR/sentinel) whose engine doesn't decide in time -> the router BLOCKs that
+#       candidate (exit 2). An ORDINARY command never invokes the engine, so a wedged engine cannot block it.
+#   pre-push-gate-engine  — retains Layer-2 per-subprocess wedge-bounding (a single stalled git/jq fails
+#       closed fast, without waiting for the router's outer deadline).
 #
-# THE FIX (GREEN): two layers, each independently fail-closed —
-#   L1 (self-watchdog): the body re-execs as a child under an internal deadline (default 8s, < the 10s
-#       platform kill). A child that doesn't reach a decision (124/137/abnormal) is mapped to exit 2.
-#   L2 (subprocess bounding): the wedge-prone network-facing call (`git remote get-url`) runs under a
-#       short per-call timeout; a wedge sets a flag and the next decision checkpoint exits 2.
-#
-# We inject a REAL wedge by shadowing `git` with a hanging stub on PATH, run the hook under a 10s
-# ceiling (emulating the platform), and assert exit == 2 (BLOCK), NOT 124/137 (fail-open).
-#
-# WINDOWS/GIT-BASH NOTE: this box has a pathological ~1.5s/subprocess-spawn tax, so even a NORMAL
-# unwedged body can take far longer than 10s here. The DECISION-logic assertions (D-series) therefore
-# raise PREFLIGHT_PUSH_GATE_DEADLINE so the watchdog doesn't kill a legitimate (merely slow) run —
-# the same compensation the sibling tier-tests already make with their per-probe `timeout 60`. The
-# WEDGE assertions (W-series) use the production default and assert fail-closed + under the platform kill.
+# THE HOLE THIS GUARDS (RED, pre-split): the monolith ran the heavy body + its self-watchdog for EVERY
+# Bash call; on a slow-spawn host the watchdog fired on ORDINARY commands too -> exit 2 for everything ->
+# autonomy denied. GREEN: the router's fast path allows ordinary commands with zero engine involvement;
+# the deadline is scoped to candidates only.
 #
 # Exit 0 = all assertions passed; exit 1 = at least one failed.
 
@@ -28,39 +20,40 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-HOOK="$ROOT/hooks/pre-push-gate-check"
+ROUTER="$ROOT/hooks/pre-bash-risk-router"
+ENGINE="$ROOT/hooks/pre-push-gate-engine"
 
 PASS=0; FAIL=0
 ok()  { echo "PASS: $1"; PASS=$((PASS+1)); }
 bad() { echo "FAIL: $1" >&2; FAIL=$((FAIL+1)); }
 
-if [ ! -f "$HOOK" ]; then
-  bad "hook not found at $HOOK"; echo ""; echo "pre-push-wedge-failclosed tests: ${PASS} passed, ${FAIL} failed"; exit 1
-fi
-if ! command -v timeout >/dev/null 2>&1; then
-  echo "SKIP: 'timeout' not available — the watchdog degrades to inline (documented); wedge-bounding is a no-op here."
-  echo ""; echo "pre-push-wedge-failclosed tests: 0 passed, 0 failed (skipped)"; exit 0
-fi
+for f in "$ROUTER" "$ENGINE"; do
+  [ -f "$f" ] || { bad "missing $f"; echo ""; echo "pre-push-wedge-failclosed tests: ${PASS} passed, ${FAIL} failed"; exit 1; }
+done
+command -v timeout >/dev/null 2>&1 || { echo "SKIP: 'timeout' unavailable — deadline degrades to inline (documented)."; echo ""; echo "pre-push-wedge-failclosed tests: 0 passed, 0 failed (skipped)"; exit 0; }
 
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
 
-# Build a workspace with HEAD-fresh evidence + config (so a normal run reaches the tier/remote logic).
 mk_ws() {
   local ws="$T/$1"; mkdir -p "$ws/.preflight/gate"
-  ( cd "$ws" && git init -q && git commit -q --allow-empty -m init && git checkout -q -b feature/topic-x )
+  ( cd "$ws" && git init -q && git commit -q --allow-empty -m init && git checkout -q -b feature/topic-x ) >/dev/null 2>&1
   local head; head="$(cd "$ws" && git rev-parse HEAD)"
   for ev in tests-pass stage1-clean; do printf 'HEAD=%s\nts=now\n' "$head" > "$ws/.preflight/gate/$ev"; done
   printf '{"branch":{"base":"main","remote":"origin","forbiddenRemotes":[],"forbiddenRepos":[]}}' > "$ws/.preflight/config.json"
+  # ship the router + engine + libs next to the workspace so the router resolves its sibling engine
+  mkdir -p "$ws/hooks" "$ws/lib"
+  cp "$ROUTER" "$ENGINE" "$ROOT/hooks/pre-push-gate" "$ws/hooks/" 2>/dev/null
+  cp "$ROOT/lib/config-overlay.sh" "$ROOT/lib/heartbeat.sh" "$ws/lib/" 2>/dev/null
   echo "$ws"
 }
 WS="$(mk_ws optedin)"
+WROUTER="$WS/hooks/pre-bash-risk-router"
+WENGINE="$WS/hooks/pre-push-gate-engine"
 
-# A `git` stub that HANGS on every call (simulates a fully-wedged git — the worst case).
+# git stub that HANGS on every call (worst-case fully-wedged engine).
 STUB_ALL="$T/stub_all"; mkdir -p "$STUB_ALL"
 printf '#!/bin/sh\nsleep 999\n' > "$STUB_ALL/git"; chmod +x "$STUB_ALL/git"
-
-# A `git` stub that is FAST for everything EXCEPT `remote get-url`, which hangs — the REALISTIC
-# production wedge (a credential/network round-trip stalls; local reads are fine).
+# git stub that is fast EXCEPT `remote get-url`, which hangs (realistic network/credential wedge).
 STUB_REMOTE="$T/stub_remote"; mkdir -p "$STUB_REMOTE"
 cat > "$STUB_REMOTE/git" <<EOF
 #!/bin/sh
@@ -72,131 +65,93 @@ EOF
 chmod +x "$STUB_REMOTE/git"
 
 PUSH='{"tool_name":"Bash","tool_input":{"command":"git push origin HEAD:feature/x"}}'
+ORD='{"tool_name":"Bash","tool_input":{"command":"echo hello"}}'
 
-# run_wedged <stub-dir> <deadline-env> <platform-ceiling> -> sets RC, ELAPSED, ERR1
-run_wedged() {
-  local stub="$1" dl="$2" ceil="$3"
-  local errf; errf="$(mktemp)"
-  local start end
-  start="$(date +%s)"
-  ( cd "$WS" && printf '%s' "$PUSH" | PATH="$stub:$PATH" CLAUDE_PROJECT_DIR="$WS" \
-      PREFLIGHT_PUSH_GATE_DEADLINE="$dl" timeout "$ceil" bash "$HOOK" "$PUSH" >/dev/null 2>"$errf" ); RC=$?
-  end="$(date +%s)"
-  ELAPSED=$((end - start))
-  ERR1="$(head -1 "$errf" 2>/dev/null)"
-  rm -f "$errf"
-}
-
-# ── W1: FULLY-WEDGED git -> must BLOCK (exit 2), fail-CLOSED. The CORE assertion of this whole fix. ──
-# Production default deadline (8s) under a 12s ceiling. RED (pre-fix): the platform killed the hung hook
-# at 10s -> 124/137 -> NON-blocking -> push proceeds UNGATED. GREEN (post-fix): the self-watchdog renders
-# a BLOCK (exit 2) at its own deadline first.
-run_wedged "$STUB_ALL" 8 12
-if [ "$RC" -eq 2 ]; then
-  ok "W1: fully-wedged git -> BLOCK (exit 2), fail-CLOSED (was 124/137 fail-open pre-fix)"
+# ── W1: a CANDIDATE push with a fully-wedged engine -> router BLOCKs (exit 2), fail-CLOSED. ──
+# Engine deadline 12s — chosen ABOVE the router's 10s floor and BELOW its derived ceiling (platform-35 −
+# grace-2 − overhead-10 = 23s) so the value passes through UN-clamped and the message names exactly "12s".
+# (An earlier version set 3s and grepped '3s', but the router floors the deadline to a 10s minimum, so the
+# message correctly read "10s" — that was a STALE TEST STRING, not a code bug. We pick a value inside the
+# [floor,ceiling] band so the assertion is exact.) The router's deadline (not the test's platform `timeout`)
+# renders the BLOCK: the block lands at ~12s, well under the 60s platform ceiling here.
+errf="$(mktemp)"; _w1s="$EPOCHREALTIME"
+( cd "$WS" && printf '%s' "$PUSH" | PATH="$STUB_ALL:$PATH" PREFLIGHT_ENGINE_DEADLINE=12 \
+    timeout 60 bash "$WROUTER" "$PUSH" >/dev/null 2>"$errf" ); _rc=$?
+_w1e="$EPOCHREALTIME"; _w1el="$(awk -v s="$_w1s" -v e="$_w1e" 'BEGIN{printf "%.0f", e-s}')"
+if [ "$_rc" -eq 2 ] && grep -qi 'did not reach a decision within its 12s candidate' "$errf" && [ "$_w1el" -lt 40 ]; then
+  ok "W1: candidate push + fully-wedged engine -> router BLOCK (exit 2) in ~${_w1el}s, names the 12s candidate deadline (router deadline, not platform kill; fail-closed)"
 else
-  bad "W1: wedged git should exit 2, got RC=$RC (124/137 = the fail-open hole is still present)"
-fi
-
-# ── W1b: the DEADLINE (not the platform ceiling) is what fires. Box-speed-independent proof: with a SHORT
-# deadline (3s) under a GENEROUS ceiling (30s), the hook must still BLOCK — and the watchdog message must
-# name the 3s deadline, proving the internal watchdog (not the outer ceiling) rendered the verdict. On a
-# production host this directly demonstrates the block lands well before the 10s platform kill. ──
-errf="$(mktemp)"
-( cd "$WS" && printf '%s' "$PUSH" | PATH="$STUB_ALL:$PATH" CLAUDE_PROJECT_DIR="$WS" \
-    PREFLIGHT_PUSH_GATE_DEADLINE=3 timeout 30 bash "$HOOK" "$PUSH" >/dev/null 2>"$errf" ); _rc=$?
-if [ "$_rc" -eq 2 ] && grep -qi 'within its 3s safety deadline' "$errf"; then
-  ok "W1b: a 3s deadline under a 30s ceiling still BLOCKs and names the 3s deadline — the watchdog, not the platform kill, decides"
-else
-  bad "W1b: expected exit 2 + '3s safety deadline' message, got RC=$_rc msg='$(head -1 "$errf")'"
+  bad "W1: expected exit 2 + '12s candidate' deadline message in <40s, got RC=$_rc elapsed=${_w1el}s msg='$(head -1 "$errf")'"
 fi
 rm -f "$errf"
 
-# ── W2: the watchdog block-MESSAGE is present at the production default deadline (proves L1 fired,
-#       not some incidental exit 2). ───
-errf="$(mktemp)"
-( cd "$WS" && printf '%s' "$PUSH" | PATH="$STUB_ALL:$PATH" CLAUDE_PROJECT_DIR="$WS" \
-    PREFLIGHT_PUSH_GATE_DEADLINE=8 timeout 14 bash "$HOOK" "$PUSH" >/dev/null 2>"$errf" ); _rc=$?
-if [ "$_rc" -eq 2 ] && grep -qi 'did not reach a decision' "$errf"; then
-  ok "W2: BLOCK carries the watchdog 'did not reach a decision' reason (fail-closed self-watchdog confirmed)"
-else
-  bad "W2: expected watchdog block message + exit 2, got RC=$_rc msg='$(head -1 "$errf")'"
-fi
-rm -f "$errf"
-
-# ── W3: REALISTIC wedge (only `git remote get-url` hangs), watchdog DISABLED -> proves Layer 2
-#       bounds the network call on its own (not merely shadowed by Layer 1). Must still BLOCK.
-#   The named push remote forces the hook's B0 forbidden pre-check to call `git remote get-url <name>`,
-#   which the stub wedges on. With L1 OFF, only the L2 per-call timeout (3s) + checkpoint can block.
-#   Generous ceiling (120s): this box's ~1.3s/spawn tax makes the PRE-wedge body work slow (the wedge
-#   itself is bounded at 3s); we assert only that it FAILS CLOSED (exit 2) with the L2 message, not timing. ──
+# ── W2 (THE AUTONOMY FIX): an ORDINARY command with the engine fully wedged -> ALLOW (exit 0), FAST. ──
+# This is the exact incident: pre-split, a wedged engine blocked every Bash command. Post-split, the
+# router's fast path never invokes the engine for an ordinary command, so it allows instantly. We even
+# leave the wedging stub on PATH and a tiny engine deadline to prove the engine is simply never consulted.
 errf="$(mktemp)"; start="$(date +%s)"
-( cd "$WS" && printf '%s' "$PUSH" | PATH="$STUB_REMOTE:$PATH" CLAUDE_PROJECT_DIR="$WS" \
-    _PFG_WATCHDOG_CHILD=1 PREFLIGHT_PUSH_GATE_DEADLINE=8 timeout 120 bash "$HOOK" "$PUSH" >/dev/null 2>"$errf" ); _rc=$?
+( cd "$WS" && printf '%s' "$ORD" | PATH="$STUB_ALL:$PATH" PREFLIGHT_ENGINE_DEADLINE=3 \
+    timeout 30 bash "$WROUTER" "$ORD" >/dev/null 2>"$errf" ); _rc=$?
+end="$(date +%s)"; _el=$((end - start))
+if [ "$_rc" -eq 0 ] && [ "$_el" -lt 10 ]; then
+  ok "W2: ordinary 'echo' with a fully-wedged engine -> ALLOW (exit 0) in ${_el}s (engine never invoked; autonomy preserved)"
+else
+  bad "W2: ordinary command must ALLOW fast even with a wedged engine, got RC=$_rc elapsed=${_el}s"
+fi
+rm -f "$errf"
+
+# ── W3: after a candidate times out, the NEXT ordinary command still succeeds immediately. ──
+( cd "$WS" && printf '%s' "$PUSH" | PATH="$STUB_ALL:$PATH" PREFLIGHT_ENGINE_DEADLINE=3 timeout 30 bash "$WROUTER" "$PUSH" >/dev/null 2>&1 )
+( cd "$WS" && printf '%s' "$ORD" | PATH="$STUB_ALL:$PATH" PREFLIGHT_ENGINE_DEADLINE=3 timeout 30 bash "$WROUTER" "$ORD" >/dev/null 2>&1 ); _rc=$?
+[ "$_rc" -eq 0 ] && ok "W3: ordinary command immediately after a candidate timeout -> ALLOW (exit 0); no lingering denial" \
+                 || bad "W3: post-timeout ordinary command should allow, got RC=$_rc"
+
+# ── W4: REALISTIC wedge (only `git remote get-url` hangs) -> the ENGINE's Layer-2 subprocess bounding
+#       fails closed on its own. Drive the engine body directly; assert exit 2 with the L2/wedge message. ──
+errf="$(mktemp)"; start="$(date +%s)"
+( cd "$WS" && printf '%s' "$PUSH" | PATH="$STUB_REMOTE:$PATH" \
+    timeout 120 bash "$WENGINE" "$PUSH" >/dev/null 2>"$errf" ); _rc=$?
 end="$(date +%s)"; _el=$((end - start))
 if [ "$_rc" -eq 2 ] && grep -qiE 'timed out|wedge|did not reach' "$errf"; then
-  ok "W3: realistic remote-wedge, self-watchdog OFF -> Layer 2 (per-subprocess timeout + checkpoint) fail-CLOSED (exit 2) in ${_el}s"
+  ok "W4: realistic remote-wedge -> engine Layer-2 per-subprocess bounding fail-CLOSED (exit 2) in ${_el}s"
 else
-  bad "W3: Layer 2 alone should fail-closed (exit 2) on a wedged 'git remote get-url', got RC=$_rc"
+  bad "W4: engine Layer-2 should fail-closed (exit 2) on a wedged 'git remote get-url', got RC=$_rc msg='$(head -1 "$errf")'"
 fi
 rm -f "$errf"
 
-# ── D-series: DECISION logic still works on a NORMAL (unwedged) run — NO regression to the tiers. ──
-#   Driven BODY-DIRECT (_PFG_WATCHDOG_CHILD=1): the watchdog kills the body at its internal deadline and
-#   fails CLOSED — correct in production, but on this slow-spawn box a legitimate body (~37s) exceeds any
-#   sub-10s deadline, so the watchdog would turn every outcome into a spurious exit-2. Body-direct tests
-#   the exact code that runs AS the watchdog child in production. (Full tier coverage lives in
-#   pre-push-bare-remote-test.sh; here we just confirm the body edits — bounded wrappers + checkpoints —
-#   did not break a clean AUTO/CONFIRM decision.)
-probe_body() {  # $1 = push command ; sets RC, DEC (real git, no stub, watchdog bypassed)
+# ── W5: engine MISSING -> router BLOCKs a candidate (scoped) but ALLOWs ordinary. ──
+mv "$WENGINE" "$WENGINE.away"
+( cd "$WS" && printf '%s' "$PUSH" | bash "$WROUTER" "$PUSH" >/dev/null 2>/tmp/.w5p ); _rcp=$?
+( cd "$WS" && printf '%s' "$ORD"  | bash "$WROUTER" "$ORD"  >/dev/null 2>/dev/null ); _rco=$?
+mv "$WENGINE.away" "$WENGINE"
+{ [ "$_rcp" -eq 2 ] && [ "$_rco" -eq 0 ]; } \
+  && ok "W5: engine MISSING -> candidate BLOCKED (exit 2), ordinary ALLOWED (exit 0) — scoped containment" \
+  || bad "W5: expected candidate=2 ordinary=0, got push=$_rcp ordinary=$_rco"
+
+# ── D-series: ENGINE decision logic intact on a NORMAL (unwedged) run, body-direct. ──
+# IMPORTANT — the probe timeout here is the TEST's own ceiling on the engine BODY (run directly, NOT via the
+# router), so it has NO bearing on the production timeout-budget invariant (that lives in the router; see
+# tests/behavioral/router-timeout-budget-test.sh). On this Windows/Git-Bash scan-on-exec host the engine body
+# takes 117–166s to adjudicate a single push (every git rev-parse/diff pays the spawn tax); on a normal host
+# it is seconds. An earlier 90s ceiling was TOO TIGHT for this host and killed the probe at rc=124 even though
+# the engine reaches the CORRECT verdict given time — so we use a generous 300s ceiling. This only bounds the
+# direct-body probe; it is NOT a product SLO.
+_D_PROBE_TIMEOUT="${PREFLIGHT_D_PROBE_TIMEOUT:-300}"
+probe_engine() {  # $1 = push cmd ; sets RC, DEC (real git, watchdog-free engine body)
   local cmd="$1" json outf; json="$(printf '{"tool_name":"Bash","tool_input":{"command":"%s"}}' "$cmd")"
   outf="$(mktemp)"
-  ( cd "$WS" && printf '%s' "$json" | CLAUDE_PROJECT_DIR="$WS" _PFG_WATCHDOG_CHILD=1 \
-      timeout 90 bash "$HOOK" "$json" >"$outf" 2>/dev/null ); RC=$?
+  ( cd "$WS" && printf '%s' "$json" | CLAUDE_PROJECT_DIR="$WS" timeout "$_D_PROBE_TIMEOUT" bash "$WENGINE" "$json" >"$outf" 2>/dev/null ); RC=$?
   DEC="$(jq -r '.hookSpecificOutput.permissionDecision // ""' "$outf" 2>/dev/null || echo "")"
   rm -f "$outf"
 }
-
-# D1: AUTO — named safe-remote push to an UNPROTECTED branch, non-force, evidence fresh -> allow.
-probe_body 'git push origin HEAD:feature/x'
-if [ "$RC" -eq 0 ] && [ "$DEC" = "allow" ]; then
-  ok "D1: normal AUTO decision intact (exit 0 + allow) — bounded-subprocess wrappers don't false-trip on a clean run"
-else
-  bad "D1: normal AUTO push should be 0/allow, got RC=$RC DEC=$DEC (body edits regressed the decision)"
-fi
-
-# D2: CONFIRM — push to the PROTECTED branch 'main' -> ask (exit 0).
-probe_body 'git push origin HEAD:main'
-if [ "$RC" -eq 0 ] && [ "$DEC" = "ask" ]; then
-  ok "D2: normal CONFIRM decision intact (exit 0 + ask) — checkpoints don't false-block a clean run"
-else
-  bad "D2: normal CONFIRM push should be 0/ask, got RC=$RC DEC=$DEC"
-fi
-
-# ── R1: watchdog RELAY integrity — the AUTO/CONFIRM JSON the child writes must survive the parent's
-#   file-capture relay byte-for-byte. Use a FAST (non-wedging) git stub so the body finishes well within
-#   the watchdog deadline, then assert the parent (which re-execs the child and relays its captured
-#   stdout) emits the SAME permissionDecision the body would. Run THROUGH the watchdog (no bypass). ──
-# Real git is fast per-call; this box's tax is spawn COUNT, so on it even the clamp-ceiling 9s deadline
-# cannot clear the body and the watchdog fires (a correct fail-closed, just not what R1 wants to show).
-# Outer ceiling 20s — safely above the watchdog's worst-case teardown (9s deadline + 1s grace + box tax)
-# so we get a clean watchdog verdict rather than the outer ceiling pre-empting it. On a normal-spawn host
-# the body clears 9s and R1 demonstrates relay integrity; on this box it self-skips (honestly recorded).
-errf="$(mktemp)"; outf="$(mktemp)"
-J_AUTO='{"tool_name":"Bash","tool_input":{"command":"git push origin HEAD:feature/x"}}'
-( cd "$WS" && printf '%s' "$J_AUTO" | CLAUDE_PROJECT_DIR="$WS" PREFLIGHT_PUSH_GATE_DEADLINE=9 \
-    timeout 20 bash "$HOOK" "$J_AUTO" >"$outf" 2>"$errf" ); _rc=$?
-_dec="$(jq -r '.hookSpecificOutput.permissionDecision // ""' "$outf" 2>/dev/null || echo "")"
-if [ "$_rc" -eq 0 ] && [ "$_dec" = "allow" ]; then
-  ok "R1: watchdog relay preserves the AUTO JSON end-to-end (parent re-emits child's permissionDecision:allow)"
-elif { [ "$_rc" -eq 2 ] && grep -qi 'did not reach a decision' "$errf"; } || [ "$_rc" -eq 124 ]; then
-  echo "SKIP-NOTE R1: this host is too slow-spawn to finish the body within the 9s clamp (watchdog fired, or the"
-  echo "  outer 20s ceiling pre-empted on extreme load); relay integrity is instead covered by the body-direct"
-  echo "  D1/D2 above + the wedge proofs W1/W2. Recorded as a skip, not counted as a pass or a failure."
-else
-  bad "R1: expected AUTO/allow through the watchdog (or a clean deadline-skip), got RC=$_rc DEC=$_dec"
-fi
-rm -f "$errf" "$outf"
+probe_engine 'git push origin HEAD:feature/x'
+{ [ "$RC" -eq 0 ] && [ "$DEC" = "allow" ]; } \
+  && ok "D1: engine AUTO decision intact (exit 0 + allow) on a clean run" \
+  || bad "D1: AUTO push should be 0/allow, got RC=$RC DEC=$DEC"
+probe_engine 'git push origin HEAD:main'
+{ [ "$RC" -eq 0 ] && [ "$DEC" = "ask" ]; } \
+  && ok "D2: engine CONFIRM decision intact (exit 0 + ask) on a clean run" \
+  || bad "D2: CONFIRM push should be 0/ask, got RC=$RC DEC=$DEC"
 
 echo ""
 echo "pre-push-wedge-failclosed tests: ${PASS} passed, ${FAIL} failed"

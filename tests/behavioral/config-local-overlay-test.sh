@@ -9,7 +9,7 @@
 #   O2. an overlay trying to LOWER test.coverageBaseline is IGNORED (committed
 #       96.0 wins over local 10.0) and a warning names the ignored key —
 #       gate thresholds are NEVER weakened by a clone-local file.
-#   O3. hooks/pre-push-gate-check honors the overlay: `git push poc ...` (the
+#   O3. hooks/pre-push-gate-engine honors the overlay: `git push poc ...` (the
 #       CORRECT target, blocked every round live) now passes the remote guard
 #       (falls through to the evidence gate — no FORBIDDEN/non-canonical block).
 #   O4. the overlay CANNOT weaken the guard: local sets forbiddenRemotes=[],
@@ -31,7 +31,7 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-HOOK="$ROOT/hooks/pre-push-gate-check"
+HOOK="$ROOT/hooks/pre-push-gate-engine"
 WRITE_GATE="$ROOT/hooks/bootstrap-write-gate"
 OVERLAY_LIB="$ROOT/lib/config-overlay.sh"
 

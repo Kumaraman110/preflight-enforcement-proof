@@ -1,0 +1,160 @@
+#!/usr/bin/env bash
+# pre-bash-risk-router — the FAST PreToolUse router for every Bash tool call (preflight P0 fix).
+#
+# WHY THIS EXISTS (the P0 incident it closes): the monolithic pre-push-gate-check ran its heavyweight
+# body (dozens of git/jq/grep spawns) — and a self-watchdog around it — for EVERY Bash command, because
+# it was the registered Bash hook. On Windows/Git-Bash the per-spawn scan-on-exec tax made an ORDINARY
+# command's run exceed the 8–9s watchdog deadline, so the gate returned exit 2 (block) for EVERY Bash
+# command, disabling autonomous coding. This router fixes that by being the only thing on the ordinary
+# fast path: it does ZERO external process spawns, decides risk with bash builtins alone, and ALLOWS the
+# overwhelming majority of commands instantly. It invokes the heavy engine ONLY for candidate-risk
+# commands. A push-engine problem can therefore never disable unrelated Bash.
+#
+# CONTRACT (PreToolUse): stdin = the tool JSON {"tool_name":"Bash","tool_input":{"command":"..."}}.
+#   exit 0          = allow the tool call (the fast-path verdict for ordinary commands).
+#   exit 2          = block (only ever for a CANDIDATE that the engine blocked, or a candidate the engine
+#                     could not adjudicate — never for an ordinary command).
+#   The engine's stdout (a permissionDecision JSON for CONFIRM/allow tiers) is relayed verbatim.
+#
+# FAIL CONTAINMENT (the core guarantee):
+#   ordinary cmd + engine healthy/missing/broken -> ALLOW (engine never invoked on the ordinary path)
+#   candidate    + engine healthy                -> engine's decision (0 allow / 2 block / JSON ask)
+#   candidate    + engine timeout/missing/abnormal-> BLOCK that candidate only (fail closed, scoped)
+#   candidate    + malformed-with-risk-signal     -> engine (which fails closed)
+#
+# This file performs NO repository discovery, config resolution, evidence validation, heartbeat, manifest
+# work, or git inspection. It is deliberately small enough for complete line-by-line review.
+
+# ── Fast path: read stdin ONCE, preserve it byte-for-byte for the engine ──────────────────────────────
+# `read -r -d ''` consumes the WHOLE stdin (NUL delimiter never appears in tool JSON) into BLOB without
+# spawning anything. The trailing `|| true` keeps the non-zero EOF return from aborting us.
+IFS= read -r -d '' BLOB || true
+
+# ── Candidate-risk classification — bash `case` globs only, ZERO spawns ───────────────────────────────
+# We are deliberately OVER-INCLUSIVE: any command that *might* be a push / pr-create / sentinel-mint is a
+# candidate and goes to the engine for the real (precise, possibly-expensive) decision. False candidates
+# cost one engine invocation; they are never wrongly blocked here (the router never blocks an ordinary
+# command). The patterns mirror the engine's own structural detectors so nothing the engine guards can
+# slip past the router. NOTE: matching is on the raw JSON blob (which contains the command string); this
+# is intentional — even malformed JSON that merely *contains* a risk token is routed to the engine.
+CANDIDATE=0
+case "$BLOB" in
+  # git push in any supported spelling: `git push`, `git -C dir push`, `git -c k=v push`,
+  # `command git push`, `\git push`, `VAR=val git push`, `/usr/bin/git push`, `(git push)`, etc.
+  # The literal substring "push" is the cheap over-approximation; the engine parses the real structure.
+  *push*)                      CANDIDATE=1 ;;
+esac
+case "$BLOB" in
+  # gh pr create (any spacing/quoting between tokens collapses to this co-occurrence over-approximation).
+  *gh*pr*create*)              CANDIDATE=1 ;;
+esac
+case "$BLOB" in
+  # Protected-sentinel mint signals + the human-only parity-clean evidence + the gate dir + indirection
+  # wrappers that could assemble a push/sentinel at runtime (eval/bash -c/sh -c/xargs).
+  *parity-clean*)              CANDIDATE=1 ;;
+  *bootstrap-write-approved*)  CANDIDATE=1 ;;
+  *write-gate-evidence*)       CANDIDATE=1 ;;
+  *.preflight/gate/*)          CANDIDATE=1 ;;
+  # Windows / JSON-escaped backslash gate path. Authentic Bash-tool JSON escapes a single path
+  # backslash as the two-character sequence \\ , so the byte that arrives on stdin between
+  # "gate" segments is a DOUBLE backslash. In a bash `case` glob, \\\\ matches one literal
+  # backslash, so this arm needs FOUR backslashes per separator to match the on-wire double. (A
+  # two-backslash glob — the earlier form — matched a SINGLE literal backslash and so was dead
+  # code against real JSON: it never fired.) Dangerous SENTINEL mints route via their literal
+  # *parity-clean* / *bootstrap-write-approved* / *write-gate-evidence* tokens regardless of slash
+  # direction; this arm only adds the generic backslash gate-dir form for completeness.
+  *.preflight\\\\gate\\\\*)    CANDIDATE=1 ;;
+esac
+
+# Ordinary command → ALLOW immediately. Nothing else runs; no spawn, no engine. This is the fast path
+# that the p95 SLO (Part C) measures.
+if [ "$CANDIDATE" -eq 0 ]; then
+  exit 0
+fi
+
+# ── Candidate path: hand the ORIGINAL stdin to the heavy engine, bounded, fail-closed ────────────────
+# Resolve the engine next to this router (both ship together; the router never inspects the repo to find
+# it). The engine receives the byte-for-byte original BLOB on stdin.
+_RTR_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ENGINE="$_RTR_DIR/pre-push-gate-engine"
+
+# Engine missing → a candidate (push/pr/sentinel) cannot be adjudicated → BLOCK that candidate (scoped).
+if [ ! -f "$ENGINE" ]; then
+  echo "BLOCKED: pre-push-gate-engine not found at $ENGINE — a candidate push/PR/sentinel command cannot be" >&2
+  echo "  adjudicated, so it is failed CLOSED (blocked). Ordinary commands are unaffected. Reinstall preflight" >&2
+  echo "  (tools/preflight-install.sh) to restore the engine." >&2
+  exit 2
+fi
+
+# Run the engine under a candidate-path deadline (Part C). The deadline bounds only the CANDIDATE path
+# (rare), never the ordinary path, so a slow host pays the latency only on a real push/PR. `timeout`
+# absent → run inline (degrade gracefully, no worse than pre-split). Capture stdout/stderr to files so an
+# orphaned grandchild (credential helper, ssh-askpass) can't hold the platform's stdout pipe open.
+#
+# ── LOAD-BEARING TIMEOUT-BUDGET INVARIANT (the P0-fix RED this re-establishes) ────────────────────────────
+# The PreToolUse protocol blocks ONLY on exit 2; any OTHER exit (incl. 137 = the platform's own SIGKILL when
+# the hook overruns its registered `timeout`) is NON-blocking → the tool proceeds UNGATED. So the router's
+# clean fail-closed `exit 2` MUST always fire BEFORE the platform can SIGKILL the router. The pre-split
+# monolith held this by clamping its self-watchdog UNDER the platform kill; the split first shipped only a
+# FLOOR on the deadline and NO ceiling, so at the old 30s default the router's full wall (engine bounded to
+# deadline+kill-grace, PLUS the router's own startup + post-engine teardown spawns on a slow host) reached
+# ~37s and overran the 35s platform timeout → SIGKILL → rc=137 → fail-OPEN on a protected-branch push. We
+# re-derive the deadline FROM the platform timeout so the invariant holds by construction:
+#     engine_deadline + KILL_GRACE + ROUTER_OVERHEAD_MARGIN  <  platform_timeout
+# SINGLE SOURCE OF TRUTH: the platform timeout's real home is hooks.json (what Claude Code reads). The
+# constant below is a DERIVED copy; tests/behavioral/router-timeout-budget-test.sh asserts it equals the
+# hooks.json Bash-hook `timeout` (×1000) and that the derived ceiling clears the platform kill — if either
+# the registration or this constant changes without the other, that coupling test FAILS (the dead-gate /
+# dual-source bug class CLAUDE.md rule 5 names).
+_RTR_PLATFORM_TIMEOUT_S=35     # MUST equal hooks.json PreToolUse Bash hook "timeout" (35000ms) — see coupling test
+_RTR_KILL_GRACE_S=2            # `timeout -k 2`: SIGKILL the engine 2s after SIGTERM if it ignores SIGTERM
+_RTR_OVERHEAD_MARGIN_S=10      # headroom for the router's OWN startup + post-engine teardown spawns (slow-spawn host)
+# Ceiling: the largest engine deadline that still lets the router's exit 2 beat the platform SIGKILL.
+_RTR_DEADLINE_CEILING=$(( _RTR_PLATFORM_TIMEOUT_S - _RTR_KILL_GRACE_S - _RTR_OVERHEAD_MARGIN_S ))   # 35-2-10 = 23
+[ "$_RTR_DEADLINE_CEILING" -lt 10 ] && _RTR_DEADLINE_CEILING=10   # never let the derivation invert below the floor
+# Default deadline = the safe ceiling (NOT the old unsafe 30s). On a normal host the engine decides in
+# seconds, so 23s is ample; on a pathologically slow host NO sub-platform deadline can let the engine
+# finish, so the candidate fails CLOSED (block) — the SAFE direction — instead of fail-OPEN via rc=137.
+_eng_deadline="${PREFLIGHT_ENGINE_DEADLINE:-$_RTR_DEADLINE_CEILING}"
+case "$_eng_deadline" in (*[!0-9]*|'') _eng_deadline=$_RTR_DEADLINE_CEILING ;; esac   # non-numeric/empty → safe default
+# OVERFLOW-SAFE clamp. A huge env value (e.g. 22 digits) overflows bash's `test` int64, so a NAIVE
+# `[ "$v" -gt CEIL ]` ERRORS ("integer expression expected") and the clamp silently no-ops — leaving the
+# huge value to hit GNU `timeout`, which treats an out-of-range duration as already-elapsed (rc 124). So we
+# clamp by STRING LENGTH first: any value with more digits than the ceiling cannot be <= the ceiling, so it
+# is clamped BEFORE any arithmetic compare can overflow. Only then is the (now bounded) value safe for `-lt`
+# / `-gt`. `10#` strips leading zeros without octal surprises.
+if [ "${#_eng_deadline}" -gt "${#_RTR_DEADLINE_CEILING}" ]; then
+  _eng_deadline=$_RTR_DEADLINE_CEILING                                            # too many digits → clamp pre-arithmetic
+fi
+_eng_deadline=$(( 10#$_eng_deadline ))                                            # normalize (strip leading zeros)
+[ "$_eng_deadline" -lt 10 ] && _eng_deadline=10                                   # floor (sane minimum)
+[ "$_eng_deadline" -gt "$_RTR_DEADLINE_CEILING" ] && _eng_deadline=$_RTR_DEADLINE_CEILING   # CEILING: a too-large env
+# override can never push the deadline past the platform kill and reopen the fail-OPEN. The knob can only make
+# the candidate path STRICTER, never unsafe. (Closes both the lost-invariant RED and the no-upper-clamp gap.)
+_eng_out="$(mktemp 2>/dev/null)" || _eng_out="${TMPDIR:-/tmp}/.pfg-eng-o.$$"
+_eng_err="$(mktemp 2>/dev/null)" || _eng_err="${TMPDIR:-/tmp}/.pfg-eng-e.$$"
+
+if command -v timeout >/dev/null 2>&1; then
+  printf '%s' "$BLOB" | timeout -k "$_RTR_KILL_GRACE_S" "$_eng_deadline" bash "$ENGINE" >"$_eng_out" 2>"$_eng_err"
+  _eng_rc=$?
+else
+  printf '%s' "$BLOB" | bash "$ENGINE" >"$_eng_out" 2>"$_eng_err"
+  _eng_rc=$?
+fi
+
+if [ "$_eng_rc" -eq 0 ] || [ "$_eng_rc" -eq 2 ]; then
+  # Real engine decision — relay its stdout (permissionDecision JSON, if any) + stderr + EXACT exit code.
+  cat "$_eng_out" 2>/dev/null; cat "$_eng_err" >&2 2>/dev/null
+  rm -f "$_eng_out" "$_eng_err" 2>/dev/null
+  exit "$_eng_rc"
+fi
+
+# 124 (timeout), 137 (SIGKILL), or any other abnormal code: the engine did not reach a decision in time
+# for THIS candidate → BLOCK this candidate only. Unrelated Bash is unaffected (it never reaches here).
+cat "$_eng_err" >&2 2>/dev/null
+rm -f "$_eng_out" "$_eng_err" 2>/dev/null
+echo "BLOCKED: the pre-push-gate-engine did not reach a decision within its ${_eng_deadline}s candidate" >&2
+echo "  deadline (rc=${_eng_rc}) for this push/PR/sentinel command. Failing CLOSED for THIS candidate only —" >&2
+echo "  ordinary Bash commands are unaffected. Retry, or run the push from a human shell after confirming" >&2
+echo "  the target. (Candidate-path fail-closed; see docs/parity-gate-limitations.md.)" >&2
+exit 2

@@ -33,7 +33,7 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-HOOK="$ROOT/hooks/pre-push-gate-check"
+HOOK="$ROOT/hooks/pre-push-gate-engine"
 
 PASS=0; FAIL=0
 ok()  { echo "PASS: $1"; PASS=$((PASS+1)); }

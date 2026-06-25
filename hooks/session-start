@@ -122,9 +122,61 @@ if [ -f "$HB_LIB" ] && [ -f "$PLUGIN_ROOT/hooks/hooks.json" ]; then
   fi
 fi
 
+# ── Branch-stable runtime report (P0 Part B) ──────────────────────────────────
+# Report the ACTIVE enforcement-runtime SHA so a human can SEE which control plane is live, and surface the
+# two failure modes the branch-stable model must not hide: (a) the active runtime dir is missing/incomplete
+# (a deleted or never-installed pinned runtime → the gate cannot spawn), and (b) the TRACKED project layer
+# still registers a Bash PreToolUse hook, which — because Claude Code runs hooks ADDITIVELY — would fire
+# ALONGSIDE the pinned runtime and remains branch-swappable (defeating the relocation). Both are reported,
+# never silently swapped. See docs/branch-stable-runtime.md.
+RUNTIME_WARN=""
+RUNTIME_REPORT=""
+if command -v git >/dev/null 2>&1; then
+  _ss_top="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  if [ -n "$_ss_top" ]; then
+    _ss_common="$(git -C "$_ss_top" rev-parse --git-common-dir 2>/dev/null || true)"
+    case "$_ss_common" in /*|[A-Za-z]:*) : ;; *) [ -n "$_ss_common" ] && _ss_common="$_ss_top/$_ss_common" ;; esac
+    _ss_common="$( [ -n "$_ss_common" ] && cd "$_ss_common" 2>/dev/null && pwd || true )"
+    if [ -n "$_ss_common" ]; then
+      _ss_active_marker="$_ss_common/preflight/runtime/ACTIVE"
+      if [ -f "$_ss_active_marker" ]; then
+        _ss_sha="$(cat "$_ss_active_marker" 2>/dev/null || true)"
+        _ss_rt_dir="$_ss_common/preflight/runtime/$_ss_sha"
+        if [ -n "$_ss_sha" ] && [ -f "$_ss_rt_dir/hooks/pre-bash-risk-router" ] && [ -f "$_ss_rt_dir/hooks/pre-push-gate-engine" ]; then
+          RUNTIME_REPORT="active runtime=${_ss_sha:0:12} (branch-stable, under git-common-dir)"
+          # Warn if the branch's desired version (installed.lock) differs from the active runtime — do NOT swap.
+          _ss_lock=".preflight/installed.lock"
+          if [ -f "$_ss_lock" ] && command -v jq >/dev/null 2>&1; then
+            _ss_want="$(jq -r '.resolvedSha // ""' "$_ss_lock" 2>/dev/null || echo "")"
+            if [ -n "$_ss_want" ] && [ "$_ss_want" != "$_ss_sha" ]; then
+              RUNTIME_WARN="⚠ RUNTIME VERSION SKEW: this branch's installed.lock wants ${_ss_want:0:12} but the ACTIVE runtime is ${_ss_sha:0:12}. The runtime is NOT auto-swapped (branch checkout must never change the live control plane). Run tools/preflight-runtime-install.sh to upgrade deliberately."
+            fi
+          fi
+        else
+          RUNTIME_WARN="⚠ ACTIVE runtime ${_ss_sha:0:12} is recorded but its dir is missing/incomplete ($_ss_rt_dir). The pinned Bash gate cannot spawn — reinstall with tools/preflight-runtime-install.sh."
+        fi
+      fi
+      # else: no branch-stable runtime installed (legacy in-tree .claude/hooks model) — silent, not an error.
+    fi
+  fi
+fi
+# Additive-hooks check: is a Bash PreToolUse hook registered in the TRACKED project layer?
+if [ -f ".claude/settings.json" ] && command -v jq >/dev/null 2>&1 && [ -n "$RUNTIME_REPORT" ]; then
+  _ss_proj_bash="$(jq -r '[(.hooks.PreToolUse // [])[] | select(.matcher=="Bash")] | length' ".claude/settings.json" 2>/dev/null || echo 0)"
+  if [ "${_ss_proj_bash:-0}" -ge 1 ]; then
+    RUNTIME_WARN="${RUNTIME_WARN}${RUNTIME_WARN:+\\\\n}⚠ BRANCH-STABILITY INCOMPLETE: .claude/settings.json (tracked) still registers a Bash PreToolUse hook that runs ALONGSIDE the pinned runtime and remains branch-swappable. Remove it so the only Bash gate is the local-layer pin."
+  fi
+fi
+
 # Combine status + routing into additionalContext
 # The status line gives metadata. The routing content gives behavioral rules.
 FULL_CONTEXT="$STATUS"
+if [ -n "$RUNTIME_REPORT" ]; then
+  FULL_CONTEXT="$FULL_CONTEXT | $RUNTIME_REPORT"
+fi
+if [ -n "$RUNTIME_WARN" ]; then
+  FULL_CONTEXT="$FULL_CONTEXT\\\\n\\\\n$RUNTIME_WARN"
+fi
 if [ -n "$REG_WARN" ]; then
   FULL_CONTEXT="$FULL_CONTEXT\\\\n\\\\n$REG_WARN"
 fi

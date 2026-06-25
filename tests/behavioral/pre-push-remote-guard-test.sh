@@ -25,7 +25,7 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-HOOK="${SCRIPT_DIR}/../../hooks/pre-push-gate-check"
+HOOK="${SCRIPT_DIR}/../../hooks/pre-push-gate-engine"
 
 if [ ! -x "$HOOK" ] && [ ! -f "$HOOK" ]; then
   echo "FAIL: hook not found at $HOOK" >&2
