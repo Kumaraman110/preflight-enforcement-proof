@@ -202,6 +202,40 @@ fully verified" until a real in-session `spec-analyst` dispatch has been observe
   option to add later as defense-in-depth for the inline-role-play path. Neither is server-side; both
   constrain the agent's tool calls only (same ceiling as every guard in this document).
 
+## Related: the Bash gate is a fast ROUTER + heavy ENGINE, and the active runtime is branch-stable (P0)
+
+`hooks/pre-push-gate-check` is no longer a monolith. It is split (P0 availability fix):
+- `hooks/pre-bash-risk-router` — the registered Bash `PreToolUse` hook. Builtins-only, **zero external
+  spawns** on the ordinary fast path; routes ONLY candidate-risk commands (push / `gh pr create` / sentinel
+  mint / `eval`/`sh -c`/`bash -c`/`xargs` indirection) to the engine; `pre-push-gate-check` is now a thin
+  shim that delegates to it.
+- `hooks/pre-push-gate-engine` — the heavy enforcement body (forbidden-destination, sentinel tripwire,
+  structural push parser, AUTO/CONFIRM/BLOCK tiers, evidence gate), invoked only for candidates.
+
+Two honesty labels attach to this:
+
+1. **The router's candidate deadline is derived from the platform timeout (single source).** The router
+   fails a candidate CLOSED (exit 2) before the platform can SIGKILL the hook (a 137 is non-blocking =
+   fail-open). The default is computed as `platform_timeout − kill_grace − overhead_margin` and any env
+   override (`PREFLIGHT_ENGINE_DEADLINE`) is clamped to that ceiling. On a pathologically slow-spawn host no
+   sub-platform deadline can let the engine finish — the candidate then fails CLOSED (block), the safe
+   direction, never fail-open. The **same lexical-obfuscation ceiling as everywhere in this document
+   applies**: a byte-assembled push (`p=push; git $p`) bypasses the router's `case` globs AND the engine's
+   own parser — routing is raise-the-bar, not a closed boundary.
+
+2. **The active runtime is branch-stable, but only for MIGRATED checkouts (defect #3).** See
+   `docs/branch-stable-runtime.md`. The Bash gate registration moves from the **tracked**
+   `.claude/settings.json` to the **untracked** `.claude/settings.local.json`, pinned to a SHA-named runtime
+   under `<git-common-dir>` (outside branch control). This closes branch-controlled runtime replacement **for
+   migrated checkouts**. **Legacy branches** whose tracked `settings.json` still registers the Preflight Bash
+   hook remain a **migration hazard** — Claude Code runs hooks ADDITIVELY, so that branch-controlled hook
+   would fire alongside the pinned one. The hazard is **detected** (`preflight-verify.sh` fails on a
+   duplicate/legacy registration; `preflight-runtime-install.sh --scan-local-branches` inventories local
+   branches read-only), **not auto-rewritten**. And the **platform-delivery half** (Claude Code actually
+   invoking the pinned local-layer hook, and a branch switch not changing the active runtime in a real
+   session) is **INFERRED** from documented additive-hook + file-watcher behavior until a live
+   migrated-consumer session confirms it — same discipline as the behavioral-contract gate's delivery half.
+
 ## Related: branch-cut remote-collision check is PROMPT-LEVEL (not a hook)
 
 The migrate skill, before cutting `feature/migrate-<service>`, runs `git ls-remote --heads

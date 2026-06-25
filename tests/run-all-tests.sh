@@ -1074,6 +1074,21 @@ run_behavioral_tests() {
     yellow "SKIP: router-fastpath-latency-test.sh not found"
   fi
 
+  # ── P0 Part B — branch-stable runtime: install/migrate/rollback/uninstall/hazard-detect lifecycle ──
+  # Runs the runtime installer + verify hazard checks against throwaway consumers; involves the real engine
+  # on a couple of router probes, so it is moderately slow on a scan-on-exec host but bounded.
+  local branch_stable_test="$SCRIPT_DIR/behavioral/branch-stable-runtime-test.sh"
+  if [ -f "$branch_stable_test" ]; then
+    if bash "$branch_stable_test"; then
+      PASSES=$((PASSES + 12))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: branch-stable-runtime tests failed (the Bash gate must register ONLY in the untracked local layer pinned to a SHA-runtime; ownership-aware migration must preserve non-Bash + foreign hooks and ABORT on ambiguity; duplicate/legacy registrations must FAIL verify)"
+    fi
+  else
+    yellow "SKIP: branch-stable-runtime-test.sh not found"
+  fi
+
   # ── P0 router/engine split — spawn-delay deterministic regression harness (the incident recreation) ──
   # NOTE: this harness injects a +1s/spawn tax and runs the REAL engine on candidate pushes, so on a
   # slow-spawn host it can take several minutes. It is registered but gated behind PREFLIGHT_RUN_SPAWN_DELAY

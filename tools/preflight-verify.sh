@@ -238,6 +238,82 @@ echo ""
 echo "Integrity: PASS — all installed artifacts match manifest blobs."
 echo ""
 
+# ── Step 2.5: Branch-stable runtime hazard detection (P0 Part B / defect #3) ─────────────────────────────
+# Detect the legacy/duplicate Bash-gate hazards the branch-stable-runtime model introduces. A DUPLICATE
+# (tracked AND local Preflight Bash hook both active) must NEVER be reported healthy — it is the residual
+# branch-swap hazard. These checks are ADVISORY about the runtime model and do not change the integrity
+# verdict above, BUT a duplicate/legacy hazard sets a non-zero RUNTIME_HAZARD that makes the final verdict
+# FAIL (exit 1) — a half-migrated consumer is not "intact" for defect-#3 purposes.
+RUNTIME_HAZARD=0
+PFG_BASH_OWN_RE='run-hook\.cmd.*(pre-push-gate-check|pre-bash-risk-router)'
+TRACKED="${CONSUMER_DIR}/.claude/settings.json"
+LOCAL="${CONSUMER_DIR}/.claude/settings.local.json"
+
+# does a settings file carry a Preflight-owned Bash PreToolUse hook?  echoes count
+_pfg_bash_count() {  # $1 = settings path
+  [ -f "$1" ] || { echo 0; return 0; }
+  jq empty "$1" 2>/dev/null || { echo 0; return 0; }
+  jq -r --arg re "$PFG_BASH_OWN_RE" '[ (.hooks.PreToolUse // [])[] | select(.matcher=="Bash") | (.hooks // [])[] | select((.command // "") | test($re)) ] | length' "$1" 2>/dev/null || echo 0
+}
+# does the tracked command point INTO branch-controlled .claude/hooks (the legacy in-tree runtime)?
+_pfg_tracked_points_in_tree() {
+  [ -f "$TRACKED" ] || return 1
+  jq -r '[ (.hooks.PreToolUse // [])[] | select(.matcher=="Bash") | (.hooks // [])[] | .command // "" ] | .[]' "$TRACKED" 2>/dev/null \
+    | grep -qE '\.claude/hooks/run-hook\.cmd|/\.claude/hooks/'
+}
+
+echo "Checking branch-stable runtime (defect #3)…"
+TRACKED_BASH="$(_pfg_bash_count "$TRACKED")"
+LOCAL_BASH="$(_pfg_bash_count "$LOCAL")"
+
+if [ "$TRACKED_BASH" -ge 1 ] && [ "$LOCAL_BASH" -ge 1 ]; then
+    echo "  HAZARD: DUPLICATE Preflight Bash PreToolUse registration — present in BOTH the tracked"
+    echo "    .claude/settings.json AND the local .claude/settings.local.json. Because Claude Code runs hooks"
+    echo "    ADDITIVELY, both fire, and the tracked one is branch-swappable. Run tools/preflight-runtime-install.sh"
+    echo "    to migrate (it removes the Preflight-owned tracked Bash entry). NOT healthy."
+    RUNTIME_HAZARD=1
+elif [ "$TRACKED_BASH" -ge 1 ]; then
+    if _pfg_tracked_points_in_tree; then
+        echo "  HAZARD (legacy): the tracked .claude/settings.json registers a Preflight Bash hook pointing into"
+        echo "    branch-controlled .claude/hooks/ — a git checkout can swap this live runtime. This is the"
+        echo "    pre-migration (legacy) model. Migrate with tools/preflight-runtime-install.sh."
+    else
+        echo "  HAZARD (legacy): the tracked .claude/settings.json registers a Preflight Bash hook (branch-swappable)."
+        echo "    Migrate with tools/preflight-runtime-install.sh to move it to the local layer + pinned runtime."
+    fi
+    RUNTIME_HAZARD=1
+elif [ "$LOCAL_BASH" -ge 1 ]; then
+    # Local-only registration — the migrated, branch-stable model. Validate the pinned runtime it points at.
+    COMMON_DIR=""
+    _top="$(git -C "$CONSUMER_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
+    if [ -n "$_top" ]; then
+        _c="$(git -C "$_top" rev-parse --git-common-dir 2>/dev/null || true)"
+        case "$_c" in /*|[A-Za-z]:*) : ;; *) [ -n "$_c" ] && _c="$_top/$_c" ;; esac
+        COMMON_DIR="$( [ -n "$_c" ] && cd "$_c" 2>/dev/null && pwd || true )"
+    fi
+    ACTIVE_SHA="$( [ -n "$COMMON_DIR" ] && [ -f "$COMMON_DIR/preflight/runtime/ACTIVE" ] && cat "$COMMON_DIR/preflight/runtime/ACTIVE" || echo '' )"
+    LOCAL_CMD="$(jq -r --arg re "$PFG_BASH_OWN_RE" 'first((.hooks.PreToolUse // [])[] | select(.matcher=="Bash") | (.hooks // [])[] | select((.command // "") | test($re)) | .command) // ""' "$LOCAL" 2>/dev/null || echo '')"
+    if [ -z "$ACTIVE_SHA" ] || [ ! -d "$COMMON_DIR/preflight/runtime/$ACTIVE_SHA" ]; then
+        echo "  HAZARD: the local-layer Bash gate points at a pinned runtime, but the ACTIVE runtime is unset or"
+        echo "    its dir is missing ($COMMON_DIR/preflight/runtime/$ACTIVE_SHA). Reinstall the runtime."
+        RUNTIME_HAZARD=1
+    elif ! printf '%s' "$LOCAL_CMD" | grep -qF "$ACTIVE_SHA"; then
+        echo "  HAZARD: the local-layer Bash command does not point at the ACTIVE runtime SHA ($ACTIVE_SHA) —"
+        echo "    a stale/unpinned local registration. Reinstall the runtime."
+        RUNTIME_HAZARD=1
+    elif [ "$ACTIVE_SHA" != "$RESOLVED_SHA" ]; then
+        echo "  NOTE: active runtime SHA ${ACTIVE_SHA:0:7} differs from the installed manifest SHA ${RESOLVED_SHA:0:7}"
+        echo "    (runtime/manifest skew). Not a hazard by itself, but reconcile by reinstalling deliberately."
+    else
+        echo "  ✓ Branch-stable: Preflight Bash gate is local-only, pinned to ACTIVE runtime ${ACTIVE_SHA:0:7}"
+        echo "    (= manifest SHA); no tracked branch-swappable registration."
+    fi
+else
+    echo "  NOTE: no Preflight Bash PreToolUse registration found in either tracked or local settings"
+    echo "    (no Bash gate active in this consumer, or a non-standard install)."
+fi
+echo ""
+
 # ── Step 3: Staleness check (optional — requires code-forge path) ────────────
 if [ -n "$CODE_FORGE_DIR" ] && [ -d "$CODE_FORGE_DIR/.git" ]; then
     cd "$CODE_FORGE_DIR"
@@ -258,6 +334,14 @@ if [ -n "$CODE_FORGE_DIR" ] && [ -d "$CODE_FORGE_DIR/.git" ]; then
     fi
 else
     echo "Version: code-forge path not provided — skipping staleness check."
+fi
+
+if [ "${RUNTIME_HAZARD:-0}" -ne 0 ]; then
+    echo ""
+    echo "=== FAIL: preflight ${PINNED_REF} @ ${RESOLVED_SHA:0:7} — artifacts intact, but a branch-stable-runtime"
+    echo "    HAZARD (legacy/duplicate Bash registration or missing pinned runtime) makes defect #3 NOT closed"
+    echo "    for this consumer. Migrate with tools/preflight-runtime-install.sh, then re-verify. ==="
+    exit 1
 fi
 
 echo ""
