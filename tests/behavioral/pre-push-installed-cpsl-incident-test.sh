@@ -79,11 +79,25 @@ cat > "$CONS/.preflight/config.json" <<JSON
               "forbiddenRepos": ["${LEGACY_SLUG}"] } }
 JSON
 
-# run_installed <command> → sets RC, OUT. Drives the INSTALLED hook body directly (watchdog-isolated).
+# run_installed <command> → sets RC, OUT. DECISION-LOGIC probe (P0 split): the installed
+# pre-push-gate-check is now a thin SHIM that execs the router, which runs the engine under a
+# platform-derived candidate DEADLINE (~23s). On a slow scan-on-exec host the engine's full
+# forbidden-resolution can exceed that deadline, so going through the shim/router would BLOCK via the
+# DEADLINE (still exit 2, fail-closed) rather than emit the precise FORBIDDEN verdict this test asserts.
+# To probe the DECISION (as the old _PFG_WATCHDOG_CHILD=1 did for the monolith), drive the installed ENGINE
+# body DIRECTLY with a generous timeout when it exists; fall back to the shim for older installs. Either way
+# RC/OUT reflect the real adjudication, isolated from the router's wall-clock deadline.
+ENGINE_HOOK="$CONS/.claude/hooks/pre-push-gate-engine"
+_run_to="${PREFLIGHT_CPSL_PROBE_TIMEOUT:-220}"
 run_installed() {
-  local cmd="$1" json
+  local cmd="$1" json target
   json="$(printf '{"tool_name":"Bash","tool_input":{"command":"%s"}}' "$cmd")"
-  OUT="$(cd "$CONS" && printf '%s' "$json" | _PFG_WATCHDOG_CHILD=1 bash "$HOOK" 2>&1)"; RC=$?
+  if [ -f "$ENGINE_HOOK" ]; then target="$ENGINE_HOOK"; else target="$HOOK"; fi
+  if command -v timeout >/dev/null 2>&1; then
+    OUT="$(cd "$CONS" && printf '%s' "$json" | _PFG_WATCHDOG_CHILD=1 CLAUDE_PROJECT_DIR="$CONS" timeout "$_run_to" bash "$target" 2>&1)"; RC=$?
+  else
+    OUT="$(cd "$CONS" && printf '%s' "$json" | _PFG_WATCHDOG_CHILD=1 CLAUDE_PROJECT_DIR="$CONS" bash "$target" 2>&1)"; RC=$?
+  fi
 }
 # Dangerous steering = a line (other than the echoed blocked command) that RECOMMENDS using origin/CPSL.
 steers() { printf '%s' "$1" | grep -vE "^BLOCKED: '?(gh pr create|git push)" \
