@@ -307,6 +307,69 @@ auto-detect a project's legacy-prod repo; the operator must declare it.**
 
 ---
 
+## 4b. P0 BASH-AVAILABILITY INCIDENT — cut REOPENED after merge (read with §0)
+
+After the PR #11 source merge (`7abdd02`), a **P0 availability defect** was found and the 0.9.1 cut was
+**reopened**. This section is the honest record.
+
+**The defect (every-Bash watchdog denial).** The monolithic `hooks/pre-push-gate-check` ran its heavyweight
+body (dozens of git/jq/grep spawns) **and a self-watchdog** for EVERY Bash command, because it was the
+registered Bash `PreToolUse` hook. On the Windows/Git-Bash scan-on-exec host, an ORDINARY command's spawn
+tax exceeded the 8–9s watchdog deadline, so the gate returned exit 2 (block) for **every** Bash command —
+disabling autonomous coding. Six demonstrated sub-defects: (1) every-Bash watchdog denial; (2) heavy engine
+on ordinary commands; (3) branch checkout replacing the active runtime; (4) unsafe partial upgrades; (5)
+install/recovery friction; (6) failure propagation across unrelated capabilities.
+
+**G17 REFRAME (supersedes the prior "isolated selfcheck inconvenience" conclusion).** The earlier read of
+G17 — that the slow-spawn tax was merely a conservative selfcheck flake — was **wrong about blast radius**.
+The selfcheck flake itself WAS conservative (it failed safe). But the **same timeout architecture also lived
+in the live Bash gate**, and there it caused **total Bash denial** — a release-impacting availability
+failure, not a test-only inconvenience. The corrective architecture **separates the diagnostic and
+enforcement timing models**: the heavy enforcement body no longer carries an in-line self-watchdog at all;
+the deadline is owned by the fast router, scoped to candidate commands only, and DERIVED from the platform
+timeout so it can never again turn "slow gate" into "every Bash blocked."
+
+**The corrective architecture (this P0 effort).**
+- **Split routing from enforcement** (committed `b43cabd`, harness-proven): `pre-bash-risk-router`
+  (builtins-only, ZERO external spawns on the ordinary fast path) + `pre-push-gate-engine` (heavy body,
+  watchdog-free, invoked only for candidates). Defects #1, #2, #6 closed structurally. Engine enforcement is
+  byte-for-byte the old body minus the watchdog (adversarially verified). The **timeout-budget invariant**
+  (router deadline derived from the hooks.json platform timeout, env override clamped to the ceiling) closes
+  a fail-OPEN found in adversarial review and is guarded by a single-source coupling test.
+- **Branch-stable runtime** (harness-proven; **defect #3**): the active Bash gate registration moves from
+  the TRACKED `.claude/settings.json` to the UNTRACKED `.claude/settings.local.json`, pinned to a SHA-named
+  runtime under `<git-common-dir>` (outside branch control). Atomic install + rollback + uninstall +
+  `--scan-local-branches` close defects #4/#5. **AUTHORIZED scoped contract change** (owner-approved):
+  installer registers the Bash gate only in the local layer and performs an ownership-aware migration out of
+  the tracked layer (non-Bash hooks + non-Preflight settings preserved; ambiguous ownership ABORTS). See
+  `docs/branch-stable-runtime.md`.
+
+**HONEST closure status for defect #3:** *closed for MIGRATED checkouts; OPEN for LEGACY branches.* A
+historical branch whose tracked `settings.json` still carries the Preflight Bash registration remains a
+**migration hazard** (Claude Code runs hooks additively) — detected by `preflight-verify.sh` (duplicate/
+legacy → FAIL) and `--scan-local-branches`, **not** auto-rewritten. Do not claim "fully closed everywhere."
+
+**Platform-delivery is INFERRED, not live-confirmed.** That Claude Code actually loads & invokes the pinned
+local-layer hook, that ordinary Bash hits only the fast router, that a candidate push invokes exactly one
+engine, and that a branch switch between migrated branches does not change the active runtime — **must be
+confirmed in a real Claude Code consumer session.** It is NOT inferable from JSON structure or unit tests.
+Until that live run passes, **v0.9.1 is NOT cut-eligible** for the P0 fix.
+
+**Emergency installed-file repair (the CPSL consumer):** the live consumer clone that hit the every-Bash
+denial received a tightly-scoped emergency in-file repair (fast router prepended before the watchdog; the
+watchdog scoped to candidates with a retuned deadline + 120s platform timeout; input preservation; and a
+restored fail-closed on malformed candidates — the last being a PRE-EXISTING gate-body fail-open, proven by
+driving the body directly). 8/8 case matrix green; zero external spawns on the fast path confirmed. This is a
+temporary stopgap in that consumer; the durable fix is the committed source split.
+
+**Product-architecture scope (owner directive):** this P0 is an infrastructure + delivery-contract
+correction, NOT a product rewrite. The established workflow (bootstrap → discovery → Behavioral Contract →
+baseline spec → impl/migrate → migrated spec → parity → evidence → review → external-review → adjudication →
+rubric evolution → server governance), agent separation, parity engine, evidence model, reviewer/adjudicator
+roles, external-review loop, and manifest/integrity concepts are **unchanged**.
+
+---
+
 ## 5. CUT DECISION INPUTS (for the owner)
 
 - **Go-ahead-able:** the 4 mediums + all prior HIGHs/MEDIUMs are harness-proven and backed up; M15 converged
