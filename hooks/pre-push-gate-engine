@@ -33,27 +33,46 @@ else
 fi
 _pfg_stage "engine-start"
 
-# --- Heartbeat (passive liveness self-evidencing) ---
-_hb_self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-_hb_plugin_root="$(cd "$_hb_self_dir/.." && pwd)"
-[ -f "$_hb_plugin_root/lib/heartbeat.sh" ] && source "$_hb_plugin_root/lib/heartbeat.sh"
-# Fail-SAFE: if heartbeat.sh was unreachable, the function is undefined; under
-# `set -e` the call would exit 127 BEFORE the gate logic runs — a blocking gate
-# would then fail OPEN (127 != 2). Define a no-op so the heartbeat can never
-# crash the host gate. The diagnostic just goes silent when the lib is absent.
-type _write_heartbeat &>/dev/null || _write_heartbeat() { :; }
-_write_heartbeat "pre-push-gate-check"
-# NOTE on wedge coverage (post-P0-split): the heartbeat above (and the config-overlay lib sourced
-# below) make a few git/jq calls INSIDE sourced functions, which the Layer-2 `_pfg_git`/`_pfg_jq`
-# wrappers do NOT intercept. These are local-repo reads (`git rev-parse HEAD`, a config-file `jq`),
-# the LEAST wedge-prone calls (no network/credential round-trip). The COMPREHENSIVE backstop is no
-# longer an in-body self-watchdog (that was removed in the P0 split — it was the architecture that
-# blocked every Bash command on a slow-spawn host); it is now the ROUTER's candidate-scoped deadline
-# (`PREFLIGHT_ENGINE_DEADLINE`, default 30s + 2s kill-grace), which wraps this ENTIRE engine process
-# and fails CLOSED for the offending candidate ALONE if a wedge ANYWHERE — including these sourced
-# calls — runs past it. Layer 2 here is the FAST in-engine fail-closed for the network-facing
-# push-target resolution (`git remote get-url`), the call that actually wedges in practice: it trips
-# in ~3s with a precise diagnostic without waiting for the router's outer deadline.
+# --- Heartbeat (passive liveness self-evidencing) — BUILTINS-ONLY candidate variant (Gate-4 latency) ---
+# The engine is the HEAVY candidate path. The shared lib's _write_heartbeat (lib/heartbeat.sh) spawns
+# `date` + `git rev-parse HEAD` — measured ~1.45s on this slow-spawn Windows/Git-Bash host — at the very
+# top, BEFORE the forbidden-remote decision, and was a top contributor to the live Gate-4 23s timeout.
+# This engine-local writer appends the SAME 3-field heartbeat record (`<ts> <head-field> <gate-name>`)
+# that the lib's freshness checker (_check_heartbeat_fresh — which reads ONLY field 1, the timestamp)
+# consumes, but using bash BUILTINS ONLY: no git/date/jq/node/awk/sed/grep/cat — zero external process.
+#   • timestamp: `printf -v now '%(%s)T' -1` (bash >= 4.2 builtin), validated digits-only, with a no-spawn
+#     fallback to the EPOCHSECONDS builtin (bash >= 5.0), then to `0` (exactly the lib's own fallback
+#     value, which _check_heartbeat_fresh already treats as "missing/unparseable" — fail-safe, never fatal).
+#   • HEAD field: the literal placeholder `candidate` — the candidate path deliberately spends NO
+#     `git rev-parse HEAD` spawn. No consumer reads the heartbeat HEAD column (audited: only field 1 / ts
+#     is read, by session-start's freshness probe); the placeholder keeps the 3-field format parseable and
+#     is documented here so it is never mistaken for a real SHA.
+#   • non-fatal: the whole write is guarded (dir-exists check mirrors the lib; redirect errors swallowed)
+#     so a missing/unwritable .preflight/gate can never crash this blocking gate (which under `set -e`
+#     would otherwise fail the gate OPEN). We do NOT source lib/heartbeat.sh here — dropping that source
+#     also removes its `dirname`+subshell self-dir spawns from the candidate path.
+_pfg_heartbeat_builtin() {  # $1 = gate name. Appends one builtins-only liveness record. Always returns 0.
+  local gate="${1:-unknown}" hb_dir=".preflight/gate" now=""
+  [ -d "$hb_dir" ] || return 0
+  printf -v now '%(%s)T' -1 2>/dev/null || now=""
+  case "$now" in ''|*[!0-9]*) now="${EPOCHSECONDS:-0}" ;; esac   # builtin %(...)T unsupported → EPOCHSECONDS
+  case "$now" in ''|*[!0-9]*) now=0 ;; esac                       # neither builtin available → lib's fallback
+  printf '%s %s %s\n' "$now" "candidate" "$gate" >> "$hb_dir/heartbeat-${gate}" 2>/dev/null || true
+  return 0
+}
+_pfg_heartbeat_builtin "pre-push-gate-check"
+# NOTE on wedge coverage (post-P0-split): the BUILTINS-ONLY heartbeat above now makes NO subprocess call
+# at all (the prior git/date spawns are gone). The config-overlay lib sourced below is pure function
+# definitions at source time (zero spawns); its git/jq calls happen only LATER, inside _pfg_branch_field
+# on the full policy path, which the Layer-2 `_pfg_git`/`_pfg_jq` wrappers do not intercept — those are
+# local-repo reads (`git rev-parse HEAD`, a config-file `jq`), the LEAST wedge-prone (no network/credential
+# round-trip). The COMPREHENSIVE backstop is no longer an in-body self-watchdog (removed in the P0 split —
+# it was the architecture that blocked every Bash command on a slow-spawn host); it is now the ROUTER's
+# candidate-scoped deadline (`PREFLIGHT_ENGINE_DEADLINE`, default 30s + 2s kill-grace), which wraps this
+# ENTIRE engine process and fails CLOSED for the offending candidate ALONE if a wedge ANYWHERE runs past
+# it. Layer 2 here is the FAST in-engine fail-closed for the network-facing push-target resolution
+# (`git remote get-url`), the call that actually wedges in practice: it trips in ~3s with a precise
+# diagnostic without waiting for the router's outer deadline.
 
 # Per-clone topology overlay (issue #6): source the shared resolver so branch.base /
 # branch.remote honor a gitignored .preflight/config.local.json. Best-effort — if the
@@ -137,6 +156,156 @@ if [ -z "$COMMAND" ]; then
   COMMAND="$STDIN_JSON"
 fi
 _pfg_stage "command-extracted"
+
+# ── (FAST-0) BUILTINS-ONLY EXPLICIT-REMOTE FORBIDDEN FAST PATH (live Gate-4 23s-timeout fix) ──────────────
+# THE PROBLEM: the existing early forbidden-remote block (B-EARLY, below) already decides the cheapest case
+# — an explicit push to a forbiddenRemotes NAME — but only AFTER the sentinel-tripwire greps, the
+# `_pfg_target_cwd` grep, the awk continuation-join, the structural parser's greps/seds, and one jq read of
+# forbiddenRemotes. On this slow-spawn Windows/Git-Bash host those ~5-6 external spawns (~1.0-1.5s EACH,
+# jittery) stacked the decision to ~13-15s engine-internal — close enough to the router's 23s candidate
+# deadline that wall-time variance produced live timeouts (Phase-0: p95/max ~25.5s).
+#
+# THE FIX: make the SAME forbidden-NAME decision HERE, immediately after command extraction, using BASH
+# BUILTINS ONLY — zero external process. If a high-confidence parse resolves an EXPLICIT remote name and that
+# name is on the committed branch.forbiddenRemotes, emit the identical forbidden-destination diagnostic and
+# exit 2 — BEFORE the tripwire greps, the target-cwd grep, the continuation-join, the structural parser, and
+# the jq config read. This is purely an EARLIER, CHEAPER exit for the most-certain block; it adds NO new
+# block and changes NO other path.
+#
+# CONFIDENCE GATE (the shortcut may ONLY fire when ALL hold — otherwise it falls through 100% unchanged to
+# the full structural parser + B-EARLY + full policy path, which remain authoritative):
+#   • the command parses cleanly as: [env-assignments…] [command] <git-program> [global-opts…] push <args…>
+#   • git-program ∈ { git, git.exe, \git, */git, */git.exe }; backslash+LF and backslash+CRLF continuations
+#     are joined with PURE PARAMETER EXPANSION (no awk/sed); any UNKNOWN global option → bail (we cannot know
+#     if it consumes the next token, so we cannot safely locate the subcommand);
+#   • the first positional after `push` is a SIMPLE remote name (allowlist [A-Za-z0-9._-] only). A URL, an
+#     scp-form target, a path, a quoted/expanded/ambiguous token, '.' or '..', or NO positional (implicit
+#     push) → bail. So URL pushes, implicit pushes, and indirection (eval/bash -c/xargs — first token is not
+#     a git program) all fall through to the existing fail-closed handling unchanged.
+# The shortcut NEVER allows: a non-forbidden name simply falls through to the full path (which may still
+# CONFIRM/BLOCK it on protected-branch/evidence/forbiddenRepos grounds). It can ONLY turn a forbidden-name
+# push into an earlier exit-2.
+# COST CEILING (when it fires): pure parameter expansion + word-splitting + one `$(<config)` builtin read +
+# one `[[ =~ ]]` match. NO git, date, jq, node, awk, sed, grep, cat — nothing spawns. cwd is $PWD (the
+# shortcut only fires when the FIRST token is a git program, so there is no leading `cd` to honor — the
+# git command would run in the engine's own cwd; the grep-based _pfg_target_cwd is therefore not needed here).
+_fast_emit_forbidden() {  # $1 = remote name. Emit the shared forbidden-destination diagnostic + exit 2.
+  echo "BLOCKED: push targets a FORBIDDEN destination '$1' (config.branch.forbiddenRemotes)." >&2
+  echo "  This remote is explicitly off-limits (e.g. a legacy production repo). Do NOT retarget automatically —" >&2
+  echo "  surface to a human; see docs/parity-gate-limitations.md. (Early forbidden-remote decision: no" >&2
+  echo "  network, evidence gate, or remote-URL resolution was performed.)" >&2
+  exit 2
+}
+# Confident builtins-only parse → sets _FAST_REMOTE (explicit name) + _FAST_OK=1, else leaves _FAST_OK=0.
+_FAST_OK=0; _FAST_REMOTE=""
+_pfg_fast_parse_remote() {  # $1 = the raw command string. Builtins only. Always returns 0.
+  local cmd="$1" tok
+  # (a) Join shell line-continuations with PARAMETER EXPANSION ONLY. Quoted search/replace patterns are
+  #     LITERAL byte sequences (no glob). CRLF (\+CR+LF) first, then LF (\+LF). A backslash NOT followed by a
+  #     newline (Windows path, escaped char) is untouched — narrow, exactly like the structural parser's join.
+  local _cr=$'\r' _lf=$'\n'
+  local _bs_crlf=$'\\'"$_cr$_lf" _bs_lf=$'\\'"$_lf"
+  cmd="${cmd//"$_bs_crlf"/ }"
+  cmd="${cmd//"$_bs_lf"/ }"
+  # If any backslash-newline still remains (an exotic shape the two passes above didn't cover) → bail.
+  case "$cmd" in *$'\\'$'\r'*|*$'\\'$'\n'*) return 0 ;; esac
+  # (b) Word-split with globbing OFF (set -f). Default IFS splits on space/tab/newline. NO quote removal and
+  #     NO parameter expansion of token contents happens here — a literal `$PATH` inside a token stays inert.
+  local _oldifs="$IFS"; set -f
+  # shellcheck disable=SC2086
+  set -- $cmd
+  set +f; IFS="$_oldifs"
+  # (c) Strip env-assignment prefixes (VAR=val) and a `command` prefix (repeatable).
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      [A-Za-z_]*=*) shift ;;
+      command) shift ;;
+      *) break ;;
+    esac
+  done
+  [ "$#" -gt 0 ] || return 0
+  # (d) Program token must be a git program form (optional one leading backslash for `\git`).
+  case "${1#\\}" in
+    git|git.exe|*/git|*/git.exe) ;;
+    *) return 0 ;;
+  esac
+  shift
+  # (e) Skip the global-option run (mirrors _pfg_seg_push_args' table). Separate-value opts consume the NEXT
+  #     token; =-joined and bare flags are single tokens; an UNKNOWN global option → bail (fail to full parser).
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      -C|--git-dir|--work-tree|--namespace|--super-prefix|--exec-path|-c|--config-env)
+        shift; [ "$#" -gt 0 ] && shift || return 0 ;;
+      --git-dir=*|--work-tree=*|--namespace=*|--super-prefix=*|--exec-path=*|--config-env=*|-c=*)
+        shift ;;
+      -p|--paginate|-P|--no-pager|--bare|--no-replace-objects|--no-lazy-fetch|--no-optional-locks|--no-advice|--literal-pathspecs|--glob-pathspecs|--noglob-pathspecs|--icase-pathspecs|--html-path|--man-path|--info-path|--no-renames)
+        shift ;;
+      -[A-Za-z]*|--*) return 0 ;;
+      *) break ;;
+    esac
+  done
+  [ "$#" -gt 0 ] || return 0
+  [ "$1" = "push" ] || return 0
+  shift
+  # (f) First positional (skip push flags and +refspec) = explicit remote name. Must be a SIMPLE name.
+  for tok in "$@"; do
+    case "$tok" in
+      -*) ;;                                  # push flag (-u/--force/--tags/…)
+      +*) ;;                                  # +refspec, not a remote
+      ''|.|..) return 0 ;;                    # ambiguous → bail
+      *[!A-Za-z0-9._-]*) return 0 ;;          # URL / scp-form / path / quote / expansion → bail
+      *) _FAST_REMOTE="$tok"; _FAST_OK=1; return 0 ;;
+    esac
+  done
+  return 0                                    # no positional remote = implicit push → bail (no shortcut)
+}
+# Builtins-only committed-config forbiddenRemotes membership test (no jq/grep/tr/node).
+_pfg_fast_remote_forbidden() {  # $1 = remote name ; $2 = config JSON text. return 0 = forbidden.
+  local name="$1" json="$2" body item
+  [ -n "$name" ] || return 1
+  local _re='"forbiddenRemotes"[[:space:]]*:[[:space:]]*\[([^]]*)\]'
+  [[ "$json" =~ $_re ]] || return 1
+  body="${BASH_REMATCH[1]}"
+  local _oldifs="$IFS"; IFS=','; set -f
+  # shellcheck disable=SC2086
+  set -- $body
+  set +f; IFS="$_oldifs"
+  local _cr=$'\r'
+  for item in "$@"; do
+    item="${item#"${item%%[![:space:]]*}"}"     # ltrim whitespace
+    item="${item%"${item##*[![:space:]]}"}"     # rtrim whitespace
+    item="${item%$_cr}"                          # strip a trailing CR (CRLF config; jq used `tr -d`)
+    item="${item#\"}"; item="${item%\"}"          # strip surrounding double-quotes
+    [ "$item" = "$name" ] && return 0
+  done
+  return 1
+}
+_pfg_fast_parse_remote "$COMMAND"
+if [ "$_FAST_OK" = 1 ] && [ -n "$_FAST_REMOTE" ]; then
+  _pfg_stage "fast0:parsed-remote=$_FAST_REMOTE"
+  # Pure-shell upward FS walk from $PWD for committed .preflight/config.json — NO git rev-parse (the
+  # shortcut only fires with a git-program first token, so the git command runs in $PWD). Bounded <=64.
+  _FAST_CFG=""; _fast_dir="$PWD"; _fast_n=0
+  while [ -n "$_fast_dir" ] && [ "$_fast_n" -lt 64 ]; do
+    if [ -f "$_fast_dir/.preflight/config.json" ]; then _FAST_CFG="$_fast_dir/.preflight/config.json"; break; fi
+    case "$_fast_dir" in */*) _fast_dir="${_fast_dir%/*}"; [ -z "$_fast_dir" ] && _fast_dir="/" ;; *) break ;; esac
+    [ "$_fast_dir" = "/" ] && { [ -f "/.preflight/config.json" ] && _FAST_CFG="/.preflight/config.json"; break; }
+    _fast_n=$((_fast_n+1))
+  done
+  _pfg_stage "fast0:config-resolved(no-git)"
+  if [ -n "$_FAST_CFG" ]; then
+    _FAST_CFG_TEXT=""
+    # `$(<file)` is a BASH BUILTIN read (no `cat` spawn) — confirmed spawn-free on this host.
+    _FAST_CFG_TEXT="$(<"$_FAST_CFG")" 2>/dev/null || _FAST_CFG_TEXT=""
+    _pfg_stage "fast0:config-read(no-spawn)"
+    if [ -n "$_FAST_CFG_TEXT" ] && _pfg_fast_remote_forbidden "$_FAST_REMOTE" "$_FAST_CFG_TEXT"; then
+      _pfg_stage "fast0:FORBIDDEN-decision"
+      _fast_emit_forbidden "$_FAST_REMOTE"
+    fi
+  fi
+  # Not forbidden (or config unreadable) → fall through to the full path unchanged. NEVER allow from here.
+fi
+_pfg_stage "fast0-done"
 
 # ── SENTINEL-MINT TRIPWIRE (gap #5) ───────────────────────────────────────────
 # Blocks, for the AGENT's Bash tool, shell commands that MINT the two protected
@@ -659,12 +828,11 @@ if [ -n "$_eb_remote" ]; then
   _pfg_stage "early-block:forbiddenRemotes-read"
   if _pfg_remote_forbidden "$_eb_remote" "$_EB_FORBIDDEN_REMOTES"; then
     _pfg_stage "early-block:FORBIDDEN-decision"
-    # de-steered diagnostic — identical wording class to the B0 block; never recommends a remote.
-    echo "BLOCKED: push targets a FORBIDDEN destination '$_eb_remote' (config.branch.forbiddenRemotes)." >&2
-    echo "  This remote is explicitly off-limits (e.g. a legacy production repo). Do NOT retarget automatically —" >&2
-    echo "  surface to a human; see docs/parity-gate-limitations.md. (Early forbidden-remote decision: no" >&2
-    echo "  network, evidence gate, or remote-URL resolution was performed.)" >&2
-    exit 2
+    # de-steered diagnostic — single source, shared with the FAST-0 builtins path above; never recommends
+    # a remote. (This B-EARLY block remains as the structural-parser-backed fallback for any forbidden push
+    # the builtins FAST-0 path conservatively declined to resolve — e.g. an exotic continuation/global-option
+    # shape — so the forbidden decision is never lost just because the fast shortcut bailed.)
+    _fast_emit_forbidden "$_eb_remote"
   fi
 fi
 

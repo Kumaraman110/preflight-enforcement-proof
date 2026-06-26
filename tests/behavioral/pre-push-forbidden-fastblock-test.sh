@@ -110,29 +110,35 @@ printf '%s' "$OUT" | grep -qi 'did not reach a decision\|deadline\|timed out' &&
 
 # ── LATENCY MARGIN (host-relative, via stage timing — not an absolute wall-clock the slow host would flake) ──
 # The early forbidden decision must land with SUBSTANTIAL margin before the 23s router deadline. An absolute
-# second-count is host-dependent (the live host is ~1.5-3x this one), so we assert TWO host-independent facts
-# that together guarantee margin on ANY host:
+# second-count is host-dependent (the live host is ~1.5-3x this one), so we assert host-INDEPENDENT facts that
+# together guarantee margin on ANY host:
 #   (1) the early decision performs NO `git remote get-url` and does NOT reach the evidence gate (asserted
 #       above) — it skips the two most expensive downstream stages entirely; and
-#   (2) from the engine's PFG_STAGE timing, the time from structural-parse-done → FORBIDDEN-decision (the
-#       early block's OWN added cost) is a SMALL fraction of the total to-decision time — i.e. the block adds
-#       little and fires right after parse, rather than after the full policy pipeline.
+#   (2) from the engine's PFG_STAGE timing, the FORBIDDEN decision now fires at the BUILTINS-ONLY `fast0`
+#       fast path (stage `fast0:FORBIDDEN-decision`), which runs IMMEDIATELY after command extraction and
+#       BEFORE the structural parser (`structural-parse-done`) ever runs — i.e. the decision moved STRICTLY
+#       EARLIER than the prior B-EARLY block (which fired only after the parse greps/seds). We assert the
+#       fast0 decision stage is present AND that the structural-parse-done stage did NOT fire (the engine
+#       exited at fast0, skipping the parser's spawns entirely — maximal margin by construction).
+#       (If a forbidden push is so exotic that fast0 conservatively declines, the B-EARLY block below still
+#       catches it post-parse — proven by the NFP/variant cases — so the decision is never lost.)
 TF="$(mktemp)"
 ( cd "$REPO" && printf '%s' "$(jq -n --arg c "git \\${LF}push origin HEAD:refs/heads/x" '{tool_name:"Bash",tool_input:{command:$c}}')" \
     | PATH="$SHIM:$PATH" _PFG_WATCHDOG_CHILD=1 PREFLIGHT_ENGINE_TIMING=1 PREFLIGHT_ENGINE_TIMING_FILE="$TF" CLAUDE_PROJECT_DIR="$REPO" timeout 90 bash "$WENGINE" >/dev/null 2>&1 )
-_t_parse="$(awk '/structural-parse-done/{print $2+0}' "$TF" | tail -1)"
-_t_dec="$(awk '/FORBIDDEN-decision/{print $2+0}' "$TF" | tail -1)"
-if [ -n "$_t_parse" ] && [ -n "$_t_dec" ]; then
-  # early-block own cost = decision - parse-done; must be < the parse-done time itself (block adds less than
-  # the parse already cost) AND the decision must occur (FORBIDDEN-decision stage present).
-  _added="$(awk -v d="$_t_dec" -v p="$_t_parse" 'BEGIN{printf "%.0f", d-p}')"
-  if awk -v d="$_t_dec" -v p="$_t_parse" 'BEGIN{exit !(d-p < p && p>0)}'; then
-    ok "latency: early block adds ${_added}ms after parse (< the ${_t_parse%.*}ms parse cost) — fires right after parse, skips evidence-gate + remote-url (substantial margin by construction)"
+_t_fast0="$(awk '/fast0:FORBIDDEN-decision/{print $2+0}' "$TF" | tail -1)"
+_t_cmd="$(awk '/command-extracted/{print $2+0}' "$TF" | tail -1)"
+_has_parse="$(awk '/structural-parse-done/{c++} END{print c+0}' "$TF")"
+if [ -n "$_t_fast0" ] && [ -n "$_t_cmd" ]; then
+  # fast0 own cost = decision - command-extracted; it is pure-builtins so it must be a small fraction of the
+  # command-extraction time, AND the structural parser must NOT have run (decision fired before it).
+  _added="$(awk -v d="$_t_fast0" -v c="$_t_cmd" 'BEGIN{printf "%.0f", d-c}')"
+  if [ "$_has_parse" -eq 0 ] && awk -v d="$_t_fast0" -v c="$_t_cmd" 'BEGIN{exit !(d-c < c && c>0)}'; then
+    ok "latency: forbidden decision fires at the builtins fast0 path (+${_added}ms after command-extract, < the ${_t_cmd%.*}ms extract cost) — BEFORE the structural parser ran at all (skips parse greps/seds + evidence-gate + remote-url; maximal margin)"
   else
-    bad "latency: early block added ${_added}ms after parse vs parse ${_t_parse%.*}ms — the block is not short-circuiting early enough"
+    bad "latency: fast0 decision +${_added}ms vs extract ${_t_cmd%.*}ms, structural-parse-ran=${_has_parse} — the fast path is not short-circuiting before the parser"
   fi
 else
-  bad "latency: could not read PFG_STAGE timing (parse=$_t_parse dec=$_t_dec)"
+  bad "latency: could not read PFG_STAGE fast0 timing (fast0=$_t_fast0 cmd=$_t_cmd parse_ran=$_has_parse)"
 fi
 rm -f "$TF"
 

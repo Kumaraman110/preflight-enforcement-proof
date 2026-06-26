@@ -1172,6 +1172,19 @@ run_behavioral_tests() {
     yellow "SKIP: pre-push-forbidden-fastblock-test.sh not found"
   fi
 
+  # ── live Gate-4 23s-timeout (part 2) — BUILTINS-ONLY forbidden-remote fast path + builtins-only heartbeat ──
+  local builtins_fastpath_test="$SCRIPT_DIR/behavioral/pre-push-builtins-fastpath-test.sh"
+  if [ -f "$builtins_fastpath_test" ]; then
+    if bash "$builtins_fastpath_test"; then
+      PASSES=$((PASSES + 26))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: pre-push-builtins-fastpath tests failed (the explicit forbidden-remote decision must run on a BUILTINS-ONLY fast path — no git/date/awk/sed/grep spawn, no evidence gate, no remote-URL resolution — so it clears the 23s candidate deadline with margin; the engine-entry heartbeat must be builtins-only; safe/implicit/URL/unknown-opt/malformed must fall through fail-closed; ordinary commands must stay on the router zero-spawn path)"
+    fi
+  else
+    yellow "SKIP: pre-push-builtins-fastpath-test.sh not found"
+  fi
+
   local gapa_test="$SCRIPT_DIR/behavioral/pre-push-gapa-prod-pattern-test.sh"
   if [ -f "$gapa_test" ]; then
     if bash "$gapa_test"; then

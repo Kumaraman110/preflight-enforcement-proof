@@ -41,6 +41,74 @@ block buys substantial margin on a real-host-representative speed; it does not (
 weakening the parser) guarantee sub-23s on an arbitrarily slow host. Diagnostic stage-timing
 (`PREFLIGHT_ENGINE_TIMING`) ships DISABLED by default (no-op when unset).
 
+## Ordering-review correction — overlay sourcing is NOT a prerequisite for the early forbidden-remote decision
+
+The earlier ordering review left an inaccurate impression that the engine's init-time overlay sourcing is
+part of the pre-decision critical path. Corrected, with the mechanism stated precisely:
+
+- **The early forbidden-remote decision does not consume the overlay at all.** It reads
+  `branch.forbiddenRemotes` *directly* from the committed `.preflight/config.json` (the pure-shell FS-walk
+  result `_EB_CFG`), not via `overlay_resolve`. This is correct by policy, not by accident:
+  `lib/config-overlay.sh`'s `_OVERLAY_ALLOWLIST` is exactly
+  `branch.remote branch.base branch.migrationPrefix migration.legacyRepoPath migration.servicesRoot migration.referenceService`
+  — `branch.forbiddenRemotes`/`branch.forbiddenRepos` are **not** on it, and `_overlay_read` returns empty
+  for arrays/objects anyway. So a `config.local.json` can never override (loosen) a forbidden list; the
+  forbidden lists are committed-config-only by construction. Overlay policy therefore cannot affect the
+  forbidden-remote decision, and sourcing it is logically unnecessary for that decision.
+- **Is overlay sourcing merely initialized early, or does it materially add latency?** *Merely initialized
+  early, and it does NOT materially add latency.* Sourcing `lib/config-overlay.sh` is **pure function
+  definitions** — `overlay_key_allowed`/`_overlay_read`/`overlay_resolve` are defined but **not invoked** at
+  source time, so the source step runs **zero git/jq spawns**. Measured on this Windows/Git-Bash host
+  (N=5 avg): sourcing `config-overlay.sh` ≈ **185 ms**, sourcing `heartbeat.sh` ≈ **160 ms** — both are
+  bash-parse cost, no subprocess. For contrast a single `git rev-parse HEAD` spawn ≈ **1,072 ms** on this
+  host. So overlay sourcing is ~0.2 s of parse overhead, not a spawn-tax contributor.
+- **The init-time spawn that DOES cost is `_write_heartbeat`, not overlay sourcing.** `_write_heartbeat`
+  (`lib/heartbeat.sh:19`) spawns `git rev-parse HEAD` + `date` — but only when `.preflight/gate/` exists
+  (it `return 0`s early otherwise). In the real consumer cwd that directory exists, so init pays ~1 s there;
+  this shows up in the stage timing as part of the `engine-start → heartbeat+overlay-sourced` interval
+  (~2.6–3.2 s on this host, the bulk of which is that one git spawn plus bash startup, NOT the overlay).
+- **Disposition (no code change made on this ground):** overlay sourcing is cheap (no spawn) and the early
+  decision already bypasses it, so there is nothing to move for *latency*. It is retained at init because
+  later non-early paths (the full policy path's `branch.base`/`branch.remote` resolution) legitimately use
+  the overlay functions. Reordering it would buy ~0 ms and risk the later paths. Per the promotion
+  directive, **no additional code change was made for the ordering review** — see the stability-gate result
+  below for why the promotion nonetheless halted.
+
+## PHASE 0 — latency stability sample (committed 22d165a, this Windows host) — STABILITY GATE FAILED
+
+10 consecutive serial runs of the EXACT live continuation-shaped candidate
+(`PATH="…/preflight-gate4-shim:$PATH" git \<LF> push origin HEAD:…`) driven as crafted tool JSON through the
+**full router→engine path** (no Git transport; nothing executed). Decision class was perfect; the latency
+gate was not met:
+
+| metric | required | observed |
+|---|---|---|
+| explicit forbidden-`origin` blocks | 10/10 | **10/10 ✅** |
+| timeout / rc=124 results | 0 | **0 ✅** |
+| every run rc=2 | yes | **yes ✅** |
+| **max elapsed** | **< 20 s** | **25.47 s ✗** |
+| **p95** | **< 18 s** | **25.47 s ✗** |
+| median | (report) | 19.66 s |
+| min / mean | (report) | 16.33 s / 20.09 s |
+
+Per-run wall (s): 17.37, 22.39, 22.21, 25.47, 16.87, 23.58, 20.40, 17.36, 16.33, 18.92 — all rc=2, all
+identified `origin` as forbidden, none a timeout. **Decision correctness is solid (10/10, 0 timeouts); the
+problem is wall-time variance: 4/10 runs exceeded 20 s and p95/max are ~25.5 s, above the < 20 s max and
+< 18 s p95 targets.** The variance is the host's per-spawn scan tax (~1–1.5 s/process, jittery) stacking
+across the ~6 pre-decision spawns (bash start, heartbeat `git rev-parse`, jq extraction, awk join, parse
+greps/seds, the one `forbiddenRemotes` jq). The candidate is always safely BLOCKED — but not with the
+margin the promotion gate requires.
+
+**Decision: STOP. The promotion is halted at Phase 0** per the directive "Stop without pushing if these
+conditions fail." No source push (Phase A), no consumer install (Phase B), and no live instructions
+(Phase C) were performed. The committed fix is behaviorally correct and a meaningful latency improvement
+over af49b18 (which decided at ~31–34 s, past the deadline), but it does not yet clear the < 20 s max /
+< 18 s p95 stability bar on this host. Closing the remaining margin needs a further latency reduction
+(e.g. removing/most-deferring the init-time `git rev-parse` heartbeat spawn on the candidate path, or
+collapsing pre-decision spawns) — a NEW code change, which this directive explicitly disallowed unless the
+stability criteria failed. They failed; the next step is that targeted reduction, then a re-sample, in a
+follow-up authorized by the user.
+
 ## Exact failed command
 
 Run live through Claude Code's Bash tool during Gate-4 acceptance:
