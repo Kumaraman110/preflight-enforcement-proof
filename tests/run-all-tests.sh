@@ -1159,6 +1159,19 @@ run_behavioral_tests() {
     yellow "SKIP: pre-push-live-incident-shape-test.sh not found"
   fi
 
+  # ── live Gate-4 23s-timeout — early forbidden-remote fast block (decision before evidence gate / remote-url) ──
+  local fastblock_test="$SCRIPT_DIR/behavioral/pre-push-forbidden-fastblock-test.sh"
+  if [ -f "$fastblock_test" ]; then
+    if bash "$fastblock_test"; then
+      PASSES=$((PASSES + 12))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: pre-push-forbidden-fastblock tests failed (an explicit push to a forbiddenRemotes NAME must BLOCK via the early decision — BEFORE the evidence gate, any 'git remote get-url', or any network op — so the slow-host 23s candidate deadline is not what blocks it; safe-remote/implicit/forbiddenRepos paths must be unaffected)"
+    fi
+  else
+    yellow "SKIP: pre-push-forbidden-fastblock-test.sh not found"
+  fi
+
   local gapa_test="$SCRIPT_DIR/behavioral/pre-push-gapa-prod-pattern-test.sh"
   if [ -f "$gapa_test" ]; then
     if bash "$gapa_test"; then

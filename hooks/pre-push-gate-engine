@@ -16,6 +16,22 @@
 # exit 2 = block, exit 0 + permissionDecision JSON on stdout = CONFIRM/allow tier. Same as before.
 set -euo pipefail
 
+# ── Stage-timing instrumentation (DIAGNOSIS ONLY — disabled by default) ───────────────────────────────────
+# When PREFLIGHT_ENGINE_TIMING=1, _pfg_stage <label> appends "<ms-since-start> <label>" to
+# $PREFLIGHT_ENGINE_TIMING_FILE (default stderr). Used to diagnose the live Gate-4 23s timeout (which engine
+# stage consumes the slow-host spawn tax). NOT shipped enabled: with the var unset, _pfg_stage is a no-op
+# that does ZERO work (no date/EPOCHREALTIME read), so it cannot perturb normal latency or behavior.
+if [ "${PREFLIGHT_ENGINE_TIMING:-0}" = "1" ]; then
+  _PFG_T0="${EPOCHREALTIME:-0}"
+  _PFG_TIMING_OUT="${PREFLIGHT_ENGINE_TIMING_FILE:-/dev/stderr}"
+  _pfg_stage() {
+    local now="${EPOCHREALTIME:-0}"
+    awk -v s="$_PFG_T0" -v n="$now" -v l="$1" 'BEGIN{printf "PFG_STAGE %8.1fms  %s\n",(n-s)*1000,l}' >> "$_PFG_TIMING_OUT" 2>/dev/null || true
+  }
+else
+  _pfg_stage() { :; }
+fi
+_pfg_stage "engine-start"
 
 # --- Heartbeat (passive liveness self-evidencing) ---
 _hb_self_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -103,7 +119,9 @@ _pfg_wedge_block_if_flagged() {
   fi
 }
 
+_pfg_stage "heartbeat+overlay-sourced"
 STDIN_JSON="$(cat)"
+_pfg_stage "stdin-read"
 
 # Primary: extract the command field via jq (bounded — a wedge here falls to the raw-blob
 # fallback below, which fail-safely greps for 'git push'; no flag needed on this path).
@@ -118,6 +136,7 @@ fi
 if [ -z "$COMMAND" ]; then
   COMMAND="$STDIN_JSON"
 fi
+_pfg_stage "command-extracted"
 
 # ── SENTINEL-MINT TRIPWIRE (gap #5) ───────────────────────────────────────────
 # Blocks, for the AGENT's Bash tool, shell commands that MINT the two protected
@@ -407,7 +426,9 @@ EOF
   fi
   return 0
 }
+_pfg_stage "continuation-normalize+enter-parse"
 _pfg_parse_push "$COMMAND"
+_pfg_stage "structural-parse-done"
 
 # ── Resolve canonical repo (owner/repo) from config.branch.remote. Fail-open. ─
 # Shared by the #3a pr-create guard below and reused by the #6b push guard.
@@ -577,6 +598,75 @@ _pfg_remote_on_safelist() {  # $1 = remote name ; $2 = resolved slug ; $3 = safe
   done <<< "$list"
   return 1
 }
+
+# ── (B-EARLY) FORBIDDEN-REMOTE NAME fast block (live Gate-4 23s-timeout fix) ──────────────────────────────
+# THE INCIDENT: on the real slow-spawn host the engine's pre-decision work (config resolution + several
+# _pfg_branch_* jq/node reads + the B0 `git remote get-url` + the evidence gate) stacked past the router's
+# 23s candidate deadline, so a forbidden push to 'origin' was BLOCKED only by the deadline (rc=124), never
+# by the explicit forbidden-remote policy. The forbidden-NAME decision needs NOTHING expensive: just the
+# parsed explicit remote name + the committed branch.forbiddenRemotes list. So we make that decision HERE,
+# as early as possible — after parsing, before the gh-pr-create path, before B0's `git remote get-url`,
+# before config-base/remote resolution, before protected-branch eval, before the evidence gate, and before
+# any network-capable op. A name match → emit the explicit forbidden-destination diagnostic and exit 2.
+#
+# SCOPE (deliberately narrow — this ONLY adds an earlier exit for the cheapest, most-certain block; it
+# changes NO other path):
+#   • fires ONLY for an explicit named remote that is on branch.forbiddenRemotes (a pure config-data string
+#     match — zero git/network). It does NOT resolve URLs/slugs (the later B0 forbiddenRepos check still
+#     handles `git push <url>` / a forbidden remote reached under a different name, by slug).
+#   • implicit `git push` (no positional remote) is NOT matched (no ARG_REMOTE) → falls through unchanged.
+#   • a SAFE/unlisted remote is NOT matched → falls through to the full policy/evidence path unchanged.
+#   • unresolved/indirection pushes (_PFG_PUSH_UNRESOLVED) have no clean ARG_REMOTE → fall through to the
+#     existing fail-closed CONFIRM path unchanged.
+# COST: one `_pfg_branch_array` config read (the same call the main block makes later; here it is the ONLY
+# spawn on the fast path) + builtin word-splitting. No `git remote get-url`, no slug resolution, no gh.
+_eb_remote=""
+if [ "$_PFG_IS_PUSH" = 1 ] && [ -n "${_PFG_PUSH_ARGS:-}" ]; then
+  _eb_oldifs="$IFS"; set -f
+  # shellcheck disable=SC2086
+  set -- $_PFG_PUSH_ARGS
+  set +f; IFS="$_eb_oldifs"
+  for _eb_tok in "$@"; do
+    case "$_eb_tok" in
+      -*) ;;                       # flags (-u/--tags/--force/…) — skip
+      +*) ;;                       # a '+'-prefixed refspec is not a remote name
+      *) _eb_remote="$_eb_tok"; break ;;   # first positional = the (possibly named) remote
+    esac
+  done
+fi
+if [ -n "$_eb_remote" ]; then
+  _pfg_stage "early-block:parsed-remote=$_eb_remote"
+  # Locate .preflight/config.json by a PURE-SHELL upward FS walk from PFG_TARGET_CWD — NO `git rev-parse`
+  # spawn (the live-timeout fix: _pfg_config's git call cost ~2.5s on the slow host; this costs ~0). Bounded
+  # to <=64 levels. This only finds the config FILE for the cheapest decision; the main block below still
+  # uses _pfg_config (git-anchored) for the full policy path, unchanged.
+  _EB_CFG=""
+  _eb_dir="$PFG_TARGET_CWD"
+  _eb_n=0
+  while [ -n "$_eb_dir" ] && [ "$_eb_n" -lt 64 ]; do
+    if [ -f "$_eb_dir/.preflight/config.json" ]; then _EB_CFG="$_eb_dir/.preflight/config.json"; break; fi
+    case "$_eb_dir" in */*) _eb_dir="${_eb_dir%/*}"; [ -z "$_eb_dir" ] && _eb_dir="/" ;; *) break ;; esac
+    [ "$_eb_dir" = "/" ] && { [ -f "/.preflight/config.json" ] && _EB_CFG="/.preflight/config.json"; break; }
+    _eb_n=$((_eb_n+1))
+  done
+  _pfg_stage "early-block:config-resolved(no-git)"
+  # one bounded jq read of the forbidden-remote NAME list (committed config; NOT overlayable). If jq is
+  # absent, fall through to the main block (which has node/grep fallbacks) rather than risk a wrong empty.
+  _EB_FORBIDDEN_REMOTES=""
+  if [ -n "$_EB_CFG" ] && command -v jq >/dev/null 2>&1; then
+    _EB_FORBIDDEN_REMOTES="$(_pfg_jq -r '.branch.forbiddenRemotes[]? // empty' "$_EB_CFG" 2>/dev/null | tr -d '\r' || true)"
+  fi
+  _pfg_stage "early-block:forbiddenRemotes-read"
+  if _pfg_remote_forbidden "$_eb_remote" "$_EB_FORBIDDEN_REMOTES"; then
+    _pfg_stage "early-block:FORBIDDEN-decision"
+    # de-steered diagnostic — identical wording class to the B0 block; never recommends a remote.
+    echo "BLOCKED: push targets a FORBIDDEN destination '$_eb_remote' (config.branch.forbiddenRemotes)." >&2
+    echo "  This remote is explicitly off-limits (e.g. a legacy production repo). Do NOT retarget automatically —" >&2
+    echo "  surface to a human; see docs/parity-gate-limitations.md. (Early forbidden-remote decision: no" >&2
+    echo "  network, evidence gate, or remote-URL resolution was performed.)" >&2
+    exit 2
+  fi
+fi
 
 # ── #3a: guard `gh pr create` against a FORBIDDEN or NON-CANONICAL repo ───────
 # `gh pr create` with no --repo resolves the repo from the cwd's default remote,

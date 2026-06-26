@@ -4,6 +4,43 @@ Authoritative record of the live Gate-4 acceptance failure, its two root causes,
 corrected network-safe probe design. No credentials/tokens included; legacy-repo content limited to what
 the incident requires.
 
+## UPDATE — second live run (runtime af49b18): 23-second deadline timeout (not a clean denylist block)
+
+After the continuation-parser fix, the live candidate
+`PATH="…/preflight-gate4-shim:$PATH" git \<LF> push origin HEAD:refs/heads/preflight-live-probe`
+was BLOCKED — but via *"pre-push-gate-engine did not reach a decision within its 23s candidate deadline
+(rc=124)"*, with the shim marker ABSENT (so the represented command never executed: safe containment). This
+proved the continuation fix WORKS (the push was detected + routed), but the engine did **not** reach the
+explicit forbidden-remote policy decision within the router's 23s candidate deadline on the real
+Windows/Git-Bash host — so the live test did not prove the denylist BLOCK path under that host.
+
+**Root cause (the 23s timeout):** the engine performed expensive work BEFORE the forbidden-remote decision.
+Stage timing (PREFLIGHT_ENGINE_TIMING=1, real host) showed the forbidden-`origin` decision landing at
+~17.8s, dominated by: heartbeat+overlay sourcing (~3.3s), command extraction (jq), continuation-join (awk)
++ structural parse (greps/seds), then `_pfg_config`'s `git rev-parse` (~2.5s) + a `forbiddenRemotes` jq read
+(~2.6s) — and the original B0 forbidden check additionally did `git remote get-url` before deciding. On the
+live host (slower still) this brushed/exceeded the 23s deadline.
+
+**Fix — early forbidden-remote NAME fast block:** immediately after structural parse (and before the
+gh-pr-create path, B0's `git remote get-url`, config base/remote resolution, protected-branch eval, and the
+evidence gate), if the parsed EXPLICIT remote name is on `branch.forbiddenRemotes`, emit the explicit
+forbidden-destination diagnostic and `exit 2`. It uses a PURE-SHELL upward FS walk to find
+`.preflight/config.json` (NO `git rev-parse`) + one bounded `jq` read of `forbiddenRemotes`. No `git remote
+get-url`, no slug resolution, no canonical lookup, no gh, no evidence gate, no network. This cut the
+real-host decision from ~17.8s to ~13.7s and, critically, moved it BEFORE the two most expensive stages
+(evidence gate + remote-url), proven by markers in the test. The later B0 `forbiddenRepos` (slug/URL) check
+is preserved for `git push <url>` and remotes reached under a different name; safe-remote, implicit-remote
+(no named remote), unresolved/indirection, protected-branch, sentinel, and PR-create handling are all
+unchanged.
+
+**Honest residual (slow-host ceiling):** under an artificial +1s/spawn stress profile the decision still
+takes ~44s, because the structural parser's necessary spawns (the security-detection greps/seds) alone
+exceed any sub-23s budget on a pathologically slow host. On such a host the candidate still BLOCKS (the
+router deadline-blocks — the SAFE direction), it just won't carry the precise FORBIDDEN reason. The early
+block buys substantial margin on a real-host-representative speed; it does not (and cannot, without
+weakening the parser) guarantee sub-23s on an arbitrarily slow host. Diagnostic stage-timing
+(`PREFLIGHT_ENGINE_TIMING`) ships DISABLED by default (no-op when unset).
+
 ## Exact failed command
 
 Run live through Claude Code's Bash tool during Gate-4 acceptance:
