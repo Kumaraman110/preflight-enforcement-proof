@@ -1133,6 +1133,32 @@ run_behavioral_tests() {
     yellow "SKIP: pre-push-parser-bypass-test.sh not found"
   fi
 
+  # ── live Gate-4 incident — shell line-continuation parser fail-open (security-significant) ──
+  local continuation_test="$SCRIPT_DIR/behavioral/pre-push-continuation-failopen-test.sh"
+  if [ -f "$continuation_test" ]; then
+    if bash "$continuation_test"; then
+      PASSES=$((PASSES + 11))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: pre-push-continuation-failopen tests failed (a shell line-continuation [backslash+LF / backslash+CRLF] must NOT split a 'git … push' so that detection fails open — the live incident where a push reached its configured remote; normalize continuations before structural segmentation, and an unresolvable continuation must fail closed to CONFIRM, never silent-allow)"
+    fi
+  else
+    yellow "SKIP: pre-push-continuation-failopen-test.sh not found"
+  fi
+
+  # ── live Gate-4 incident — exact command shape, full router→engine path ──
+  local incident_shape_test="$SCRIPT_DIR/behavioral/pre-push-live-incident-shape-test.sh"
+  if [ -f "$incident_shape_test" ]; then
+    if bash "$incident_shape_test"; then
+      PASSES=$((PASSES + 5))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: pre-push-live-incident-shape tests failed (the exact live incident command must: router→candidate, engine→exit 2 BLOCK, exactly one block diagnostic, and never execute a real push)"
+    fi
+  else
+    yellow "SKIP: pre-push-live-incident-shape-test.sh not found"
+  fi
+
   local gapa_test="$SCRIPT_DIR/behavioral/pre-push-gapa-prod-pattern-test.sh"
   if [ -f "$gapa_test" ]; then
     if bash "$gapa_test"; then

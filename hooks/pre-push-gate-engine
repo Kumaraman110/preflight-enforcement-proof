@@ -305,6 +305,34 @@ _pfg_seg_push_args() {
 }
 _pfg_parse_push() {  # $1 = the full command string. Sets the _PFG_* globals. Always returns 0.
   local cmd="$1"
+  local _orig_cmd="$1"   # pre-normalization copy, for the fail-closed unresolved-continuation backstop
+  # (0) SHELL LINE-CONTINUATION normalization (live Gate-4 incident fix). A backslash immediately before a
+  # newline (`\`+LF, or `\`+CRLF on Windows) is a SHELL line-continuation: the shell joins the two physical
+  # lines into ONE logical command. The structural parser below segments by reading $norm LINE BY LINE, so
+  # WITHOUT this join a continuation splits e.g.
+  #     git -c remote.origin.url=file:///probe \   (has `git`, NO `push`)
+  #     push origin HEAD:refs/heads/x              (has `push`, NO `git`)
+  # into two segments, neither a `git…push` → _PFG_IS_PUSH stayed 0 → ALLOW (the security-significant
+  # fail-open that let a real push reach its configured remote). Join continuations FIRST so `git` and
+  # `push` remain one logical command. NARROW by construction: this ONLY removes a backslash that is
+  # immediately followed by an (optional CR +) LF — the exact shell continuation sequence; it touches no
+  # other backslash. A backslash NOT followed by a newline (e.g. a Windows path, an escaped char) is left
+  # untouched. After joining we collapse the run of whitespace the continuation leaves so the segment word-
+  # splits cleanly. We do NOT attempt to honor continuations inside single/double quotes (where the shell
+  # would NOT treat `\`+LF as a continuation) — joining there can only ever make detection MORE inclusive
+  # (more likely to see a push), i.e. it can over-detect (→ CONFIRM/UNRESOLVED, fail-closed) but never
+  # under-detect, so it cannot reintroduce a fail-open. The NFP tests confirm benign multiline commands are
+  # not turned into spurious hard-blocks.
+  # IMPLEMENTATION: slurp the WHOLE command into one awk record (RS set to the NUL-ish 0x1C separator, which
+  # never appears in a shell command) and gsub every `\`+(optional CR)+LF + following horizontal whitespace
+  # to a single space. awk (already a core engine dependency) avoids the backslash-quoting ambiguity that
+  # makes a line-by-line sed for this fragile, and handles multi-line input in one pass. If awk is somehow
+  # unavailable the value is unchanged — the existing eval/indirection check + per-segment parse still run,
+  # and a continuation-split push that cannot be resolved falls to the UNRESOLVED/CONFIRM fail-closed path
+  # below (never a silent allow): see the explicit unresolved-continuation guard after the segment loop.
+  if command -v awk >/dev/null 2>&1; then
+    cmd="$(printf '%s' "$cmd" | awk 'BEGIN{RS="\034"} { gsub(/\\\r?\n[ \t]*/," "); printf "%s", $0 }')"
+  fi
   # (1) Indirection wrappers the static parser cannot see INTO: if the command invokes eval / bash -c /
   # sh -c / xargs AND the literal tokens `git` … `push` appear in order somewhere, a push may be assembled
   # at runtime → mark PRESENT-but-UNRESOLVED (fail-closed CONFIRM), do not try to parse it.
@@ -354,6 +382,29 @@ $norm
 EOF
   set +f
   IFS="$_oldifs"
+  # (3) FAIL-CLOSED BACKSTOP for an unresolvable line-continuation (defense-in-depth for the Gate-4 fix).
+  # If we did NOT detect a push, but the input carried a shell line-continuation (`\`+optional CR+LF) AND an
+  # ordered `git…push` token sequence survives on the ALREADY-JOINED command, then a continuation-split push
+  # slipped past segmentation (e.g. an exotic shape, or the raw-blob fallback path on malformed JSON where
+  # `$cmd` is the whole JSON blob). Rather than fall open (the exact incident), classify it
+  # PRESENT-but-UNRESOLVED → the downstream CONFIRM/fail-closed path. This can only ADD safety: a benign
+  # multiline command with no real git…push ordering is untouched (see NFP tests), and UNRESOLVED escalates
+  # to CONFIRM, never a hard BLOCK by itself.
+  # NOTE: we test `$cmd` (the step-(0) JOINED form), NOT the un-joined original — step (0) already collapsed
+  # `\`+newline to a single space via awk, so a continuation that survived as `git…push` is detectable here
+  # with the same ordered-token regex used elsewhere. The `_orig_cmd` continuation marker only GATES whether
+  # to bother (cheap short-circuit for the overwhelming non-continuation majority).
+  if [ "$_PFG_IS_PUSH" != 1 ] && printf '%s' "$_orig_cmd" | grep -qE '\\'$'\r''?$' ; then
+    # Ordered git→push token check on the JOINED command. Deliberately SIMPLE + robust (a git program token
+    # — bare `git`, an abs/rel path ending `/git`, or `git.exe` — at a word boundary, then a `push` token
+    # one-or-more whitespace later). This is a fail-closed defense-in-depth net (it escalates to
+    # CONFIRM/UNRESOLVED, never a hard BLOCK by itself), so erring slightly broad is safe; it must not use
+    # the more intricate `([^[:space:]]*/)?` form, whose greedy backtracking misses `git  push` (two spaces)
+    # when the preceding boundary char is a quote (the malformed-JSON raw-blob-fallback case found in review).
+    if printf '%s' "$cmd" | grep -qE '(^|[^[:alnum:]_.-])(([^[:space:]]*/)?git(\.exe)?)[[:space:]]+push([[:space:]]|$)'; then
+      _PFG_IS_PUSH=1; _PFG_PUSH_UNRESOLVED=1; _PFG_PUSH_ARGS=""
+    fi
+  fi
   return 0
 }
 _pfg_parse_push "$COMMAND"
