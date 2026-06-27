@@ -1030,11 +1030,19 @@ _SW_PATH="$(_sw_resolve_script "$COMMAND")"
 if [ "$_SW_PATH" = "__UNRESOLVED__" ]; then
   # A local-script execution shape was detected, but the script file could not be resolved/read (e.g. an
   # odd-quoted path, a missing file behind a wrapper, or a path the builtin resolver could not recover).
-  # FAIL CLOSED to a human confirmation — never silent-allow a script we could not inspect.
-  _pfg_stage "script-inspect:UNRESOLVED"
-  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":%s}}\n' \
-    "$(printf '%s' "CONFIRM (fail-closed): a local script is being executed but its contents could not be resolved for inspection. Rather than approve an opaque wrapper, run the underlying steps as explicit, directly-inspectable commands so the gate can adjudicate each one." | _pfg_json_string)"
-  exit 0
+  # BLOCKER 1: this is a DETERMINISTIC BLOCK (exit 2), NEVER an ask. An opaque wrapper the gate cannot
+  # inspect must not become an approval prompt — that recreates approval friction and would let an
+  # un-analyzable wrapper through on a single human click. Failed CLOSED: NO represented command executed.
+  # The diagnostic names the resolution failure and instructs expanding into directly-inspectable commands
+  # (it never displays a bare `bash <path>` as the reason, and never asks the user to approve the wrapper).
+  _pfg_stage "script-inspect:UNRESOLVED-BLOCK"
+  echo "BLOCKED: a local script is being executed but the referenced script could not be read safely for" >&2
+  echo "  inspection (e.g. an odd-quoted path, a path behind a wrapper, or a file the resolver could not" >&2
+  echo "  recover). Preflight cannot analyze what the wrapper would do, so it is failed CLOSED — NOT approved." >&2
+  echo "  No represented command executed. Expand the script into direct, individually-inspectable commands" >&2
+  echo "  (run the underlying steps explicitly) so the gate can adjudicate each one for policy." >&2
+  echo "  (Agent Bash-tool guard only; not server-side protection — see docs/parity-gate-limitations.md.)" >&2
+  exit 2
 fi
 if [ -n "$_SW_PATH" ]; then
   _pfg_stage "script-inspect:resolved=$_SW_PATH"
@@ -1074,13 +1082,30 @@ if [ -n "$_SW_PATH" ]; then
       fi
       exit 0 ;;
     ASK)
+      # ASK is reserved for an UNDERSTOOD-but-consequential script: every line classified, none opaque, none
+      # forbidden, but it contains a recognized consequential op (a known-target `git push` / `gh pr create`
+      # the heavy path would itself CONFIRM, or a known local mutation). The analyzer KNOWS what it does — so a
+      # human confirmation is the right tier (not a block). This is NOT the opaque case (that BLOCKs below).
       printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":%s}}\n' \
         "$(printf '%s' "CONFIRM: local script '$_SW_PATH' performs $_sw_d. No forbidden destination was detected, but the action is consequential — confirm to proceed. (Inspected without executing the script.)" | _pfg_json_string)"
       exit 0 ;;
     OPAQUE)
-      printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":%s}}\n' \
-        "$(printf '%s' "CONFIRM (fail-closed): local script '$_SW_PATH' could not be safely resolved by inspection ($_sw_d). Rather than approve an opaque wrapper, EXPAND the operation into directly-inspectable commands (run the underlying steps explicitly) so the gate can adjudicate each one. (Inspected without executing the script.)" | _pfg_json_string)"
-      exit 0 ;;
+      # BLOCKER 1: a script whose CONTENTS could not be safely analyzed (dynamic command construction —
+      # eval / command-substitution / heredoc / function / loop / conditional / subshell / variable-built
+      # command / decode-pipe-to-shell / nested-beyond-bound / oversize / binary) is a DETERMINISTIC BLOCK
+      # (exit 2), NEVER an ask. Approving an opaque wrapper on a single click recreates exactly the approval
+      # friction this framework exists to remove, and would let an un-analyzable wrapper run a governed op the
+      # gate never saw. Failed CLOSED: NO represented command executed. The diagnostic names the specific
+      # unsupported construct ($_sw_d) and instructs expanding into directly-inspectable commands — it never
+      # displays a bare `bash <path>` as the reason, and never asks the user to approve the opaque wrapper.
+      _pfg_stage "script-inspect:OPAQUE-BLOCK"
+      echo "BLOCKED: the script '$_SW_PATH' uses dynamic command construction that Preflight cannot safely" >&2
+      echo "  resolve by inspection ($_sw_d). An un-analyzable wrapper could hide a governed operation, so it" >&2
+      echo "  is failed CLOSED — NOT approved. No command was executed. Expand the script into direct," >&2
+      echo "  individually-inspectable commands (run the underlying steps explicitly) so the gate can" >&2
+      echo "  evaluate each one for policy." >&2
+      echo "  (Agent Bash-tool guard only; not server-side protection — see docs/parity-gate-limitations.md.)" >&2
+      exit 2 ;;
   esac
   # No verdict matched (shouldn't happen) → fall through to normal handling.
 fi

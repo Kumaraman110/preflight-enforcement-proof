@@ -100,22 +100,39 @@ run "bash scripts/safe_remote_push.sh";  exp "safe-remote push in script (conseq
 run "bash scripts/mutate.sh";            exp "local mutation script" ASK
 printf '%s' "$OUT" | grep -qi 'mutating' && ok "mutation ASK reason describes the action" || bad "mutation ASK lacks action description"
 
-echo "════ dynamic / unsupported constructs → fail-closed (never silent-allow, never block-by-mistake) ════"
+echo "════ dynamic / unsupported constructs → DETERMINISTIC BLOCK (BLOCKER 1: never ask, never silent-allow) ════"
+# BLOCKER 1: an opaque/un-analyzable wrapper must be a hard BLOCK (exit 2), NOT an approval prompt. Asking
+# the user to approve an opaque wrapper recreates approval friction and lets an un-inspectable governed op
+# through on one click. Each construct below must BLOCK; the diagnostic must NEVER recommend a human shell.
 for f in cmdsubst eval heredoc function loop conditional subshell varbuilt decode; do
   run "bash scripts/$f.sh"
-  [ "$CLS" = ASK ] && ok "opaque construct '$f' → fail-closed CONFIRM (not silent-allow)" \
-                   || bad "opaque '$f': expected ASK(fail-closed), got $CLS"
+  [ "$CLS" = BLOCK ] && ok "opaque construct '$f' → DETERMINISTIC BLOCK (not ask, not silent-allow)" \
+                     || bad "opaque '$f': expected BLOCK, got $CLS"
 done
-# the opaque CONFIRM must instruct expanding into inspectable commands (not approve the opaque wrapper)
+# the opaque BLOCK diagnostic must (a) instruct expanding into inspectable commands, (b) state nothing
+# executed, (c) NOT ask for approval, (d) NOT display only a bare `bash <path>` as the meaningful reason.
 run "bash scripts/eval.sh"
-printf '%s' "$OUT" | grep -qi 'EXPAND the operation into directly-inspectable' && ok "opaque reason instructs expanding into inspectable commands (no opaque-wrapper approval)" || bad "opaque reason missing expand-guidance"
+printf '%s' "$OUT" | grep -qiE 'dynamic command construction|could not.*resolve|EXPAND|expand the script' \
+  && ok "opaque BLOCK reason states the unsupported construct + expand-guidance" || bad "opaque BLOCK reason missing construct/expand-guidance"
+printf '%s' "$OUT" | grep -qiE 'No command was executed|no represented command executed' \
+  && ok "opaque BLOCK states no command executed" || bad "opaque BLOCK does not state no-execution"
+printf '%s' "$OUT" | grep -qi '"permissionDecision":"ask"' \
+  && bad "opaque BLOCK wrongly emitted an ask (must be a hard block, exit 2)" || ok "opaque BLOCK did NOT emit an approval prompt"
+# the reason must be content-aware, not a bare 'bash <path>' echo.
+if printf '%s' "$OUT" | grep -qiE 'dynamic command construction|eval|command-substitution|could not be (safely )?(read|resolved)'; then
+  ok "opaque BLOCK reason is content-aware (names the construct/failure, not a bare 'bash <path>')"
+else
+  bad "opaque BLOCK reason is not content-aware"
+fi
 
 echo "════ nested forbidden / missing / oversize / binary / quoted-path ════"
 run "bash scripts/nested.sh";            exp "nested script with forbidden push" BLOCK
-run "bash scripts/nonexistent.sh";       exp "missing script (not resolvable → not a governed op)" ALLOW-silent
-run "bash scripts/oversize.sh";          exp "oversize script → fail-closed" ASK
-run "bash scripts/binary.sh";            exp "binary script → fail-closed" ASK
+run "bash scripts/nonexistent.sh";       exp "missing script (no file → nothing executes → not a governed op)" ALLOW-silent
+run "bash scripts/oversize.sh";          exp "oversize script → DETERMINISTIC BLOCK" BLOCK
+run "bash scripts/binary.sh";            exp "binary script → DETERMINISTIC BLOCK" BLOCK
 run "bash 'with space/sp.sh'";           exp "quoted path with spaces (safe)" ALLOW
+# a script-exec shape whose quoted path is unrecoverable/unreadable → __UNRESOLVED__ → BLOCK (not ask).
+run "bash 'no such dir/missing.sh'";     exp "unresolvable quoted script path → BLOCK" BLOCK
 
 echo "════ exact reported invocation SHAPE (controlled fixture, benign) ════"
 run "bash scripts/rs_pr119_round2.sh";   exp "rs_pr119_round2-shape (benign read-only)" ALLOW
