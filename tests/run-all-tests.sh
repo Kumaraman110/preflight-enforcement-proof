@@ -1202,13 +1202,39 @@ run_behavioral_tests() {
   local script_wrapper_test="$SCRIPT_DIR/behavioral/pre-push-script-wrapper-test.sh"
   if [ -f "$script_wrapper_test" ]; then
     if bash "$script_wrapper_test"; then
-      PASSES=$((PASSES + 25))
+      PASSES=$((PASSES + 29))
     else
       FAILURES=$((FAILURES + 1))
-      red "FAIL: pre-push-script-wrapper tests failed (a governed op hidden inside a local script — bash/sh/dash/zsh/source <path> — must be caught by inspecting the script CONTENTS without executing it: forbidden push/PR/sentinel → BLOCK naming the underlying op; safe read-only → allow + TOCTOU snapshot; mutation/consequential → ask; eval/cmd-subst/heredoc/function/loop/conditional/subshell/var-built/decode/oversize/binary/unresolved → fail-closed ask that instructs expanding into inspectable commands; nested forbidden → BLOCK; the script must NEVER execute during inspection)"
+      red "FAIL: pre-push-script-wrapper tests failed (a governed op hidden inside a local script — bash/sh/dash/zsh/source <path> — must be caught by inspecting the script CONTENTS without executing it: forbidden push/PR/sentinel → BLOCK naming the underlying op; safe read-only → allow + TOCTOU snapshot; mutation/consequential → ask; eval/cmd-subst/heredoc/function/loop/conditional/subshell/var-built/decode/oversize/binary/unresolved → DETERMINISTIC BLOCK (BLOCKER 1: opaque wrappers block, never ask) with content-aware diagnostics; nested forbidden → BLOCK; the script must NEVER execute during inspection)"
     fi
   else
     yellow "SKIP: pre-push-script-wrapper-test.sh not found"
+  fi
+
+  # ── BLOCKER 3 — router STRUCTURAL candidate classification (benign literal text stays on the fast path) ──
+  local router_struct_test="$SCRIPT_DIR/behavioral/router-structural-classify-test.sh"
+  if [ -f "$router_struct_test" ]; then
+    if bash "$router_struct_test"; then
+      PASSES=$((PASSES + 39))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: router-structural-classify tests failed (the router must STRUCTURALLY recognize governed shapes — git push in every spelling, gh pr create/merge, script wrappers, source/dot, eval/xargs, sentinel writes — while keeping benign literal-text cases (echo \"push\", grep push, ls docs/push-notes, printf '.preflight/gate/', commit msgs containing push) on the ZERO-SPAWN fast path; detection of real governed ops must NOT be weakened)"
+    fi
+  else
+    yellow "SKIP: router-structural-classify-test.sh not found"
+  fi
+
+  # ── BLOCKER 5 — gh pr merge policy (forbidden/non-canonical/admin → BLOCK; canonical → CONFIRM) ──
+  local pr_merge_test="$SCRIPT_DIR/behavioral/pre-pr-merge-policy-test.sh"
+  if [ -f "$pr_merge_test" ]; then
+    if bash "$pr_merge_test"; then
+      PASSES=$((PASSES + 13))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: pre-pr-merge-policy tests failed (gh pr merge must be DERIVED FROM COMMITTED POLICY: forbiddenRepos target → BLOCK; non-canonical repo → BLOCK; --admin override → BLOCK; canonical/non-forbidden → CONFIRM (consequential protected-branch landing, never silent, never a generic timeout); a get-url wedge → fail-closed; no real merge — safe gh shim)"
+    fi
+  else
+    yellow "SKIP: pre-pr-merge-policy-test.sh not found"
   fi
 
   local gapa_test="$SCRIPT_DIR/behavioral/pre-push-gapa-prod-pattern-test.sh"

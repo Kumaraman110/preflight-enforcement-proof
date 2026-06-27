@@ -30,70 +30,163 @@
 # spawning anything. The trailing `|| true` keeps the non-zero EOF return from aborting us.
 IFS= read -r -d '' BLOB || true
 
-# ── Candidate-risk classification — bash `case` globs only, ZERO spawns ───────────────────────────────
-# We are deliberately OVER-INCLUSIVE: any command that *might* be a push / pr-create / sentinel-mint is a
-# candidate and goes to the engine for the real (precise, possibly-expensive) decision. False candidates
-# cost one engine invocation; they are never wrongly blocked here (the router never blocks an ordinary
-# command). The patterns mirror the engine's own structural detectors so nothing the engine guards can
-# slip past the router. NOTE: matching is on the raw JSON blob (which contains the command string); this
-# is intentional — even malformed JSON that merely *contains* a risk token is routed to the engine.
+# ── Candidate-risk classification — CONSERVATIVE BUILTINS-ONLY STRUCTURAL RECOGNIZER (BLOCKER 3) ──────
+# THE DEFECT this replaces: the old classifier matched the raw substrings `*push*` / `*gh*pr*create*` /
+# `*.preflight/gate/*` on the JSON blob, so it routed PLAIN DATA into the ~13s heavy engine — `echo "push"`,
+# `grep push file`, `ls docs/push-notes`, `printf '.preflight/gate/'`, a commit message containing the word
+# "push", a filename containing "push". Each cost one engine invocation (~13s on this slow-spawn host) even
+# though it could never be a governed op. That is friction the product must not impose on ordinary work.
+#
+# THE FIX: STRUCTURALLY recognize the actual governed SHAPES, with bash builtins only (ZERO external spawns —
+# the fast-path latency SLO is unchanged). We (1) extract the command string from the tool JSON with pure
+# parameter expansion, (2) segment it on the shell separators the router can see, and (3) for each segment,
+# strip env-assignment / `command` prefixes and inspect the PROGRAM token + its argument STRUCTURE:
+#   • a git program (git, */git, \git, git.exe) whose first non-global-option subcommand is `push`     → candidate
+#   • `gh … pr … (create|merge)`                                                                       → candidate
+#   • a script-wrapper exec — bash/sh/dash/zsh[.exe] with a script-path arg or `-c`, or `source`/`.` … → candidate
+#   • an indirection program — `eval` / `xargs`                                                        → candidate
+#   • a protected-sentinel WRITE — write-gate-evidence parity-clean, or a redirection / write-verb into a
+#     parity-clean / bootstrap-write-approved path (read-shaped references stay on the fast path)       → candidate
+# A plain-data occurrence of "push" / a gate path is NOT a command token in any of these positions, so it
+# is NOT a candidate and stays on the zero-spawn fast path. Detection of REAL governed ops is NOT weakened:
+# every spelling the engine parses (global options before push, env/`command`/path prefixes, LF/CRLF
+# continuations, indirection) is recognized here, and an UNEXTRACTABLE/genuinely-ambiguous blob falls back
+# to the conservative coarse net so a malformed-but-governed command still reaches the (fail-closed) engine.
 CANDIDATE=0
+
+# (1) Extract tool_input.command from the JSON blob with PURE PARAMETER EXPANSION (no jq/grep spawn). We
+# take everything after the first `"command":"` (or `"command": "`) and strip from the LAST `"` (the closer)
+# — last-quote (not first-quote) truncation can only drop TRAILING bytes, never an early governed token, so
+# it can never turn a real `git push …` into a non-candidate (the fail-OPEN direction). _RTR_EXTRACTED=1
+# when we found the marker; 0 means malformed/absent → coarse-net fallback below.
+_RTR_CMD=""; _RTR_EXTRACTED=0
 case "$BLOB" in
-  # git push in any supported spelling: `git push`, `git -C dir push`, `git -c k=v push`,
-  # `command git push`, `\git push`, `VAR=val git push`, `/usr/bin/git push`, `(git push)`, etc.
-  # The literal substring "push" is the cheap over-approximation; the engine parses the real structure.
-  *push*)                      CANDIDATE=1 ;;
+  *'"command":"'*)  _RTR_CMD="${BLOB#*'"command":"'}";  _RTR_CMD="${_RTR_CMD%\"*}";  _RTR_EXTRACTED=1 ;;
+  *'"command": "'*) _RTR_CMD="${BLOB#*'"command": "'}"; _RTR_CMD="${_RTR_CMD%\"*}";  _RTR_EXTRACTED=1 ;;
 esac
-case "$BLOB" in
-  # gh pr create (any spacing/quoting between tokens collapses to this co-occurrence over-approximation).
-  *gh*pr*create*)              CANDIDATE=1 ;;
-esac
-case "$BLOB" in
-  # Protected-sentinel mint signals + the human-only parity-clean evidence + the gate dir + indirection
-  # wrappers that could assemble a push/sentinel at runtime (eval/bash -c/sh -c/xargs).
-  *parity-clean*)              CANDIDATE=1 ;;
-  *bootstrap-write-approved*)  CANDIDATE=1 ;;
-  *write-gate-evidence*)       CANDIDATE=1 ;;
-  *.preflight/gate/*)          CANDIDATE=1 ;;
-  # Windows / JSON-escaped backslash gate path. Authentic Bash-tool JSON escapes a single path
-  # backslash as the two-character sequence \\ , so the byte that arrives on stdin between
-  # "gate" segments is a DOUBLE backslash. In a bash `case` glob, \\\\ matches one literal
-  # backslash, so this arm needs FOUR backslashes per separator to match the on-wire double. (A
-  # two-backslash glob — the earlier form — matched a SINGLE literal backslash and so was dead
-  # code against real JSON: it never fired.) Dangerous SENTINEL mints route via their literal
-  # *parity-clean* / *bootstrap-write-approved* / *write-gate-evidence* tokens regardless of slash
-  # direction; this arm only adds the generic backslash gate-dir form for completeness.
-  *.preflight\\\\gate\\\\*)    CANDIDATE=1 ;;
-esac
-# ── LOCAL-SCRIPT-EXECUTION shape (security gap: a governed git push / gh pr create / sentinel mint hidden
-# INSIDE a script file is invisible to the substring globs above, because the risk tokens live in the file,
-# not the command). Route a command that EXECUTES a local script to the engine, which inspects the script's
-# CONTENTS (bounded; never executes/sources it) and applies the SAME policy. To preserve the ordinary
-# fast-path latency guarantee, this is NARROW: it matches an interpreter (bash/sh/dash/zsh[.exe]) or a
-# source/dot-inclusion only at the START of the command or a sub-command (after a separator/`cd`/env-prefix
-# /`command`), followed by whitespace — NOT every command that merely contains the word "bash". A false
-# candidate still only costs one engine call (the engine fast-allows when no readable governed script is
-# found); it can never be wrongly blocked here. The matching is on the JSON blob — the leading `{"..."}`
-# wrapper means the command value is preceded by `"command":"`, so we match both true-start and post-quote.
-_RTR_SCRIPT_CANDIDATE=0
-# Interpreter (bash/sh/dash/zsh[.exe]) appearing at command start / after a shell separator / after the
-# JSON command-quote, followed by a token that is NOT a dash-flag. We use TWO arms per interpreter:
-#   • `…<bdy>INTERP <X>` where X is NOT '-' and NOT a quote-then-flag — i.e. a path/script argument
-#     (covers `bash run.sh`, `bash /abs/x.sh`, `bash ./x.sh`).
-# Anchored by a preceding boundary char [" ;&|({ ] or the env/`cd`/`command` prefixes the engine also peels.
-# A leading dash after the interpreter (`bash -c …`, `bash --version`) does NOT match here — `bash -c`
-# inline code is already routed by the existing eval/`bash -c` indirection coverage upstream of the engine
-# parser, and `--version`-style flags are not script execution. False candidates cost one engine call.
-for _itp in bash bash.exe sh dash zsh; do
-  case "$BLOB" in
-    *[\"\ \;\&\|\(\{]"$_itp"\ [!-]*) _RTR_SCRIPT_CANDIDATE=1; break ;;
+
+# (2) Structural recognizer over the extracted command. Builtins only. Sets CANDIDATE=1 on the first
+# governed shape found.
+_rtr_structural() {  # $1 = command string (raw, JSON-escaped — we operate ZERO-SPAWN, so no jq unescape)
+  local cmd="$1" seg prog tok itp_prog
+  # ── Minimal builtins-only JSON UNESCAPE (BLOCKER 3 robustness) ──────────────────────────────────────────
+  # The router parses the RAW JSON string (it must spawn nothing, so it cannot use jq -r to unescape). On the
+  # wire a backslash in the command is `\\`, a newline is `\n`, a tab `\t`, a quote `\"`. WITHOUT unescaping,
+  # `\git push` (wire `\\git push`) and a `\`+LF shell continuation (wire `\\` + `\n`) word-split wrongly and
+  # a real governed push went UNDETECTED (fail-OPEN). Unescape the common forms with the SENTINEL technique
+  # (protect `\\` first so an escaped backslash before `n` is not mis-read as a newline). Imperfect unescape
+  # can only OVER-route (the SAFE direction); it can never hide a governed op.
+  local _sx=$'\x1c'                                  # an unlikely byte, never present in a shell command
+  cmd="${cmd//\\\\/$_sx}"                              # \\  → SENTINEL (escaped backslash, protected)
+  cmd="${cmd//\\n/$'\n'}"                              # \n  → newline
+  cmd="${cmd//\\r/$'\r'}"                              # \r  → CR
+  cmd="${cmd//\\t/$'\t'}"                              # \t  → tab
+  cmd="${cmd//\\\"/\"}"                                # \"  → "
+  cmd="${cmd//$_sx/\\}"                                # SENTINEL → single backslash
+  # Join shell line-continuations (\+CRLF, \+LF) so a continuation-split `git … push` is seen as one segment.
+  local _cr=$'\r' _lf=$'\n'
+  cmd="${cmd//$'\\'"$_cr$_lf"/ }"
+  cmd="${cmd//$'\\'"$_lf"/ }"
+  # Sentinel WRITE detection (mirrors the engine's tripwire SHAPES — write-shaped only; reads stay fast).
+  #   • write-gate-evidence + parity-clean  (the human-only evidence mint, any path form)
+  #   • a redirection ( > / >> ) into a protected-sentinel path (slash OR backslash separators)
+  #   • a write-verb token followed (later in the command) by a protected-sentinel path
+  case "$cmd" in
+    *write-gate-evidence*parity-clean*)                          CANDIDATE=1; return ;;
+    *'>'*parity-clean*|*'>'*bootstrap-write-approved*)           CANDIDATE=1; return ;;
   esac
-done
-case "$BLOB" in
-  # source / dot inclusion of a path (`. ./x.sh`, `source /c/.../y.sh`).
-  *[\"\ \;\&\|\(\{]source\ [!-]*|*[\"\ \;\&\|\(\{].\ [!-]*) _RTR_SCRIPT_CANDIDATE=1 ;;
-esac
-[ "$_RTR_SCRIPT_CANDIDATE" = 1 ] && CANDIDATE=1
+  case "$cmd" in
+    *parity-clean*|*bootstrap-write-approved*)
+      case "$cmd" in
+        *tee\ *|*touch\ *|*'cp '*|*'mv '*|*install\ *|*' dd '*|*truncate\ *|*'sed '*)  CANDIDATE=1; return ;;
+      esac ;;
+  esac
+  # Segment on the shell separators the router can see (&& || | ; & ( ) { } and newlines) via parameter
+  # expansion, then iterate each segment as its own logical command.
+  local _seg="$cmd"
+  _seg="${_seg//&&/$_lf}"; _seg="${_seg//||/$_lf}"; _seg="${_seg//|/$_lf}"
+  _seg="${_seg//;/$_lf}";  _seg="${_seg//&/$_lf}"
+  _seg="${_seg//(/$_lf}";  _seg="${_seg//)/$_lf}"; _seg="${_seg//\{/$_lf}"; _seg="${_seg//\}/$_lf}"
+  local _oldifs="$IFS"
+  while IFS= read -r seg; do
+    [ -n "$seg" ] || continue
+    set -f
+    # shellcheck disable=SC2086
+    set -- $seg
+    set +f
+    [ "$#" -gt 0 ] || continue
+    # Strip leading env-assignments (VAR=val) and a `command` / `\command` prefix (repeatable).
+    while [ "$#" -gt 0 ]; do
+      case "$1" in [A-Za-z_]*=*) shift ;; command|\\command) shift ;; *) break ;; esac
+    done
+    [ "$#" -gt 0 ] || continue
+    prog="$1"
+    case "${prog#\\}" in
+      git|git.exe|*/git|*/git.exe)
+        shift
+        # Skip the git global-option run (mirrors the engine's option grammar); the first non-option token is
+        # the subcommand. Separate-value opts consume the NEXT token; an UNKNOWN global option → route
+        # conservatively (we cannot know if it consumes the subcommand token).
+        while [ "$#" -gt 0 ]; do
+          case "$1" in
+            -C|--git-dir|--work-tree|--namespace|--super-prefix|--exec-path|-c|--config-env)
+              shift; [ "$#" -gt 0 ] && shift || break ;;
+            --git-dir=*|--work-tree=*|--namespace=*|--super-prefix=*|--exec-path=*|--config-env=*|-c=*)
+              shift ;;
+            -p|--paginate|-P|--no-pager|--bare|--no-replace-objects|--no-lazy-fetch|--no-optional-locks|--no-advice|--literal-pathspecs|--glob-pathspecs|--noglob-pathspecs|--icase-pathspecs|--html-path|--man-path|--info-path|--no-renames)
+              shift ;;
+            -[A-Za-z]*|--*) IFS="$_oldifs"; CANDIDATE=1; return ;;   # unknown global option → conservative route
+            *) break ;;
+          esac
+        done
+        if [ "$#" -gt 0 ] && [ "$1" = push ]; then IFS="$_oldifs"; CANDIDATE=1; return; fi
+        ;;
+      gh|gh.exe)
+        shift
+        # gh … pr … (create|merge). `gh pr view`/`status`/`list` are read-only → NOT candidates.
+        local _saw_pr=0
+        for tok in "$@"; do
+          case "$tok" in
+            pr) _saw_pr=1 ;;
+            create|merge) [ "$_saw_pr" = 1 ] && { IFS="$_oldifs"; CANDIDATE=1; return; } ;;
+          esac
+        done
+        ;;
+      bash|bash.exe|sh|sh.exe|dash|dash.exe|zsh|zsh.exe)
+        shift
+        # script-wrapper exec: a script-path argument, or `-c`/`-o` inline code (indirection). A bare
+        # interpreter with only flags (`bash --version`, `bash -x`) executes NO script → NOT a candidate.
+        while [ "$#" -gt 0 ]; do
+          case "$1" in
+            -c|-o) IFS="$_oldifs"; CANDIDATE=1; return ;;   # inline code / indirection → engine inspects
+            --) shift; break ;;
+            -*) shift ;;
+            *) break ;;
+          esac
+        done
+        [ "$#" -gt 0 ] && { IFS="$_oldifs"; CANDIDATE=1; return; }   # a script-path arg → wrapper
+        ;;
+      source|.)
+        shift; [ "$#" -gt 0 ] && { IFS="$_oldifs"; CANDIDATE=1; return; } ;;   # source/dot inclusion of a path
+      eval|xargs)
+        IFS="$_oldifs"; CANDIDATE=1; return ;;   # indirection — a push/sentinel may be assembled at runtime
+    esac
+  done <<< "$_seg"
+  IFS="$_oldifs"
+}
+
+if [ "$_RTR_EXTRACTED" -eq 1 ]; then
+  _rtr_structural "$_RTR_CMD"
+else
+  # (3) COARSE-NET FALLBACK — only when the command could NOT be extracted (malformed/absent JSON). Here we
+  # cannot structurally parse, so we fail SAFE with the old over-approximation: any governed token in the
+  # raw blob routes to the (fail-closed) engine. This preserves the security net for the rare malformed case
+  # without imposing its over-routing on the common, cleanly-extractable path.
+  case "$BLOB" in
+    *push*|*gh*pr*create*|*gh*pr*merge*|*parity-clean*|*bootstrap-write-approved*|*write-gate-evidence*|*.preflight/gate/*|*.preflight\\\\gate\\\\*)
+      CANDIDATE=1 ;;
+  esac
+fi
 
 # Ordinary command → ALLOW immediately. Nothing else runs; no spawn, no engine. This is the fast path
 # that the p95 SLO (Part C) measures.
