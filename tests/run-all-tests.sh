@@ -1189,7 +1189,7 @@ run_behavioral_tests() {
   local fast_decision_test="$SCRIPT_DIR/behavioral/pre-push-fast-decision-test.sh"
   if [ -f "$fast_decision_test" ]; then
     if bash "$fast_decision_test"; then
-      PASSES=$((PASSES + 17))
+      PASSES=$((PASSES + 19))
     else
       FAILURES=$((FAILURES + 1))
       red "FAIL: pre-push-fast-decision tests failed (every governed push/pr-create candidate — permitted/protected/bare/wrong-remote/URL/force/pr-create — must reach an explicit policy decision (BLOCK/ASK/ALLOW) that MATCHES the heavy-path verdict, WITHOUT a candidate-deadline timeout and WITHOUT recommending a human-shell bypass; a config.local.json overlay must safely defer to the heavy overlay-aware path, never silent-allow)"

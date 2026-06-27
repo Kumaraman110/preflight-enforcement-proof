@@ -367,7 +367,7 @@ _pfg_fast_parse_remote() {  # $1 = the raw command string. Builtins only. Always
 # spawns. They operate on the config JSON TEXT already read via `$(<config)`. The committed forbidden/safe
 # lists are NOT overlayable (see config-overlay allowlist), so reading committed text directly is correct
 # for those; branch.remote/base ARE overlayable, so the fast path reads them with the builtin AND verifies
-# no config.local.json overlay is present (if one exists, it falls through to the heavy overlay-aware path).
+# the config.local.json overlay (branch.remote/base only) is applied with builtins.
 # `_fast_json_array <json> <key>` echoes newline-separated string elements of a top-level-ish "key":[ ... ].
 _fast_json_array() {  # $1 = json text ; $2 = key
   local json="$1" key="$2" body item out="" _cr=$'\r'
@@ -485,14 +485,28 @@ fi
 #   • the command CLEANLY parsed as a single git…push (_FAST_PARSED=1; no indirection / unknown global opt),
 #   • committed .preflight/config.json was found + read (_FAST_CFG_TEXT non-empty),
 #   • NO config.local.json overlay sits beside it (branch.remote/base are overlayable — if an overlay file
-#     exists, defer to the heavy overlay-aware path so a per-clone topology correction is honored),
-#   • push-gating is opted in (committed branch.remote is set — matches the heavy path's `-n "$REMOTE"` gate;
+#     exists, apply ONLY its allowlisted topology scalars (branch.remote / branch.base) with builtins —
+#     mirroring lib/config-overlay.sh's _OVERLAY_ALLOWLIST. The forbidden/safe/prod lists are NOT
+#     overlayable (committed-config-only by construction), so they are always read from committed text.),
+#   • push-gating is opted in (effective branch.remote is set — matches the heavy path's `-n "$REMOTE"` gate;
 #     absent → additive-guard INERT, fall through),
 #   • the target's verdict does not require resolving a NAMED remote's URL beyond one bounded git call.
-if [ "$_FAST_PARSED" = 1 ] && [ -n "$_FAST_CFG_TEXT" ] && [ -n "$_FAST_CFG_DIR" ] \
-   && [ ! -f "$_FAST_CFG_DIR/.preflight/config.local.json" ]; then
+if [ "$_FAST_PARSED" = 1 ] && [ -n "$_FAST_CFG_TEXT" ] && [ -n "$_FAST_CFG_DIR" ]; then
   _FD_REMOTE_CFG="$(_fast_json_scalar "$_FAST_CFG_TEXT" remote)"
   _FD_BASE="$(_fast_json_scalar "$_FAST_CFG_TEXT" base)"
+  # ── apply the config.local.json OVERLAY for the two allowlisted topology scalars (builtins only) ──
+  # lib/config-overlay.sh allows ONLY branch.remote / branch.base (+ migration.* irrelevant here) to be
+  # overridden per-clone; forbidden/safe/prod lists are committed-only. So we override just remote/base
+  # from config.local.json when present. This makes the fast path correct on an INVERTED clone (committed
+  # branch.remote=origin, overlay corrects to poc) WITHOUT deferring to the slow heavy path (the consumer
+  # ships exactly this overlay — deferring made the intended `git push poc` time out).
+  if [ -f "$_FAST_CFG_DIR/.preflight/config.local.json" ]; then
+    _FD_LOCAL_TEXT="$(<"$_FAST_CFG_DIR/.preflight/config.local.json")" 2>/dev/null || _FD_LOCAL_TEXT=""
+    if [ -n "$_FD_LOCAL_TEXT" ]; then
+      _FD_OVR_REMOTE="$(_fast_json_scalar "$_FD_LOCAL_TEXT" remote)"; [ -n "$_FD_OVR_REMOTE" ] && _FD_REMOTE_CFG="$_FD_OVR_REMOTE"
+      _FD_OVR_BASE="$(_fast_json_scalar "$_FD_LOCAL_TEXT" base)";     [ -n "$_FD_OVR_BASE" ] && _FD_BASE="$_FD_OVR_BASE"
+    fi
+  fi
   if [ -n "$_FD_REMOTE_CFG" ]; then     # push-gating opted in (mirror heavy path's REMOTE gate)
     _FD_FREPOS="$(_fast_json_array "$_FAST_CFG_TEXT" forbiddenRepos)"
     _FD_PRODP="$(_fast_json_array "$_FAST_CFG_TEXT" prodPatterns)"
@@ -621,7 +635,7 @@ if printf '%s' "$COMMAND" | grep -qE '(^|&&|\|\||;|")[[:space:]]*gh[[:space:]]+p
     done
     [ -n "$_FAST_CFG" ] && { _FAST_CFG_TEXT="$(<"$_FAST_CFG")" 2>/dev/null || _FAST_CFG_TEXT=""; }
   fi
-  if [ -n "$_FAST_CFG_TEXT" ] && [ -n "$_FAST_CFG_DIR" ] && [ ! -f "$_FAST_CFG_DIR/.preflight/config.local.json" ]; then
+  if [ -n "$_FAST_CFG_TEXT" ] && [ -n "$_FAST_CFG_DIR" ]; then
     # Extract the pr-create segment + an explicit --repo (builtins-only token walk, no grep/sed spawn).
     _FP_REPO_ARG=""
     _fp_oldifs="$IFS"; set -f
@@ -637,6 +651,12 @@ if printf '%s' "$COMMAND" | grep -qE '(^|&&|\|\||;|")[[:space:]]*gh[[:space:]]+p
     done
     _FP_FREPOS="$(_fast_json_array "$_FAST_CFG_TEXT" forbiddenRepos)"
     _FP_CANON_REMOTE="$(_fast_json_scalar "$_FAST_CFG_TEXT" remote)"
+    # Apply the config.local.json overlay for branch.remote (allowlisted topology scalar; builtins only) so
+    # the canonical-slug comparison is correct on an inverted clone — same as the push fast-decision path.
+    if [ -f "$_FAST_CFG_DIR/.preflight/config.local.json" ]; then
+      _FP_LOCAL_TEXT="$(<"$_FAST_CFG_DIR/.preflight/config.local.json")" 2>/dev/null || _FP_LOCAL_TEXT=""
+      [ -n "$_FP_LOCAL_TEXT" ] && { _FP_OVR="$(_fast_json_scalar "$_FP_LOCAL_TEXT" remote)"; [ -n "$_FP_OVR" ] && _FP_CANON_REMOTE="$_FP_OVR"; }
+    fi
     _FP_TARGET_SLUG=""; _FP_RESOLVED=1
     if [ -n "$_FP_REPO_ARG" ]; then
       _FP_TARGET_SLUG="$(_fast_url_to_slug "$_FP_REPO_ARG")"     # explicit --repo → builtins, no git

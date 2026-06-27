@@ -111,15 +111,30 @@ run "$R4" "git push poc HEAD:topic";  expect "configured remote looks PROD" ASK
 echo "════ no-false-shortcut: ordinary git read + non-push exit 0 ════"
 run "$R" "git status --porcelain";    expect "git status (non-push)" ALLOW-silent
 
-echo "════ overlay present → fast path defers to heavy overlay-aware path (must NOT silent-allow) ════"
+echo "════ config.local.json overlay (INVERTED clone) → fast path APPLIES the overlay (no timeout) ════"
+# The real consumer ships this exact topology: committed branch.remote=origin (wrong for the clone),
+# config.local.json corrects it to poc (the inverted-clone fix). The fast path must APPLY the overlay
+# (builtins) so the INTENDED `git push poc` reaches its real verdict FAST — not defer to the slow heavy
+# path (which timed out at ~26s on the consumer). forbiddenRemotes stays committed-only (origin forbidden).
 R5="$(mkrepo)"
-( cd "$R5" && printf '{"branch":{"remote":"origin"}}' > .preflight/config.local.json ) >/dev/null 2>&1
-run "$R5" "git push poc HEAD:topic"
-# heavy path may ALLOW (poc still safe under overlay) or take longer; the REQUIREMENT is it is NEVER a
-# forbidden silent-allow and NEVER carries bypass steering. Assert: not a BLOCK-with-bypass, not rc!=0/2 junk.
-{ [ "$CLS" = ALLOW ] || [ "$CLS" = ASK ] || [ "$CLS" = BLOCK ]; } && [ "$BYPASS" = no ] \
-  && ok "overlay-present poc push → real decision ($CLS), no bypass steering (fast path safely deferred)" \
-  || bad "overlay-present: unexpected $CLS / bypass=$BYPASS"
+( cd "$R5"
+  printf '{"branch":{"base":"AccountLookUp_POC","remote":"origin","forbiddenRemotes":["origin"],"forbiddenRepos":["United-Airlines-Org/CPSL"]}}' > .preflight/config.json
+  printf '{"branch":{"remote":"poc"}}' > .preflight/config.local.json ) >/dev/null 2>&1
+# (a) the INTENDED push to the overlay-corrected remote 'poc', fresh evidence → ALLOW (fast, no timeout).
+run "$R5" "git push poc HEAD:feature/registerseats-bff-l3"
+{ [ "$CLS" = ALLOW ] && [ "$BYPASS" = no ]; } \
+  && ok "overlay: 'git push poc' (overlay-corrected remote) + fresh evidence → ALLOW (overlay applied, no timeout)" \
+  || bad "overlay: intended poc push expected ALLOW, got $CLS (bypass=$BYPASS) — overlay not applied / timed out"
+# (b) the FORBIDDEN remote 'origin' (committed-only forbidden list, NOT overlayable) → still BLOCK.
+run "$R5" "git push origin HEAD:topic"
+{ [ "$CLS" = BLOCK ] && [ "$BYPASS" = no ]; } \
+  && ok "overlay: 'git push origin' still BLOCK (forbiddenRemotes is committed-only, not overlayable)" \
+  || bad "overlay: forbidden origin expected BLOCK, got $CLS"
+# (c) a remote that is neither the overlay remote nor forbidden → wrong-remote CONFIRM (not the old timeout).
+run "$R5" "git push safe HEAD:topic"
+{ [ "$CLS" = ASK ] && [ "$BYPASS" = no ]; } \
+  && ok "overlay: 'git push safe' (≠ overlay remote poc) → wrong-remote CONFIRM (ask), no timeout" \
+  || bad "overlay: wrong-remote expected ASK, got $CLS"
 
 echo "════ engine-failure diagnostics state failure-not-approval + no human-shell ════"
 # Drive a wedge: a git shim that hangs on remote get-url so the fast-decision get-url wedges → heavy path →
