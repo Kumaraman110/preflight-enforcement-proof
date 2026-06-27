@@ -705,6 +705,109 @@ if printf '%s' "$COMMAND" | grep -qE '(^|&&|\|\||;|")[[:space:]]*gh[[:space:]]+p
     # _FP_RESOLVED=0 (a get-url wedge) → fall through to the heavy #3a guard (which fails closed on wedge).
   fi
 fi
+
+# ── (FAST-PR-MERGE) builtins-first `gh pr merge` decision (BLOCKER 5) ─────────────────────────────────────
+# `gh pr merge` lands commits on the PR's BASE branch (the protected/integration branch) of the TARGET repo
+# — a consequential, outward-facing action with a real blast radius. The decision is DERIVED FROM COMMITTED
+# POLICY (no new config key, no assumption, no invented universal human gate):
+#   • target repo slug on config.branch.forbiddenRepos  → BLOCK (explicit denylist — e.g. legacy prod).
+#   • target repo slug != canonical slug(config.branch.remote)  → BLOCK (non-canonical — wrong repo).
+#   • `--admin` (overrides failing required checks / branch protection — the merge analogue of a force-push
+#     to a protected branch) → BLOCK (never auto, never merely-confirm).
+#   • otherwise a merge to the canonical repo's protected base is CONSEQUENTIAL but a human MAY proceed →
+#     CONFIRM (permissionDecision:ask). It is NOT silently auto-allowed (it publishes shared history) and
+#     NOT generically timed out (this is a fast builtins decision). This matches the AUTO/CONFIRM/BLOCK
+#     reversibility model (CLAUDE.md rule 6): a protected-branch landing is the CONFIRM tier.
+# CONSERVATIVE: engages only for a clearly-shaped leading `gh pr merge` with committed config; a get-url
+# wedge falls through to the normal (non-push) handling. FAIL-OPEN posture is preserved (no config → inert).
+if printf '%s' "$COMMAND" | grep -qE '(^|&&|\|\||;|")[[:space:]]*gh[[:space:]]+pr[[:space:]]+merge'; then
+  _pfg_stage "fast-prmerge:enter"
+  if [ -z "$_FAST_CFG" ]; then
+    _fast_dir="$PWD"; _fast_n=0
+    while [ -n "$_fast_dir" ] && [ "$_fast_n" -lt 64 ]; do
+      if [ -f "$_fast_dir/.preflight/config.json" ]; then _FAST_CFG="$_fast_dir/.preflight/config.json"; _FAST_CFG_DIR="$_fast_dir"; break; fi
+      case "$_fast_dir" in */*) _fast_dir="${_fast_dir%/*}"; [ -z "$_fast_dir" ] && _fast_dir="/" ;; *) break ;; esac
+      [ "$_fast_dir" = "/" ] && { [ -f "/.preflight/config.json" ] && { _FAST_CFG="/.preflight/config.json"; _FAST_CFG_DIR="/"; }; break; }
+      _fast_n=$((_fast_n+1))
+    done
+    [ -n "$_FAST_CFG" ] && { _FAST_CFG_TEXT="$(<"$_FAST_CFG")" 2>/dev/null || _FAST_CFG_TEXT=""; }
+  fi
+  if [ -n "$_FAST_CFG_TEXT" ] && [ -n "$_FAST_CFG_DIR" ]; then
+    # token-walk for --repo and --admin (builtins; no grep/sed spawn).
+    _FM_REPO_ARG=""; _FM_ADMIN=0
+    _fm_oldifs="$IFS"; set -f
+    # shellcheck disable=SC2086
+    set -- $COMMAND
+    set +f; IFS="$_fm_oldifs"
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --repo=*) _FM_REPO_ARG="${1#--repo=}" ;;
+        --repo)   shift; _FM_REPO_ARG="${1:-}" ;;
+        --admin|--admin=true) _FM_ADMIN=1 ;;
+        *) ;;
+      esac
+      shift
+    done
+    _FM_FREPOS="$(_fast_json_array "$_FAST_CFG_TEXT" forbiddenRepos)"
+    _FM_CANON_REMOTE="$(_fast_json_scalar "$_FAST_CFG_TEXT" remote)"
+    if [ -f "$_FAST_CFG_DIR/.preflight/config.local.json" ]; then
+      _FM_LOCAL_TEXT="$(<"$_FAST_CFG_DIR/.preflight/config.local.json")" 2>/dev/null || _FM_LOCAL_TEXT=""
+      [ -n "$_FM_LOCAL_TEXT" ] && { _FM_OVR="$(_fast_json_scalar "$_FM_LOCAL_TEXT" remote)"; [ -n "$_FM_OVR" ] && _FM_CANON_REMOTE="$_FM_OVR"; }
+    fi
+    _FM_TARGET_SLUG=""; _FM_RESOLVED=1
+    if [ -n "$_FM_REPO_ARG" ]; then
+      _FM_TARGET_SLUG="$(_fast_url_to_slug "$_FM_REPO_ARG")"   # explicit --repo → builtins, no git
+    else
+      _FM_DEF_URL="$(_pfg_git -C "$PWD" remote get-url origin 2>/dev/null | tr -d '\r' || true)"
+      if [ -f "$_PFG_WEDGE_FLAG" ]; then _FM_RESOLVED=0; fi
+      [ -n "$_FM_DEF_URL" ] && _FM_TARGET_SLUG="$(_fast_url_to_slug "$_FM_DEF_URL")"
+    fi
+    _FM_CANON_SLUG=""
+    if [ "$_FM_RESOLVED" = 1 ] && [ -n "$_FM_CANON_REMOTE" ]; then
+      _FM_CANON_URL="$(_pfg_git -C "$PWD" remote get-url "$_FM_CANON_REMOTE" 2>/dev/null | tr -d '\r' || true)"
+      if [ -f "$_PFG_WEDGE_FLAG" ]; then _FM_RESOLVED=0; fi
+      [ -n "$_FM_CANON_URL" ] && _FM_CANON_SLUG="$(_fast_url_to_slug "$_FM_CANON_URL")"
+    fi
+    if [ "$_FM_RESOLVED" = 1 ]; then
+      # (0) forbiddenRepos → BLOCK
+      if [ -n "$_FM_TARGET_SLUG" ] && _fast_repo_forbidden "$_FM_TARGET_SLUG" "$_FM_FREPOS"; then
+        _pfg_stage "fast-prmerge:BLOCK-forbiddenRepos"
+        echo "BLOCKED: 'gh pr merge' would merge into a FORBIDDEN repo '$_FM_TARGET_SLUG' (config.branch.forbiddenRepos)." >&2
+        echo "  Merging publishes shared history on that repo's protected branch; this destination is explicitly" >&2
+        echo "  off-limits (e.g. a legacy production repo). Do NOT retarget automatically — surface to a human." >&2
+        echo "  (Agent Bash-tool guard only; not server-side protection — see docs/parity-gate-limitations.md.)" >&2
+        exit 2
+      fi
+      # (1) non-canonical → BLOCK
+      if [ -n "$_FM_CANON_SLUG" ] && [ -n "$_FM_TARGET_SLUG" ] && [ "$_FM_TARGET_SLUG" != "$_FM_CANON_SLUG" ]; then
+        _pfg_stage "fast-prmerge:BLOCK-non-canonical"
+        echo "BLOCKED: 'gh pr merge' targets a non-canonical repo '$_FM_TARGET_SLUG' (expected the configured target from config.branch.remote)." >&2
+        echo "  On migration clones the wrong repo is often the legacy production repo. Do NOT assume the configured" >&2
+        echo "  remote is safe — if it is itself wrong, surface to a human; see docs/parity-gate-limitations.md." >&2
+        echo "  (Agent Bash-tool guard only; not server-side protection.)" >&2
+        exit 2
+      fi
+      # (2) --admin (override required checks / branch protection) → BLOCK (the merge analogue of force-to-protected)
+      if [ "$_FM_ADMIN" = 1 ]; then
+        _pfg_stage "fast-prmerge:BLOCK-admin"
+        echo "BLOCKED: 'gh pr merge --admin' overrides required status checks / branch protection to force the merge." >&2
+        echo "  That bypasses the very protections governing the shared branch — never an automatic or agent action." >&2
+        echo "  Merge through the normal required-checks path, or surface to a human to use --admin deliberately." >&2
+        echo "  (Agent Bash-tool guard only; not server-side protection — see docs/parity-gate-limitations.md.)" >&2
+        exit 2
+      fi
+      # (3) canonical, non-forbidden, non-admin → CONFIRM (consequential protected-branch landing; a human
+      #     may proceed, never silent, never a timeout).
+      _pfg_stage "fast-prmerge:CONFIRM"
+      printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":%s}}\n' \
+        "$(printf '%s' "CONSEQUENTIAL MERGE — confirm to proceed. 'gh pr merge' lands commits on the protected base branch of the configured repo (shared, integration history). The target repo is the configured/canonical one and not denylisted, so this is not blocked — but publishing shared history is consequential and must be a deliberate human confirmation, never a silent agent action. (Agent Bash-tool guard only; not server-side protection.)" | _pfg_json_string)"
+      exit 0
+    fi
+    # _FM_RESOLVED=0 (a get-url wedge) → fall through (the merge is not a push; the normal non-push exit 0
+    # would allow it, but a wedge means we could not verify the target — so fail CLOSED to a confirm).
+    _pfg_wedge_block_if_flagged
+  fi
+fi
 _pfg_stage "fast0-done"
 
 # ── (SCRIPT-WRAPPER INSPECTION) governed ops hidden inside a local script (mission Phase 4) ──────────────
