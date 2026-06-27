@@ -622,7 +622,11 @@ fi
 # config + no overlay; anything else falls through to the unchanged heavy #3a guard.
 # Verdict classes (identical to #3a): explicit/default target slug on forbiddenRepos → BLOCK; target slug
 # != canonical slug → BLOCK (non-canonical); else → ALLOW (gh pr create is not a push; nothing more to gate).
-if printf '%s' "$COMMAND" | grep -qE '(^|&&|\|\||;|")[[:space:]]*gh[[:space:]]+pr[[:space:]]+create'; then
+if printf '%s' "$COMMAND" | grep -qE '(^|&&|\|\||;|")[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+|command[[:space:]]+)*gh[[:space:]]+pr[[:space:]]+create'; then
+  # The leading group `([A-Za-z_]…=…[[:space:]]+|command[[:space:]]+)*` peels an optional run of env-
+  # assignment prefixes (VAR=val) and a `command` prefix before `gh`, so `PATH=… gh pr create` and
+  # `command gh pr create` are detected — matching how the git-push parser already peels those prefixes.
+  # (Before this fix an env-prefixed gh slipped past the gh guard entirely → a forbidden-repo PR allowed.)
   _pfg_stage "fast-pr:enter"
   # Resolve+read committed config with builtins (reuse the FS-walk result if the push parse already did it).
   if [ -z "$_FAST_CFG" ]; then
@@ -720,7 +724,9 @@ fi
 #     reversibility model (CLAUDE.md rule 6): a protected-branch landing is the CONFIRM tier.
 # CONSERVATIVE: engages only for a clearly-shaped leading `gh pr merge` with committed config; a get-url
 # wedge falls through to the normal (non-push) handling. FAIL-OPEN posture is preserved (no config → inert).
-if printf '%s' "$COMMAND" | grep -qE '(^|&&|\|\||;|")[[:space:]]*gh[[:space:]]+pr[[:space:]]+merge'; then
+if printf '%s' "$COMMAND" | grep -qE '(^|&&|\|\||;|")[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+|command[[:space:]]+)*gh[[:space:]]+pr[[:space:]]+merge'; then
+  # env-assignment / `command` prefixes are peeled (see the gh-pr-create note above) so `PATH=… gh pr merge`
+  # is detected, not silently allowed.
   _pfg_stage "fast-prmerge:enter"
   if [ -z "$_FAST_CFG" ]; then
     _fast_dir="$PWD"; _fast_n=0
@@ -1641,7 +1647,7 @@ fi
 # — see docs/parity-gate-limitations.md. Block messages DELIBERATELY do NOT recommend
 # a specific remote/repo: on an inverted clone the "canonical" value is itself the
 # dangerous one, so steering toward it is the original A1 defect. Surface to a human.
-if printf '%s' "$COMMAND" | grep -qE '(^|&&|\|\||;|")\s*gh[[:space:]]+pr[[:space:]]+create'; then
+if printf '%s' "$COMMAND" | grep -qE '(^|&&|\|\||;|")[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+|command[[:space:]]+)*gh[[:space:]]+pr[[:space:]]+create'; then
   PR_CMD="$(printf '%s' "$COMMAND" | grep -oE 'gh[[:space:]]+pr[[:space:]]+create[^&|;]*' | head -1 || true)"
   CFG="$(_pfg_config)"
   CANON_REMOTE="$(_pfg_branch_field "$CFG" remote)"

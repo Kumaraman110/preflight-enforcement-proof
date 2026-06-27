@@ -103,6 +103,12 @@ run "$R" "gh pr merge 12 --repo other-org/other-repo --merge";     expect "merge
 #     forbidden/non-canonical checks).
 run "$R" "gh pr merge 12 --repo $CANON --admin --merge";           expect "merge --admin (override protection)" BLOCK
 printf '%s' "$OUT" | grep -qi 'admin' && ok "admin BLOCK names the override" || bad "admin BLOCK lacks --admin rationale"
+# (7) ENV-PREFIXED gh must still be detected (prefix peeled), not slip past the guard. A forbidden repo
+#     behind a PATH= prefix → BLOCK; the canonical one behind FOO=bar → CONFIRM. (Closes the env-prefix gap
+#     surfaced by the live gh-dispatch test: the gh grep used to anchor `gh` to a separator and missed a
+#     leading VAR=val/command prefix, so an env-prefixed forbidden PR was allowed.)
+run "$R" "PATH=/x:\$PATH gh pr merge 12 --repo United-Airlines-Org/CPSL --merge"; expect "env-prefixed merge → FORBIDDEN repo" BLOCK
+run "$R" "FOO=bar gh pr merge 12 --repo $CANON --squash";          expect "env-prefixed merge → canonical (CONFIRM)" ASK
 
 echo "════ unresolved repository / wedge → fail CLOSED (never allow on an unverified target) ════"
 # a git that wedges on remote get-url (so the canonical slug can't resolve) → fail-closed. Simulate via a
