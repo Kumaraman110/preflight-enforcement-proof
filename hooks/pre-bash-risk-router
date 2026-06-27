@@ -153,8 +153,11 @@ fi
 # for THIS candidate → BLOCK this candidate only. Unrelated Bash is unaffected (it never reaches here).
 cat "$_eng_err" >&2 2>/dev/null
 rm -f "$_eng_out" "$_eng_err" 2>/dev/null
-echo "BLOCKED: the pre-push-gate-engine did not reach a decision within its ${_eng_deadline}s candidate" >&2
-echo "  deadline (rc=${_eng_rc}) for this push/PR/sentinel command. Failing CLOSED for THIS candidate only —" >&2
-echo "  ordinary Bash commands are unaffected. Retry, or run the push from a human shell after confirming" >&2
-echo "  the target. (Candidate-path fail-closed; see docs/parity-gate-limitations.md.)" >&2
+echo "BLOCKED: the preflight decision engine FAILED to reach a policy decision within its ${_eng_deadline}s" >&2
+echo "  candidate deadline (rc=${_eng_rc}) for this push/PR/sentinel command. This is an ENGINE FAILURE, not a" >&2
+echo "  policy approval: NO represented command executed, and the operation remains BLOCKED (fail-closed for" >&2
+echo "  THIS candidate only — ordinary Bash is unaffected). A timeout is NOT a substitute for a policy decision." >&2
+echo "  To proceed under governance: re-run the command (the engine may decide in time), or express it as a" >&2
+echo "  plain, directly-inspectable 'git push <remote> <refspec>' so the gate can adjudicate it quickly." >&2
+echo "  (Candidate-path fail-closed; see docs/parity-gate-limitations.md.)" >&2
 exit 2

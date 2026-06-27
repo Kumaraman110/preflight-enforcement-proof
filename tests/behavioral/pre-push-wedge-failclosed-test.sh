@@ -78,10 +78,20 @@ errf="$(mktemp)"; _w1s="$EPOCHREALTIME"
 ( cd "$WS" && printf '%s' "$PUSH" | PATH="$STUB_ALL:$PATH" PREFLIGHT_ENGINE_DEADLINE=12 \
     timeout 60 bash "$WROUTER" "$PUSH" >/dev/null 2>"$errf" ); _rc=$?
 _w1e="$EPOCHREALTIME"; _w1el="$(awk -v s="$_w1s" -v e="$_w1e" 'BEGIN{printf "%.0f", e-s}')"
-if [ "$_rc" -eq 2 ] && grep -qi 'did not reach a decision within its 12s candidate' "$errf" && [ "$_w1el" -lt 40 ]; then
-  ok "W1: candidate push + fully-wedged engine -> router BLOCK (exit 2) in ~${_w1el}s, names the 12s candidate deadline (router deadline, not platform kill; fail-closed)"
+# The engine-failure diagnostic names the 12s candidate deadline and states ENGINE FAILURE (not a policy
+# approval). The message wraps across lines, so match the whole file (-z) tolerant of the wrap, and ALSO
+# require it does NOT recommend a human-shell bypass (principle 6) and DOES state it is not an approval.
+# Flatten newlines so the wrapped message ("…its 12s\n  candidate deadline…") is matchable on one line;
+# -a treats input as text (the stderr may carry odd bytes on a wedged run).
+_w1msg="$(tr '\n' ' ' < "$errf" 2>/dev/null)"
+if [ "$_rc" -eq 2 ] \
+   && printf '%s' "$_w1msg" | grep -aqiE 'FAILED to reach a policy decision within its 12s' \
+   && printf '%s' "$_w1msg" | grep -aqiE 'ENGINE FAILURE|not a[[:space:]]+policy approval|NOT a substitute for a policy decision' \
+   && ! printf '%s' "$_w1msg" | grep -aqiE 'from a human shell|push from a human' \
+   && [ "$_w1el" -lt 40 ]; then
+  ok "W1: candidate push + fully-wedged engine -> router BLOCK (exit 2) in ~${_w1el}s, names the 12s candidate deadline AND states engine-failure-not-approval, with NO human-shell-bypass steering (fail-closed)"
 else
-  bad "W1: expected exit 2 + '12s candidate' deadline message in <40s, got RC=$_rc elapsed=${_w1el}s msg='$(head -1 "$errf")'"
+  bad "W1: expected exit 2 + engine-failure '12s' deadline message (no human-shell steering) in <40s, got RC=$_rc elapsed=${_w1el}s msg='$(head -1 "$errf")'"
 fi
 rm -f "$errf"
 

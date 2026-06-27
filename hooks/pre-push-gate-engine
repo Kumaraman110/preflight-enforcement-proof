@@ -131,9 +131,11 @@ _pfg_jq()  { _pfg_bounded jq  "$@"; }   # bounded jq (config-file reads) — wed
 _pfg_wedge_block_if_flagged() {
   if [ -f "$_PFG_WEDGE_FLAG" ]; then
     echo "BLOCKED: a push-safety subprocess (git/jq) timed out (~${_PFG_SUBPROC_TIMEOUT}s) while resolving the" >&2
-    echo "  push target — the destination could not be fully verified. Failing CLOSED: the push is BLOCKED" >&2
-    echo "  rather than allowed on an unresolved target. Retry; if it persists, push from a human shell after" >&2
-    echo "  confirming the remote. (Subprocess wedge-bound; see docs/parity-gate-limitations.md.)" >&2
+    echo "  push target — the destination could not be fully verified. This is an ENGINE/subprocess FAILURE, not" >&2
+    echo "  a policy approval: the push remains BLOCKED (fail-closed), NOT allowed on an unresolved target, and no" >&2
+    echo "  represented command executed. Re-run the command, or express it as a plain, directly-inspectable" >&2
+    echo "  'git push <remote> <refspec>' so the gate can resolve and adjudicate the target. (Subprocess" >&2
+    echo "  wedge-bound; see docs/parity-gate-limitations.md.)" >&2
     exit 2
   fi
 }
@@ -196,8 +198,88 @@ _fast_emit_forbidden() {  # $1 = remote name. Emit the shared forbidden-destinat
   echo "  network, evidence gate, or remote-URL resolution was performed.)" >&2
   exit 2
 }
-# Confident builtins-only parse → sets _FAST_REMOTE (explicit name) + _FAST_OK=1, else leaves _FAST_OK=0.
-_FAST_OK=0; _FAST_REMOTE=""
+# forbiddenRepos SLUG match → HARD BLOCK (exit 2). Same wording class as the heavy path's B0 block
+# (a denylisted resolved slug is never merely-confirm — it is an explicit off-limits destination).
+_fast_emit_forbidden_repo() {  # $1 = remote-or-target (display) ; $2 = resolved slug
+  echo "BLOCKED: push targets a FORBIDDEN destination '$1' (config.branch.forbiddenRemotes/forbiddenRepos)." >&2
+  echo "  This remote is explicitly off-limits (e.g. a legacy production repo). Do NOT retarget automatically —" >&2
+  echo "  surface to a human; see docs/parity-gate-limitations.md." >&2
+  echo "  (Agent Bash-tool guard only; not server-side protection.)" >&2
+  exit 2
+}
+# Emit stdin as a JSON string LITERAL (surrounding quotes + escaped) for the permissionDecisionReason
+# value. HOISTED here (above the fast-decision block, which calls it via _fast_emit_confirm). jq is
+# UTF-8-safe; node is the fallback; a last-ditch sed escapes the JSON-critical chars so the stdout JSON
+# never breaks (a malformed payload would be ignored by the platform → fail-open to normal permission
+# flow, acceptable for a CONFIRM case, but we escape properly).
+_pfg_json_string() {
+  if command -v jq &>/dev/null; then
+    jq -Rs . 2>/dev/null && return 0
+  fi
+  if command -v node &>/dev/null; then
+    node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>process.stdout.write(JSON.stringify(d.replace(/\n+$/,''))))" 2>/dev/null && return 0
+  fi
+  printf '"%s"' "$(sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/\r//g' -e 's/\t/ /g' | tr '\n' ' ')"
+}
+# CONFIRM (ask) emitter for the fast-decision path — identical wire shape + wording class as the heavy
+# path's CONFIRM tier (single source). Emits exit 0 + permissionDecision:ask, then exits 0.
+_fast_emit_confirm() {  # $1 = reason (content-derived, no human-shell steering)
+  _pfg_stage "fast-decision:CONFIRM"
+  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":%s}}\n' \
+    "$(printf '%s' "CONSEQUENTIAL PUSH — confirm to proceed. $1" | _pfg_json_string)"
+  exit 0
+}
+# Builtins-only forbiddenRepos slug membership (mirrors _pfg_repo_forbidden, which normalizes each list
+# entry via url_to_slug). Entries may be slugs OR URLs; compare normalized slugs.
+_fast_repo_forbidden() {  # $1 = target slug ; $2 = forbiddenRepos newline list. 0 = forbidden.
+  local slug="$1" line; [ -n "$slug" ] || return 1
+  while IFS= read -r line; do [ -z "$line" ] && continue; [ "$(_fast_url_to_slug "$line")" = "$slug" ] && return 0; done <<< "$2"
+  return 1
+}
+# Builtins-only safeRemotes slug membership (mirrors the slug arm of _pfg_remote_on_safelist).
+_fast_slug_on_safelist() {  # $1 = slug ; $2 = safeRemotes newline list. 0 = on the list.
+  local slug="$1" line; [ -n "$slug" ] || return 1
+  while IFS= read -r line; do [ -z "$line" ] && continue; [ "$(_fast_url_to_slug "$line")" = "$slug" ] && return 0; done <<< "$2"
+  return 1
+}
+# AUTO path: run the EXISTING evidence gate (bounded) and, only if evidence is fresh, emit the explicit
+# AUTO allow. A stale/missing-evidence gate exits 2 (hard block) — that block stands. Any abnormal gate
+# exit is normalized to a fail-CLOSED block (same discipline as the heavy path's evidence handling).
+# This is the ONE place the fast path spawns the (bounded) evidence gate — the heavy path runs it too.
+_fast_run_evidence_then_allow() {
+  local _ppg_dir _rc
+  _ppg_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  # The evidence gate resolves HEAD/diff itself; it is bounded by the router's candidate deadline (this
+  # whole engine runs inside it). stdin from /dev/null (parent already consumed stdin).
+  set +e
+  bash "$_ppg_dir/pre-push-gate" </dev/null
+  _rc=$?
+  set -e
+  if [ "$_rc" -eq 0 ]; then
+    _pfg_stage "fast-decision:AUTO-allow"
+    printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":"Reversible push: unprotected branch to the configured safe remote, non-force, gate evidence fresh."}}\n'
+    exit 0
+  fi
+  if [ "$_rc" -eq 2 ]; then exit 2; fi   # evidence gate hard-blocked (missing/stale) — stands.
+  # Any other code (1/127/126/124/137/…) is NON-blocking under PreToolUse → normalize to a fail-CLOSED block.
+  echo "BLOCKED: the pre-push evidence gate exited abnormally (rc=$_rc) — neither 0 (fresh) nor 2 (block)." >&2
+  echo "  A non-0/2 code is NON-blocking under the PreToolUse protocol, so passing it through would let the" >&2
+  echo "  push proceed UNGATED. Failing CLOSED: the push is BLOCKED. Re-run the gate at HEAD, then retry." >&2
+  exit 2
+}
+# Confident builtins-only parse. Sets, for the cleanly-parsed-push case, ALL the decision inputs the
+# fast-decision path needs — using bash builtins only (zero external process):
+#   _FAST_PARSED   = 1 iff the command cleanly parsed as a single `git … push …` (no indirection/unknown-opt).
+#   _FAST_OK       = 1 iff a SIMPLE explicit remote NAME was found (the original forbidden-name contract).
+#   _FAST_REMOTE   = that simple explicit remote name (when _FAST_OK=1).
+#   _FAST_KIND     = name | url | bare    (url = first positional is a URL/scp/path; bare = no positional).
+#   _FAST_TARGET   = the first positional token (remote name OR url), '' for bare.
+#   _FAST_REFSPEC  = the refspec positional (second positional), '' if none.
+#   _FAST_FORCE    = 1 iff --force/-f/--force-with-lease[...]/--force-if-includes OR a leading '+' refspec.
+# _FAST_OK is set ONLY for the simple-name case (so the existing forbidden-name block is unchanged). The
+# fast-decision block keys on _FAST_PARSED + _FAST_KIND, and falls through to the heavy path whenever the
+# command did NOT cleanly parse (_FAST_PARSED=0).
+_FAST_OK=0; _FAST_REMOTE=""; _FAST_PARSED=0; _FAST_KIND=""; _FAST_TARGET=""; _FAST_REFSPEC=""; _FAST_FORCE=0
 _pfg_fast_parse_remote() {  # $1 = the raw command string. Builtins only. Always returns 0.
   local cmd="$1" tok
   # (a) Join shell line-continuations with PARAMETER EXPANSION ONLY. Quoted search/replace patterns are
@@ -247,63 +329,361 @@ _pfg_fast_parse_remote() {  # $1 = the raw command string. Builtins only. Always
   [ "$#" -gt 0 ] || return 0
   [ "$1" = "push" ] || return 0
   shift
-  # (f) First positional (skip push flags and +refspec) = explicit remote name. Must be a SIMPLE name.
+  # The command cleanly parsed as a `git … push …` invocation (no indirection, no unknown global option).
+  _FAST_PARSED=1
+  # (f) Walk the push args: detect force flags, then the FIRST positional (= remote: name or URL) and the
+  #     SECOND positional (= refspec). A leading '+' on a refspec positional is a force update (git shorthand).
+  local _seen_pos=0
   for tok in "$@"; do
     case "$tok" in
-      -*) ;;                                  # push flag (-u/--force/--tags/…)
-      +*) ;;                                  # +refspec, not a remote
-      ''|.|..) return 0 ;;                    # ambiguous → bail
-      *[!A-Za-z0-9._-]*) return 0 ;;          # URL / scp-form / path / quote / expansion → bail
-      *) _FAST_REMOTE="$tok"; _FAST_OK=1; return 0 ;;
+      --force|-f|--force-with-lease|--force-with-lease=*|--force-if-includes)
+        _FAST_FORCE=1 ;;
+      -*) ;;                                  # other push flags (-u/--tags/--set-upstream/…)
+      +*)
+        # '+'-prefixed positional = forced refspec. Record the stripped value as a positional.
+        _FAST_FORCE=1
+        tok="${tok#+}"
+        if [ "$_seen_pos" -eq 0 ]; then _FAST_TARGET="$tok"; _seen_pos=1
+        elif [ -z "$_FAST_REFSPEC" ]; then _FAST_REFSPEC="$tok"; fi ;;
+      *)
+        if [ "$_seen_pos" -eq 0 ]; then _FAST_TARGET="$tok"; _seen_pos=1
+        elif [ -z "$_FAST_REFSPEC" ]; then _FAST_REFSPEC="$tok"; fi ;;
     esac
   done
-  return 0                                    # no positional remote = implicit push → bail (no shortcut)
+  # Classify the first positional (the push TARGET).
+  if [ "$_seen_pos" -eq 0 ]; then
+    _FAST_KIND="bare"                         # no positional remote = implicit/bare push
+  else
+    case "$_FAST_TARGET" in
+      ''|.|..)              _FAST_KIND="url" ;;   # ambiguous → treat as non-simple (URL bucket)
+      *[!A-Za-z0-9._-]*)    _FAST_KIND="url" ;;   # contains / : @ etc → URL / scp-form / path
+      *)                    _FAST_KIND="name"; _FAST_REMOTE="$_FAST_TARGET"; _FAST_OK=1 ;;
+    esac
+  fi
+  return 0
 }
-# Builtins-only committed-config forbiddenRemotes membership test (no jq/grep/tr/node).
-_pfg_fast_remote_forbidden() {  # $1 = remote name ; $2 = config JSON text. return 0 = forbidden.
-  local name="$1" json="$2" body item
-  [ -n "$name" ] || return 1
-  local _re='"forbiddenRemotes"[[:space:]]*:[[:space:]]*\[([^]]*)\]'
-  [[ "$json" =~ $_re ]] || return 1
+# ── Builtins-only committed-config readers (no jq/grep/tr/node/sed — zero external process) ───────────────
+# These let the fast-decision path (below) read branch.* WITHOUT the heavy _pfg_branch_field/_pfg_branch_array
+# spawns. They operate on the config JSON TEXT already read via `$(<config)`. The committed forbidden/safe
+# lists are NOT overlayable (see config-overlay allowlist), so reading committed text directly is correct
+# for those; branch.remote/base ARE overlayable, so the fast path reads them with the builtin AND verifies
+# no config.local.json overlay is present (if one exists, it falls through to the heavy overlay-aware path).
+# `_fast_json_array <json> <key>` echoes newline-separated string elements of a top-level-ish "key":[ ... ].
+_fast_json_array() {  # $1 = json text ; $2 = key
+  local json="$1" key="$2" body item out="" _cr=$'\r'
+  local _re="\"$key\"[[:space:]]*:[[:space:]]*\\[([^]]*)\\]"
+  [[ "$json" =~ $_re ]] || { return 0; }
   body="${BASH_REMATCH[1]}"
   local _oldifs="$IFS"; IFS=','; set -f
   # shellcheck disable=SC2086
   set -- $body
   set +f; IFS="$_oldifs"
-  local _cr=$'\r'
   for item in "$@"; do
-    item="${item#"${item%%[![:space:]]*}"}"     # ltrim whitespace
-    item="${item%"${item##*[![:space:]]}"}"     # rtrim whitespace
-    item="${item%$_cr}"                          # strip a trailing CR (CRLF config; jq used `tr -d`)
-    item="${item#\"}"; item="${item%\"}"          # strip surrounding double-quotes
-    [ "$item" = "$name" ] && return 0
+    item="${item#"${item%%[![:space:]]*}"}"; item="${item%"${item##*[![:space:]]}"}"
+    item="${item%$_cr}"; item="${item#\"}"; item="${item%\"}"
+    [ -n "$item" ] && out="${out}${item}"$'\n'
   done
+  printf '%s' "$out"
+}
+# `_fast_json_scalar <json> <key>` echoes a top-level-ish "key":"value" string scalar (no nesting parse).
+_fast_json_scalar() {  # $1 = json text ; $2 = key
+  local json="$1" key="$2" _cr=$'\r' v
+  local _re="\"$key\"[[:space:]]*:[[:space:]]*\"([^\"]*)\""
+  [[ "$json" =~ $_re ]] || { return 0; }
+  v="${BASH_REMATCH[1]}"; v="${v%$_cr}"; printf '%s' "$v"
+}
+# `_fast_in_list <needle> <newline-list>` — exact-match membership (no regex specials).
+_fast_in_list() {  # $1 = needle ; $2 = newline-separated list
+  local needle="$1" line; [ -n "$needle" ] || return 1
+  while IFS= read -r line; do [ -z "$line" ] && continue; [ "$line" = "$needle" ] && return 0; done <<< "$2"
+  return 1
+}
+# `_fast_url_to_slug <url-or-name>` — builtins-only owner/repo extraction (mirrors _pfg_url_to_slug's sed).
+_fast_url_to_slug() {  # $1 = url or scp-form or path
+  local s="$1"
+  case "$s" in
+    git@*:*) s="${s#git@}"; s="${s#*:}" ;;          # git@host:owner/repo(.git) → owner/repo(.git)
+    *://*)   s="${s#*://}"; s="${s#*/}" ;;          # scheme://host/owner/repo(.git) → owner/repo(.git)
+  esac
+  s="${s%.git}"
+  while [ "${s#/}" != "$s" ]; do s="${s#/}"; done    # strip leading slashes
+  printf '%s' "$s"
+}
+# `_fast_looks_prod <slug-or-url> <extra-newline-patterns>` — builtins-only segment-boundary prod match.
+# Mirrors _pfg_remote_looks_prod EXACTLY: same built-in token set, same segment rule (a token must appear
+# bounded by start-of-string / end-of-string / one of  / . - _ :  ), case-insensitive. Implemented with
+# bash's own `[[ =~ ]]` regex engine (NO grep spawn) using the identical ERE the heavy path feeds to grep.
+_FAST_PROD_TOKENS="prod production prd release live legacy"
+_fast_looks_prod() {  # $1 = haystack ; $2 = extra patterns (newline)
+  local hay="$1" extra="${2:-}" tok lc
+  [ -n "$hay" ] || return 1
+  lc="${hay,,}"   # bash builtin lowercase (>=4.0); no tr spawn
+  for tok in $_FAST_PROD_TOKENS; do
+    [[ "$lc" =~ (^|[/._:-])${tok}([/._:-]|$) ]] && return 0
+  done
+  if [ -n "$extra" ]; then
+    while IFS= read -r tok; do
+      [ -z "$tok" ] && continue
+      tok="${tok,,}"
+      [[ "$lc" =~ (^|[/._:-])${tok}([/._:-]|$) ]] && return 0
+    done <<< "$extra"
+  fi
+  return 1
+}
+# Builtins-only committed-config forbiddenRemotes membership test (no jq/grep/tr/node).
+_pfg_fast_remote_forbidden() {  # $1 = remote name ; $2 = config JSON text. return 0 = forbidden.
+  local name="$1" json="$2"
+  [ -n "$name" ] || return 1
+  _fast_in_list "$name" "$(_fast_json_array "$json" forbiddenRemotes)" && return 0
   return 1
 }
 _pfg_fast_parse_remote "$COMMAND"
-if [ "$_FAST_OK" = 1 ] && [ -n "$_FAST_REMOTE" ]; then
-  _pfg_stage "fast0:parsed-remote=$_FAST_REMOTE"
-  # Pure-shell upward FS walk from $PWD for committed .preflight/config.json — NO git rev-parse (the
-  # shortcut only fires with a git-program first token, so the git command runs in $PWD). Bounded <=64.
-  _FAST_CFG=""; _fast_dir="$PWD"; _fast_n=0
+# Resolve + read committed config ONCE (builtins; reused by the forbidden-name block AND the full
+# fast-decision block below). Pure-shell upward FS walk from $PWD — NO git rev-parse. Bounded <=64.
+_FAST_CFG=""; _FAST_CFG_TEXT=""; _FAST_CFG_DIR=""
+if [ "$_FAST_PARSED" = 1 ]; then
+  _fast_dir="$PWD"; _fast_n=0
   while [ -n "$_fast_dir" ] && [ "$_fast_n" -lt 64 ]; do
-    if [ -f "$_fast_dir/.preflight/config.json" ]; then _FAST_CFG="$_fast_dir/.preflight/config.json"; break; fi
+    if [ -f "$_fast_dir/.preflight/config.json" ]; then _FAST_CFG="$_fast_dir/.preflight/config.json"; _FAST_CFG_DIR="$_fast_dir"; break; fi
     case "$_fast_dir" in */*) _fast_dir="${_fast_dir%/*}"; [ -z "$_fast_dir" ] && _fast_dir="/" ;; *) break ;; esac
-    [ "$_fast_dir" = "/" ] && { [ -f "/.preflight/config.json" ] && _FAST_CFG="/.preflight/config.json"; break; }
+    [ "$_fast_dir" = "/" ] && { [ -f "/.preflight/config.json" ] && { _FAST_CFG="/.preflight/config.json"; _FAST_CFG_DIR="/"; }; break; }
     _fast_n=$((_fast_n+1))
   done
-  _pfg_stage "fast0:config-resolved(no-git)"
   if [ -n "$_FAST_CFG" ]; then
-    _FAST_CFG_TEXT=""
     # `$(<file)` is a BASH BUILTIN read (no `cat` spawn) — confirmed spawn-free on this host.
     _FAST_CFG_TEXT="$(<"$_FAST_CFG")" 2>/dev/null || _FAST_CFG_TEXT=""
+  fi
+fi
+# ── forbidden-remote NAME fast block (the proven Part-1 path; unchanged behavior) ──
+if [ "$_FAST_OK" = 1 ] && [ -n "$_FAST_REMOTE" ]; then
+  _pfg_stage "fast0:parsed-remote=$_FAST_REMOTE"
+  _pfg_stage "fast0:config-resolved(no-git)"
+  if [ -n "$_FAST_CFG_TEXT" ]; then
     _pfg_stage "fast0:config-read(no-spawn)"
-    if [ -n "$_FAST_CFG_TEXT" ] && _pfg_fast_remote_forbidden "$_FAST_REMOTE" "$_FAST_CFG_TEXT"; then
+    if _pfg_fast_remote_forbidden "$_FAST_REMOTE" "$_FAST_CFG_TEXT"; then
       _pfg_stage "fast0:FORBIDDEN-decision"
       _fast_emit_forbidden "$_FAST_REMOTE"
     fi
   fi
-  # Not forbidden (or config unreadable) → fall through to the full path unchanged. NEVER allow from here.
+  # Not forbidden (or config unreadable) → continues to the FULL fast-decision block below.
+fi
+
+# ── (FAST-DECISION) builtins-first COMPLETE tier decision (Gate-4 spawn-budget fix) ──────────────────────
+# THE PROBLEM (proven): the heavy structural+policy pipeline makes ~45 external spawns per push decision;
+# on this slow-spawn host (~1s/spawn) that exceeds the router's 23s candidate deadline, so EVERY non-fast
+# push (permitted/protected/bare/wrong-remote/URL) timed out — generic-timeout block, not a policy decision
+# (mission principles 3, 5, 6). fast0 only short-circuited the FORBIDDEN-NAME case.
+#
+# THE FIX: render the SAME tier verdict the heavy path would (AUTO-allow / CONFIRM-ask / BLOCK), here,
+# using bash BUILTINS + the already-read committed config + AT MOST one bounded `git remote get-url` (the
+# configured-remote slug, only when needed) + the existing bounded evidence gate (AUTO path only). The
+# verdict CLASSES and diagnostics are identical to the heavy path (oracle-matched test). It can ONLY
+# block a forbidden op, ask a consequential op, or allow a fully-safe evidence-fresh op — NEVER turn a
+# heavy BLOCK/ASK into a silent allow.
+#
+# CONSERVATISM — engages ONLY when ALL hold; otherwise falls through 100% to the UNCHANGED heavy pipeline:
+#   • the command CLEANLY parsed as a single git…push (_FAST_PARSED=1; no indirection / unknown global opt),
+#   • committed .preflight/config.json was found + read (_FAST_CFG_TEXT non-empty),
+#   • NO config.local.json overlay sits beside it (branch.remote/base are overlayable — if an overlay file
+#     exists, defer to the heavy overlay-aware path so a per-clone topology correction is honored),
+#   • push-gating is opted in (committed branch.remote is set — matches the heavy path's `-n "$REMOTE"` gate;
+#     absent → additive-guard INERT, fall through),
+#   • the target's verdict does not require resolving a NAMED remote's URL beyond one bounded git call.
+if [ "$_FAST_PARSED" = 1 ] && [ -n "$_FAST_CFG_TEXT" ] && [ -n "$_FAST_CFG_DIR" ] \
+   && [ ! -f "$_FAST_CFG_DIR/.preflight/config.local.json" ]; then
+  _FD_REMOTE_CFG="$(_fast_json_scalar "$_FAST_CFG_TEXT" remote)"
+  _FD_BASE="$(_fast_json_scalar "$_FAST_CFG_TEXT" base)"
+  if [ -n "$_FD_REMOTE_CFG" ]; then     # push-gating opted in (mirror heavy path's REMOTE gate)
+    _FD_FREPOS="$(_fast_json_array "$_FAST_CFG_TEXT" forbiddenRepos)"
+    _FD_PRODP="$(_fast_json_array "$_FAST_CFG_TEXT" prodPatterns)"
+    _FD_SAFE="$(_fast_json_array "$_FAST_CFG_TEXT" safeRemotes)"
+    _FD_PROTECTED="main master"; [ -n "$_FD_BASE" ] && _FD_PROTECTED="$_FD_PROTECTED $_FD_BASE"
+    # target branch: refspec dest after ':', else NOT cheaply knowable with builtins for the bare case →
+    # but bare has no refspec and is handled as its own class below. For name/url with a refspec we use it;
+    # with NO refspec (e.g. `git push poc`) the dest is the current branch — resolve with builtins (HEAD).
+    _FD_TGT=""
+    if [ -n "$_FAST_REFSPEC" ]; then _FD_TGT="${_FAST_REFSPEC##*:}"; fi
+    _pfg_stage "fast-decision:enter(kind=$_FAST_KIND force=$_FAST_FORCE)"
+
+    # Resolve current branch (for protected-branch checks when no explicit refspec dest) using BUILTINS:
+    # read .git (gitdir-file aware) → HEAD → branch. A single bounded `git` fallback only if ambiguous.
+    _fd_cur_branch() {
+      local gd="$PWD/.git" head ref
+      # .git may be a gitdir-pointer FILE (linked worktree) — follow it.
+      if [ -f "$gd" ]; then
+        local p; p="$(<"$gd")" 2>/dev/null; p="${p#gitdir: }"; p="${p%$'\r'}"; gd="$p"
+      elif [ ! -d "$gd" ]; then gd="" ; fi
+      [ -n "$gd" ] && [ -f "$gd/HEAD" ] || { printf '%s' ""; return; }
+      head="$(<"$gd/HEAD")" 2>/dev/null; head="${head%$'\r'}"
+      case "$head" in
+        "ref: refs/heads/"*) printf '%s' "${head#ref: refs/heads/}" ;;   # on a branch — name only
+        *) printf '%s' "" ;;                                               # detached → unknown (defer)
+      esac
+    }
+    # Resolve the current branch for the protected-branch checks when there is no explicit refspec dest.
+    # Needed for: named/url pushes with no refspec (push lands on current branch), AND a BARE push that is
+    # a FORCE (force-to-protected must hard-block even with no positional remote — git would push the
+    # current branch to its upstream). A bare NON-force push doesn't need it (it CONFIRMs regardless).
+    if [ -z "$_FD_TGT" ] && { [ "$_FAST_KIND" != "bare" ] || [ "$_FAST_FORCE" = 1 ]; }; then
+      _FD_TGT="$(_fd_cur_branch)"
+      # If builtin HEAD resolution failed (detached / packed / odd worktree), do ONE bounded git call.
+      if [ -z "$_FD_TGT" ]; then
+        _FD_TGT="$(_pfg_git -C "$PWD" rev-parse --abbrev-ref HEAD 2>/dev/null | tr -d '\r' || true)"
+        [ "$_FD_TGT" = "HEAD" ] && _FD_TGT=""   # still detached → unknown; protected-check will be skipped
+      fi
+    fi
+    _fd_is_protected() { local b="$1" pb; [ -n "$b" ] || return 1; for pb in $_FD_PROTECTED; do [ "$b" = "$pb" ] && return 0; done; return 1; }
+
+    case "$_FAST_KIND" in
+      # ── (1) FORCE-PUSH to a protected branch → HARD BLOCK (exit 2), identical to heavy path (A). ──
+      *)
+        if [ "$_FAST_FORCE" = 1 ] && _fd_is_protected "$_FD_TGT"; then
+          _pfg_stage "fast-decision:BLOCK-force-protected"
+          echo "BLOCKED: force-push (--force/-f/--force-with-lease) to protected branch '$_FD_TGT'." >&2
+          echo "  Shared branches must never be force-pushed — even --force-with-lease rewrites shared history." >&2
+          echo "  (Agent Bash-tool guard only; not server-side protection — see docs/parity-gate-limitations.md.)" >&2
+          exit 2
+        fi ;;
+    esac
+
+    if [ "$_FAST_KIND" = "name" ]; then
+      if [ "$_FAST_REMOTE" != "$_FD_REMOTE_CFG" ]; then
+        # ── (4) named remote ≠ configured remote → CONFIRM (wrong-remote). ──
+        _fast_emit_confirm "Push targets remote '$_FAST_REMOTE', not the configured remote '$_FD_REMOTE_CFG' (config.branch.remote). On an inverted clone the named remote may be a legacy production repo. Confirm this is the intended target. (Agent Bash-tool guard only; not server-side protection.)"
+      else
+        # ── (5) named remote == configured remote: resolve its slug for forbiddenRepos/prod/safelist. ──
+        # ONE bounded `git remote get-url` (the only spawn on this path). If it wedges → fall through to heavy.
+        _FD_URL="$(_pfg_git -C "$PWD" remote get-url "$_FAST_REMOTE" 2>/dev/null | tr -d '\r' || true)"
+        if [ -f "$_PFG_WEDGE_FLAG" ]; then : ;   # a wedge → do NOT decide here; fall to heavy path
+        else
+          _FD_SLUG=""; [ -n "$_FD_URL" ] && _FD_SLUG="$(_fast_url_to_slug "$_FD_URL")"
+          _FD_PROBE="${_FD_SLUG:-${_FD_URL:-$_FAST_REMOTE}}"
+          if [ -n "$_FD_SLUG" ] && _fast_repo_forbidden "$_FD_SLUG" "$_FD_FREPOS"; then
+            # forbiddenRepos is an EXPLICIT denylist → HARD BLOCK (exit 2), matching the heavy path's B0
+            # check (which fires before the GAP-A prod CONFIRM). A denylisted slug is never merely-confirm.
+            _pfg_stage "fast-decision:BLOCK-forbiddenRepos-slug"
+            _fast_emit_forbidden_repo "$_FAST_REMOTE" "$_FD_SLUG"
+          elif _fast_looks_prod "$_FD_PROBE" "$_FD_PRODP"; then
+            _fast_emit_confirm "Push targets '$_FAST_REMOTE' (→ ${_FD_PROBE}), which matches a PRODUCTION-name pattern (prod/production/release/live/legacy/…). Even though it is the configured remote, a push to a prod-looking target must be a deliberate human confirmation, never silent. If this remote is actually safe, add it to config.branch.safeRemotes (or confirm to proceed). (Heuristic name match — agent Bash-tool guard only; not server-side protection.)"
+          elif [ -n "$_FD_SAFE" ] && ! { _fast_in_list "$_FAST_REMOTE" "$_FD_SAFE" || { [ -n "$_FD_SLUG" ] && _fast_slug_on_safelist "$_FD_SLUG" "$_FD_SAFE"; }; }; then
+            _fast_emit_confirm "Push targets '$_FAST_REMOTE' (→ ${_FD_PROBE}), which is NOT on config.branch.safeRemotes (strict-mode allowlist is enabled). AUTO is restricted to explicitly-blessed remotes; confirm this push, or add the remote to safeRemotes. (Agent Bash-tool guard only; not server-side protection.)"
+          elif _fd_is_protected "$_FD_TGT"; then
+            # ── (7) configured safe remote but PROTECTED target branch → CONFIRM. ──
+            _fast_emit_confirm "Push lands on PROTECTED branch '$_FD_TGT' (a shared/integration branch). Confirm this is intended — safe topic-branch pushes proceed automatically, but a push to a protected branch is consequential. (Agent Bash-tool guard only; not server-side protection.)"
+          else
+            # ── (8) AUTO candidate: configured safe remote, unprotected branch, non-force. Run the
+            #        existing evidence gate (REQUIRED for AUTO; it is bounded). Fresh → allow; else its block.
+            _pfg_stage "fast-decision:AUTO-evidence-gate"
+            _fast_run_evidence_then_allow
+          fi
+        fi
+      fi
+    elif [ "$_FAST_KIND" = "bare" ]; then
+      # ── (6) bare `git push` (no named remote) → CONFIRM (unvalidatable target). ──
+      _fast_emit_confirm "Bare 'git push' with no named remote — the target is UNVALIDATABLE (git's default/upstream remote, which the guard cannot see, may be the legacy production repo). Name the remote explicitly so it is checked, or confirm this push is intended. (Agent Bash-tool guard only; not server-side protection.)"
+    elif [ "$_FAST_KIND" = "url" ]; then
+      # ── (3) URL/scp/path target → resolve slug with BUILTINS (no git). forbiddenRepos → BLOCK; else
+      #        it is by definition NOT the configured NAMED remote → CONFIRM (wrong-remote). ──
+      _FD_SLUG="$(_fast_url_to_slug "$_FAST_TARGET")"
+      if [ -n "$_FD_SLUG" ] && _fast_repo_forbidden "$_FD_SLUG" "$_FD_FREPOS"; then
+        _pfg_stage "fast-decision:BLOCK-url-forbiddenRepos"
+        echo "BLOCKED: push targets a FORBIDDEN destination '$_FAST_TARGET' (config.branch.forbiddenRemotes/forbiddenRepos)." >&2
+        echo "  This remote is explicitly off-limits (e.g. a legacy production repo). Do NOT retarget automatically —" >&2
+        echo "  surface to a human; see docs/parity-gate-limitations.md." >&2
+        echo "  (Agent Bash-tool guard only; not server-side protection.)" >&2
+        exit 2
+      else
+        _fast_emit_confirm "Push targets remote '$_FAST_TARGET', not the configured remote '$_FD_REMOTE_CFG' (config.branch.remote). On an inverted clone the named remote may be a legacy production repo. Confirm this is the intended target. (Agent Bash-tool guard only; not server-side protection.)"
+      fi
+    fi
+    # If we reach here, the fast-decision path declined (e.g. a wedge during get-url) → heavy path decides.
+  fi
+fi
+
+# ── (FAST-PR) builtins-first `gh pr create` decision (spawn-budget fix) ──────────────────────────────────
+# The heavy pr-create guard (#3a) runs AFTER the continuation-normalize + full structural parser + several
+# config/git spawns — so on this host a `gh pr create` candidate timed out (~27s) exactly like pushes did.
+# Render the SAME verdict here with builtins + AT MOST one bounded `git remote get-url` (canonical slug),
+# only when needed. CONSERVATIVE: engages only for a clearly-shaped leading `gh pr create` with committed
+# config + no overlay; anything else falls through to the unchanged heavy #3a guard.
+# Verdict classes (identical to #3a): explicit/default target slug on forbiddenRepos → BLOCK; target slug
+# != canonical slug → BLOCK (non-canonical); else → ALLOW (gh pr create is not a push; nothing more to gate).
+if printf '%s' "$COMMAND" | grep -qE '(^|&&|\|\||;|")[[:space:]]*gh[[:space:]]+pr[[:space:]]+create'; then
+  _pfg_stage "fast-pr:enter"
+  # Resolve+read committed config with builtins (reuse the FS-walk result if the push parse already did it).
+  if [ -z "$_FAST_CFG" ]; then
+    _fast_dir="$PWD"; _fast_n=0
+    while [ -n "$_fast_dir" ] && [ "$_fast_n" -lt 64 ]; do
+      if [ -f "$_fast_dir/.preflight/config.json" ]; then _FAST_CFG="$_fast_dir/.preflight/config.json"; _FAST_CFG_DIR="$_fast_dir"; break; fi
+      case "$_fast_dir" in */*) _fast_dir="${_fast_dir%/*}"; [ -z "$_fast_dir" ] && _fast_dir="/" ;; *) break ;; esac
+      [ "$_fast_dir" = "/" ] && { [ -f "/.preflight/config.json" ] && { _FAST_CFG="/.preflight/config.json"; _FAST_CFG_DIR="/"; }; break; }
+      _fast_n=$((_fast_n+1))
+    done
+    [ -n "$_FAST_CFG" ] && { _FAST_CFG_TEXT="$(<"$_FAST_CFG")" 2>/dev/null || _FAST_CFG_TEXT=""; }
+  fi
+  if [ -n "$_FAST_CFG_TEXT" ] && [ -n "$_FAST_CFG_DIR" ] && [ ! -f "$_FAST_CFG_DIR/.preflight/config.local.json" ]; then
+    # Extract the pr-create segment + an explicit --repo (builtins-only token walk, no grep/sed spawn).
+    _FP_REPO_ARG=""
+    _fp_oldifs="$IFS"; set -f
+    # shellcheck disable=SC2086
+    set -- $COMMAND
+    set +f; IFS="$_fp_oldifs"
+    while [ "$#" -gt 0 ]; do
+      case "$1" in
+        --repo=*) _FP_REPO_ARG="${1#--repo=}"; break ;;
+        --repo)   shift; _FP_REPO_ARG="${1:-}"; break ;;
+        *) shift ;;
+      esac
+    done
+    _FP_FREPOS="$(_fast_json_array "$_FAST_CFG_TEXT" forbiddenRepos)"
+    _FP_CANON_REMOTE="$(_fast_json_scalar "$_FAST_CFG_TEXT" remote)"
+    _FP_TARGET_SLUG=""; _FP_RESOLVED=1
+    if [ -n "$_FP_REPO_ARG" ]; then
+      _FP_TARGET_SLUG="$(_fast_url_to_slug "$_FP_REPO_ARG")"     # explicit --repo → builtins, no git
+    else
+      # no --repo → gh resolves the cwd default remote (origin). ONE bounded git call.
+      _FP_DEF_URL="$(_pfg_git -C "$PWD" remote get-url origin 2>/dev/null | tr -d '\r' || true)"
+      if [ -f "$_PFG_WEDGE_FLAG" ]; then _FP_RESOLVED=0; fi
+      [ -n "$_FP_DEF_URL" ] && _FP_TARGET_SLUG="$(_fast_url_to_slug "$_FP_DEF_URL")"
+    fi
+    # canonical slug from configured remote (ONE bounded git call; only if we have a configured remote).
+    _FP_CANON_SLUG=""
+    if [ "$_FP_RESOLVED" = 1 ] && [ -n "$_FP_CANON_REMOTE" ]; then
+      _FP_CANON_URL="$(_pfg_git -C "$PWD" remote get-url "$_FP_CANON_REMOTE" 2>/dev/null | tr -d '\r' || true)"
+      if [ -f "$_PFG_WEDGE_FLAG" ]; then _FP_RESOLVED=0; fi
+      [ -n "$_FP_CANON_URL" ] && _FP_CANON_SLUG="$(_fast_url_to_slug "$_FP_CANON_URL")"
+    fi
+    if [ "$_FP_RESOLVED" = 1 ]; then
+      # (0) forbiddenRepos → BLOCK
+      if [ -n "$_FP_TARGET_SLUG" ] && _fast_repo_forbidden "$_FP_TARGET_SLUG" "$_FP_FREPOS"; then
+        _pfg_stage "fast-pr:BLOCK-forbiddenRepos"
+        echo "BLOCKED: 'gh pr create' targets a FORBIDDEN repo '$_FP_TARGET_SLUG' (config.branch.forbiddenRepos)." >&2
+        echo "  This destination is explicitly off-limits (e.g. a legacy production repo). Do NOT retarget automatically —" >&2
+        echo "  surface to a human; see docs/parity-gate-limitations.md." >&2
+        echo "  (Agent Bash-tool guard only; not server-side protection.)" >&2
+        exit 2
+      fi
+      # (1) non-canonical → BLOCK
+      if [ -n "$_FP_CANON_SLUG" ] && [ -n "$_FP_TARGET_SLUG" ] && [ "$_FP_TARGET_SLUG" != "$_FP_CANON_SLUG" ]; then
+        _pfg_stage "fast-pr:BLOCK-non-canonical"
+        if [ -n "$_FP_REPO_ARG" ]; then
+          echo "BLOCKED: 'gh pr create --repo $_FP_REPO_ARG' targets a non-canonical repo (expected the configured target from config.branch.remote)." >&2
+          echo "  On migration clones the wrong repo is often the legacy production repo. Do NOT assume the configured remote is safe —" >&2
+          echo "  if the configured remote is itself wrong, surface to a human; see docs/parity-gate-limitations.md." >&2
+        else
+          echo "BLOCKED: 'gh pr create' has no --repo; it would resolve to '$_FP_TARGET_SLUG' (cwd default remote), not the configured target." >&2
+          echo "  On migration clones the default 'origin' is often the legacy production repo. Confirm the intended repo with a human" >&2
+          echo "  before retrying; see docs/parity-gate-limitations.md." >&2
+        fi
+        echo "  (Agent Bash-tool guard only; not server-side protection — see docs/parity-gate-limitations.md.)" >&2
+        exit 2
+      fi
+      # canonical / not-forbidden / fail-open → ALLOW (gh pr create is not a push; nothing more to gate).
+      _pfg_stage "fast-pr:ALLOW"
+      exit 0
+    fi
+    # _FP_RESOLVED=0 (a get-url wedge) → fall through to the heavy #3a guard (which fails closed on wedge).
+  fi
 fi
 _pfg_stage "fast0-done"
 
@@ -332,9 +712,10 @@ _TRIP_SENT='\.preflight[/\\]+gate[/\\]+(bootstrap-write-approved|parity-clean)'
 _TRIP_PRE='(^|[;&|([:space:]`])'
 _trip_block() {
   echo "BLOCKED: agent must not mint gate-clearance evidence ($1)." >&2
-  echo "  Bootstrap approval and parity-clean are HUMAN-ONLY — do not create, copy, or edit these" >&2
-  echo "  sentinel files from the agent. Surface to a human, who runs the approval/clearance step" >&2
-  echo "  from their own shell. See docs/parity-gate-limitations.md." >&2
+  echo "  Bootstrap approval and parity-clean are HUMAN-ONLY governance evidence — by design they are created" >&2
+  echo "  by a human reviewer performing the approval/clearance step, never synthesized by the agent. Surface" >&2
+  echo "  the request to a human reviewer for that decision. (This is human-only CLEARANCE evidence, not an" >&2
+  echo "  operation the agent may route around.) See docs/parity-gate-limitations.md." >&2
   echo "  (HEURISTIC agent Bash-tool tripwire only — not server-side protection.)" >&2
   exit 2
 }
@@ -635,20 +1016,7 @@ _pfg_url_to_slug() {
   printf '%s' "$1" | sed -E 's#^git@[^:]+:#https://x/#; s#^https?://[^/]+/##; s#\.git$##' | sed -E 's#^/+##'
 }
 
-# Emit stdin as a JSON string LITERAL (surrounding quotes + escaped) for the permissionDecisionReason
-# value. jq is UTF-8-safe; node is the fallback; a last-ditch sed escapes the JSON-critical chars so the
-# stdout JSON never breaks (a malformed permissionDecision payload would be ignored by the platform →
-# fail-open to normal permission flow, which for a CONFIRM case is acceptable, but we escape properly).
-_pfg_json_string() {
-  if command -v jq &>/dev/null; then
-    jq -Rs . 2>/dev/null && return 0
-  fi
-  if command -v node &>/dev/null; then
-    node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>process.stdout.write(JSON.stringify(d.replace(/\n+$/,''))))" 2>/dev/null && return 0
-  fi
-  # Fallback: escape backslash, double-quote, CR, tab, and newline; wrap in quotes.
-  printf '"%s"' "$(sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/\r//g' -e 's/\t/ /g' | tr '\n' ' ')"
-}
+# (_pfg_json_string is defined earlier — hoisted above the fast-decision block, which uses it.)
 
 # ── Forbidden-destination denylist (A1 fix) ───────────────────────────────────
 # The two guards below historically derived their SINGLE notion of "safe target"

@@ -1185,6 +1185,19 @@ run_behavioral_tests() {
     yellow "SKIP: pre-push-builtins-fastpath-test.sh not found"
   fi
 
+  # ── Gate-4 spawn-budget (mission Phase 3) — builtins-first COMPLETE tier decision oracle-match ──
+  local fast_decision_test="$SCRIPT_DIR/behavioral/pre-push-fast-decision-test.sh"
+  if [ -f "$fast_decision_test" ]; then
+    if bash "$fast_decision_test"; then
+      PASSES=$((PASSES + 17))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: pre-push-fast-decision tests failed (every governed push/pr-create candidate — permitted/protected/bare/wrong-remote/URL/force/pr-create — must reach an explicit policy decision (BLOCK/ASK/ALLOW) that MATCHES the heavy-path verdict, WITHOUT a candidate-deadline timeout and WITHOUT recommending a human-shell bypass; a config.local.json overlay must safely defer to the heavy overlay-aware path, never silent-allow)"
+    fi
+  else
+    yellow "SKIP: pre-push-fast-decision-test.sh not found"
+  fi
+
   local gapa_test="$SCRIPT_DIR/behavioral/pre-push-gapa-prod-pattern-test.sh"
   if [ -f "$gapa_test" ]; then
     if bash "$gapa_test"; then
