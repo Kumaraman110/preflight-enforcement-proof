@@ -122,10 +122,15 @@ eng=$(nlines "$ENGINE_WITNESS")
 # With every git/jq spawn delayed +${PFG_SPAWN_DELAY}s and a 3s candidate deadline, the engine cannot finish
 # → router BLOCKs THIS candidate (exit 2), naming the deadline.
 run_router "$(mkjson "git push poc HEAD:feature/topic")" 3
-if [ "$RC" -eq 2 ] && grep -qi 'did not reach a decision' "$T/.e"; then
-  ok "4: a candidate whose engine times out at the 3s deadline → BLOCK (exit 2), scoped to that candidate"
+# The router's candidate-timeout diagnostic now states ENGINE FAILURE (not a policy approval) and names the
+# deadline; match the new wording (flatten newlines — the message wraps) and require NO human-shell steering.
+_e4="$(tr '\n' ' ' < "$T/.e" 2>/dev/null)"
+if [ "$RC" -eq 2 ] \
+   && printf '%s' "$_e4" | grep -aqiE 'FAILED to reach a policy decision within its' \
+   && ! printf '%s' "$_e4" | grep -aqiE 'from a human shell|push from a human'; then
+  ok "4: a candidate whose engine times out at the 3s deadline → BLOCK (exit 2), engine-failure-not-approval message, no human-shell steering"
 else
-  bad "4: timed-out candidate should BLOCK(2) with a deadline message, got RC=$RC msg='$(head -1 "$T/.e")'"
+  bad "4: timed-out candidate should BLOCK(2) with the engine-failure deadline message (no human-shell steering), got RC=$RC msg='$(head -1 "$T/.e")'"
 fi
 
 # ── 5: the NEXT ordinary command succeeds IMMEDIATELY after a candidate timeout ───────────────────────────
