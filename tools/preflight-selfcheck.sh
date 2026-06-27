@@ -130,19 +130,24 @@ echo ""
 
 # ══ 1. pre-push-gate-check ════════════════════════════════════════════════════
 # Workspace: a git repo (init only — no commits needed; `git init` anchors
-# `git rev-parse --show-toplevel` to THIS dir so the hook's config resolution
-# (:72-79) cannot accidentally walk up to an enclosing repo) with
-# .preflight/config.json setting branch.remote=origin.
-# BLOCK: `git push evil ...` — named remote 'evil' != configured 'origin'
-#        → wrong-remote guard fires (hooks/pre-push-gate-check:311-317).
-# ALLOW: `ls` — neither a push nor a pr-create → immediate exit 0 (:225-227),
-#        never reaching the evidence-gate exec (:341).
+# `git rev-parse --show-toplevel` to THIS dir so config resolution cannot walk up
+# to an enclosing repo) with .preflight/config.json setting branch.remote=poc and
+# branch.forbiddenRemotes=[origin].
+# BLOCK: `git push origin ...` — 'origin' is on branch.forbiddenRemotes → an
+#        UNAMBIGUOUS hard BLOCK (exit 2). NOTE: a wrong-remote NAME that is merely
+#        != the configured remote is now a CONFIRM/ask (a human may deliberately
+#        push elsewhere), NOT a hard block — so the liveness probe uses a FORBIDDEN
+#        remote, whose builtins-fast-path exit-2 block is the gate's unambiguous
+#        fail-closed signal and does not depend on the sibling evidence gate being
+#        runnable in this bare probe workspace.
+# ALLOW: `ls` — neither a push nor a pr-create → immediate exit 0, never reaching
+#        the evidence gate.
 PP_WS="$WORK/prepush"
 mkdir -p "$PP_WS/.preflight"
 git init -q "$PP_WS" >/dev/null 2>&1 || true
-printf '%s\n' '{ "branch": { "base": "main", "remote": "origin" } }' > "$PP_WS/.preflight/config.json"
+printf '%s\n' '{ "branch": { "base": "main", "remote": "poc", "forbiddenRemotes": ["origin"] } }' > "$PP_WS/.preflight/config.json"
 check_gate "pre-push-gate-check" \
-  "$PP_WS" '{"tool_name":"Bash","tool_input":{"command":"git push evil HEAD:feature/work"}}' \
+  "$PP_WS" '{"tool_name":"Bash","tool_input":{"command":"git push origin HEAD:feature/work"}}' \
   "$PP_WS" '{"tool_name":"Bash","tool_input":{"command":"ls"}}'
 
 # ══ 2. bootstrap-write-gate ═══════════════════════════════════════════════════
