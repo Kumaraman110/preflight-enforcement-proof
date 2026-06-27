@@ -687,6 +687,281 @@ if printf '%s' "$COMMAND" | grep -qE '(^|&&|\|\||;|")[[:space:]]*gh[[:space:]]+p
 fi
 _pfg_stage "fast0-done"
 
+# ── (SCRIPT-WRAPPER INSPECTION) governed ops hidden inside a local script (mission Phase 4) ──────────────
+# SECURITY GAP this closes: `bash /tmp/x.sh` (or sh/dash/zsh/source/.) hides any governed operation —
+# `git push origin …`, `gh pr create`, a sentinel mint — INSIDE the file, invisible to the raw-command
+# globs. The router now routes such shapes here; this stage READS the script's contents (BUILTINS ONLY —
+# never executes, sources, or evals it), runs each logical line through the SAME policy detectors used for
+# direct commands, and decides:
+#   FORBIDDEN  → exit 2, naming the underlying operation + target (e.g. forbidden `git push origin`).
+#   SAFE       → emit an explicit allow (+ a TOCTOU snapshot via updatedInput where the platform honors it,
+#                so the inspected bytes are what execute) ONLY when EVERY line is on the narrow read-only
+#                allowlist. This keeps a genuinely-safe script frictionless in bypassPermissions.
+#   ASK        → permissionDecision:ask with a content-derived reason (local mutation, or a consequential
+#                governed op the heavy push path would itself CONFIRM).
+#   OPAQUE     → fail-CLOSED ask: contents could not be safely resolved (eval / command-substitution /
+#                heredoc / function / loop / conditional / subshell / variable-built command / decode-exec /
+#                nested-beyond-bound / oversize / unreadable / binary). NEVER a silent allow; the reason
+#                instructs expanding the wrapper into directly-inspectable commands (no human-shell steering).
+# CONSERVATISM: engages only for a confidently-shaped leading local-script execution with a READABLE regular
+# file under the byte/nesting bounds; anything else (no resolvable readable script, or a wedge) falls
+# through to the normal non-push exit (the command was not a governed direct op). It can never wrongly BLOCK
+# an ordinary command, and never silent-allows an unresolved/forbidden script.
+# HONESTY (CLAUDE.md rule 3): this is a LEXICAL, agent-Bash-tool-only analyzer. Determined obfuscation hits
+# the OPAQUE fail-closed path, not a precise block — it raises the bar; the mechanical ceiling is still
+# server-side. The auto-allow SAFE path's TOCTOU protection depends on the platform honoring updatedInput;
+# where that is unconfirmed, the snapshot is still emitted (no worse than today if ignored).
+_SW_MAXBYTES="${PREFLIGHT_SCRIPT_MAX_BYTES:-65536}"
+_SW_MAXDEPTH="${PREFLIGHT_SCRIPT_MAX_DEPTH:-2}"
+# Detect + resolve the leading local-script path (builtins). Echoes the path, or '' if not a script-exec
+# shape we can resolve. Honors: optional env-prefixes, optional `command`, interpreter (bash/sh/dash/zsh
+# [.exe], or a path ending in one), OR a `source`/`.` inclusion; then the FIRST non-flag token = script path.
+_sw_resolve_script() {  # $1 = command string. Echoes: <resolved path> | '' (NOT a script shape) |
+                        # '__UNRESOLVED__' (IS a script-exec shape but the path could not be resolved →
+                        # caller fails CLOSED to ASK, never silent-allow).
+  local cmd="$1" tok prog
+  # join continuations (builtins).
+  local _cr=$'\r' _lf=$'\n'; cmd="${cmd//$'\\'"$_cr$_lf"/ }"; cmd="${cmd//$'\\'"$_lf"/ }"
+  local _oldifs="$IFS"; set -f; set -- $cmd; set +f; IFS="$_oldifs"
+  local cwd="$PWD"
+  # peel a leading `cd DIR &&`/`;` (one level) so a relative script path resolves in the right dir.
+  if [ "${1:-}" = "cd" ] && [ -n "${2:-}" ]; then
+    local d="$2"; d="${d%[\"\']}"; d="${d#[\"\']}"; [ -d "$cwd/$d" ] && cwd="$cwd/$d"; [ -d "$d" ] && cwd="$d"
+    shift 2; while [ "$#" -gt 0 ]; do case "$1" in '&&'|';'|'|') shift; break ;; *) shift ;; esac; done
+  fi
+  while [ "$#" -gt 0 ]; do
+    case "$1" in [A-Za-z_]*=*) shift ;; command) shift ;; *) break ;; esac
+  done
+  [ "$#" -gt 0 ] || { printf ''; return; }
+  prog="$1"
+  case "${prog##*/}" in
+    bash|bash.exe|sh|sh.exe|dash|dash.exe|zsh|zsh.exe) shift ;;   # interpreter → script is next non-flag
+    *) case "$prog" in
+         source|.) shift ;;                                       # source/dot inclusion
+         *) printf ''; return ;;                                  # not a script-exec program → NOT our shape
+       esac ;;
+  esac
+  # From here it is a script-exec shape. Find the first non-flag token after the interpreter = the script
+  # path. `-c <code>` is inline code (not a file) → not our shape. NO positional at all (`bash`,
+  # `bash --version`, `bash -x`) → runs no script file → NOT our shape (return '' → benign).
+  local _had_flag=0
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      -c|-o) printf ''; return ;;   # inline code, not a script file
+      --) shift; break ;;
+      -*) _had_flag=1; shift ;;
+      *) break ;;
+    esac
+  done
+  [ "$#" -gt 0 ] || { printf ''; return; }   # interpreter with only flags / nothing → not a script exec
+  tok="$1"; tok="${tok%[\"\']}"; tok="${tok#[\"\']}"
+  # (a) direct resolution of the (possibly-unquoted) token.
+  if [ -f "$tok" ]; then printf '%s' "$tok"; return; fi
+  if [ -f "$cwd/$tok" ]; then printf '%s' "$cwd/$tok"; return; fi
+  # (b) QUOTED PATH WITH SPACES: the word-split broke `'with space/x.sh'` into pieces. Recover the quoted
+  #     segment from the RAW command via builtin parameter expansion (no eval). If it resolves, use it; if a
+  #     quoted run EXISTS but is unreadable, that is a script we cannot inspect → __UNRESOLVED__ (fail closed).
+  local q=""
+  case "$cmd" in
+    *\'*\'*) q="${cmd#*\'}"; q="${q%%\'*}" ;;          # first single-quoted run
+    *\"*\"*) q="${cmd#*\"}"; q="${q%%\"*}" ;;          # first double-quoted run
+  esac
+  if [ -n "$q" ]; then
+    [ -f "$q" ] && { printf '%s' "$q"; return; }
+    [ -f "$cwd/$q" ] && { printf '%s' "$cwd/$q"; return; }
+    # a quoted path was present but unresolved (e.g. spaces + missing) → we cannot inspect a script that may
+    # exist under odd quoting → fail closed.
+    printf '__UNRESOLVED__'; return
+  fi
+  # An UNQUOTED path token that simply does not exist on disk: this command will fail at runtime with no
+  # script to run — there is no hidden governed op to inspect, and it is not a bypass risk. Treat as benign
+  # (return '') rather than nag. (A REAL hidden-op script must exist to be executed; a nonexistent path
+  # executes nothing.)
+  printf ''
+}
+# Classify ONE logical script line (builtins only). Echoes: SAFE | MUT:<verb> | GITPUSH:<args> |
+# GHPR:<args> | SENTINEL | OPAQUE:<why>. Conservative: anything not understood → OPAQUE.
+_sw_classify_line() {  # $1 = line
+  local line="$1"
+  line="${line#"${line%%[![:space:]]*}"}"           # ltrim
+  case "$line" in ''|'#'*) echo SAFE; return ;; esac
+  # ── dynamic / unresolved constructs → OPAQUE (never silent-allow) ──
+  case "$line" in *'$('*|*'`'*) echo "OPAQUE:command-substitution"; return ;; esac
+  case "$line" in 'eval '*|*' eval '*|*';eval '*) echo "OPAQUE:eval"; return ;; esac
+  case "$line" in *'<<'*) echo "OPAQUE:heredoc"; return ;; esac
+  case "$line" in *'() {'*|*'(){'*|'function '*) echo "OPAQUE:function-def"; return ;; esac
+  case "$line" in 'for '*|'while '*|'until '*|'if '*|'elif '*|'case '*|*'; do'*|*'; then'*|*' do '*) echo "OPAQUE:control-flow"; return ;; esac
+  case "$line" in '('*|*'&& ('*|*'|('*|*'| ('*) echo "OPAQUE:subshell"; return ;; esac
+  case "$line" in *'base64'*'|'*|*'| base64'*|*'xxd '*|*'| bash'*|*'| sh'*|*'|bash'*|*'|sh'*) echo "OPAQUE:decode-or-pipe-to-shell"; return ;; esac
+  # nested local-script execution → caller recurses (depth-bounded).
+  case "$line" in
+    bash\ [!-]*|sh\ [!-]*|dash\ [!-]*|zsh\ [!-]*|'source '[!-]*|'. '[!-]*) echo "NESTED:$line"; return ;;
+  esac
+  # word-split (no glob/expansion) to find the leading program after env/command prefixes.
+  local _oldifs="$IFS"; set -f; set -- $line; set +f; IFS="$_oldifs"
+  while [ "$#" -gt 0 ]; do case "$1" in [A-Za-z_]*=*) shift ;; command) shift ;; *) break ;; esac; done
+  [ "$#" -gt 0 ] || { echo SAFE; return; }
+  local p0="$1"
+  # variable-built command name / governed-arg → OPAQUE.
+  case "$line" in *'git '*'$'*|*'$'*' push'*|*'$'*' pr '*) echo "OPAQUE:variable-built"; return ;; esac
+  # sentinel mint shapes (redirection/write into a protected sentinel path) → SENTINEL (delegates to the
+  # existing tripwire wording downstream is complex; here we just flag it OPAQUE-style ASK via SENTINEL).
+  case "$line" in *.preflight/gate/parity-clean*|*.preflight/gate/bootstrap-write-approved*) echo "SENTINEL"; return ;; esac
+  # git push?
+  case "${p0#\\}" in
+    git|git.exe|*/git|*/git.exe)
+      case " $line " in *' push '*|*' push') echo "GITPUSH:$line"; return ;; esac
+      # non-push git: read-only subset SAFE, else OPAQUE
+      case " $line " in *' status'*|*' diff'*|*' log'*|*' show'*|*' rev-parse'*|*' branch'*|*' remote '*|*' config '*|*' fetch'*) echo SAFE; return ;; esac
+      echo "OPAQUE:git-subcommand"; return ;;
+  esac
+  # gh pr ...?
+  case "$p0" in gh|gh.exe) case " $line " in *' pr '*) echo "GHPR:$line"; return ;; *) echo SAFE; return ;; esac ;; esac
+  # read-only command allowlist → SAFE
+  case "$p0" in echo|printf|true|false|:|ls|cat|head|tail|grep|egrep|fgrep|sort|uniq|wc|pwd|dirname|basename|test|'['|date|sleep|env|export|set|cd|which|type|id|whoami|hostname|uname) echo SAFE; return ;; esac
+  # known LOCAL-MUTATION verbs (no remote) → MUT
+  case "$p0" in rm|mv|cp|touch|mkdir|rmdir|sed|tee|chmod|chown|install|truncate|dd|ln|cat) echo "MUT:$p0"; return ;; esac
+  case "$line" in *' > '*|*' >> '*|*'>'*) echo "MUT:redirect-write"; return ;; esac
+  echo "OPAQUE:unknown-command-${p0}"
+}
+# Inspect a script FILE → echoes "VERDICT|detail". Bounded; never executes/sources. Recurses on NESTED.
+_sw_inspect() {  # $1 = path ; $2 = depth
+  local f="$1" depth="${2:-0}"
+  [ -r "$f" ] || { echo "OPAQUE|unreadable-or-missing"; return; }
+  [ -f "$f" ] || { echo "OPAQUE|not-a-regular-file"; return; }
+  local bytes; bytes="$(wc -c < "$f" 2>/dev/null | tr -d ' ' || echo 999999999)"
+  case "$bytes" in ''|*[!0-9]*) bytes=999999999 ;; esac
+  [ "$bytes" -gt "$_SW_MAXBYTES" ] && { echo "OPAQUE|exceeds-byte-cap(${bytes}>${_SW_MAXBYTES})"; return; }
+  [ "$depth" -gt "$_SW_MAXDEPTH" ] && { echo "OPAQUE|exceeds-nesting-depth"; return; }
+  # binary content? a NUL byte → not a text script we can analyze → fail closed.
+  # binary content? Detect a NUL byte. (Git-Bash `grep`'s NUL byte-class is unreliable, and `$(<f)` silently
+  # truncates at a NUL — so we use a bounded `od` scan: any standalone `00` byte token → binary → fail closed.
+  # Match `00` as a WHOLE space-delimited token (not a substring of e.g. `a0 0b`) to avoid false positives.)
+  if command -v od >/dev/null 2>&1; then
+    if od -An -tx1 "$f" 2>/dev/null | grep -qiwE '00'; then echo "OPAQUE|binary-content"; return; fi
+  fi
+  local content line v worst="SAFE" detail="" mut=0
+  content="$(<"$f")" 2>/dev/null || { echo "OPAQUE|unreadable"; return; }
+  content="${content//$'\\'$'\n'/ }"   # join line-continuations (builtins)
+  while IFS= read -r line || [ -n "$line" ]; do
+    v="$(_sw_classify_line "$line")"
+    case "$v" in
+      SAFE) ;;
+      GITPUSH:*)
+        # Re-use the push policy: a forbidden remote/repo → FORBIDDEN; otherwise a push is consequential → ASK.
+        local pa="${v#GITPUSH:}" rem
+        rem="$(_sw_push_remote "$pa")"
+        if [ -n "$rem" ] && _sw_remote_or_repo_forbidden "$rem"; then
+          echo "FORBIDDEN|script contains \`git push $rem …\`; destination '$rem' is forbidden by committed policy"; return
+        fi
+        worst="ASK"; detail="contains a 'git push' (consequential — target '${rem:-?}')" ;;
+      GHPR:*)
+        worst="ASK"; detail="contains a 'gh pr create' (consequential)" ;;
+      SENTINEL)
+        echo "FORBIDDEN|script mints a HUMAN-ONLY gate-clearance sentinel (parity-clean/bootstrap-write-approved)"; return ;;
+      MUT:*) mut=$((mut+1)); [ "$worst" = SAFE ] && worst="ASK"; detail="local mutating operation(s) (e.g. ${v#MUT:})" ;;
+      NESTED:*)
+        local inner; inner="$(_sw_resolve_script "${v#NESTED:}")"
+        if [ -n "$inner" ]; then
+          local sub; sub="$(_sw_inspect "$inner" $((depth+1)))"
+          case "$sub" in
+            FORBIDDEN*) echo "$sub (via nested script)"; return ;;
+            OPAQUE*)    worst="OPAQUE"; detail="nested: ${sub#OPAQUE|}" ;;
+            ASK*)       [ "$worst" = SAFE ] && worst="ASK"; detail="nested consequential op" ;;
+          esac
+        else
+          worst="OPAQUE"; detail="nested script path not resolvable"
+        fi ;;
+      OPAQUE:*) worst="OPAQUE"; detail="${v#OPAQUE:} (line: $(printf '%s' "$line" | cut -c1-40))" ;;
+    esac
+  done < "$f"
+  case "$worst" in
+    SAFE)   echo "SAFE|all lines on the read-only allowlist" ;;
+    ASK)    echo "ASK|$detail" ;;
+    OPAQUE) echo "OPAQUE|$detail" ;;
+  esac
+}
+# Extract the push remote (first positional) from a 'git … push …' line (builtins).
+_sw_push_remote() {  # $1 = line ; echoes remote token or ''
+  local _oldifs="$IFS"; set -f; set -- $1; set +f; IFS="$_oldifs"
+  local seen_push=0 tok
+  for tok in "$@"; do
+    if [ "$seen_push" = 1 ]; then
+      case "$tok" in -*|+*) ;; *) printf '%s' "$tok"; return ;; esac
+    fi
+    [ "$tok" = push ] && seen_push=1
+  done
+  printf ''
+}
+# Is a push remote NAME forbidden, OR (for a URL) its slug on forbiddenRepos? (builtins; reuses fast readers)
+_sw_remote_or_repo_forbidden() {  # $1 = remote name or URL
+  local r="$1"
+  [ -n "$_SW_CFG_TEXT" ] || return 1
+  # name on forbiddenRemotes
+  _fast_in_list "$r" "$(_fast_json_array "$_SW_CFG_TEXT" forbiddenRemotes)" && return 0
+  # URL/scp/path → slug on forbiddenRepos
+  case "$r" in *://*|*@*:*|*/*) local s; s="$(_fast_url_to_slug "$r")"; [ -n "$s" ] && _fast_repo_forbidden "$s" "$(_fast_json_array "$_SW_CFG_TEXT" forbiddenRepos)" && return 0 ;; esac
+  return 1
+}
+_SW_PATH="$(_sw_resolve_script "$COMMAND")"
+if [ "$_SW_PATH" = "__UNRESOLVED__" ]; then
+  # A local-script execution shape was detected, but the script file could not be resolved/read (e.g. an
+  # odd-quoted path, a missing file behind a wrapper, or a path the builtin resolver could not recover).
+  # FAIL CLOSED to a human confirmation — never silent-allow a script we could not inspect.
+  _pfg_stage "script-inspect:UNRESOLVED"
+  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":%s}}\n' \
+    "$(printf '%s' "CONFIRM (fail-closed): a local script is being executed but its contents could not be resolved for inspection. Rather than approve an opaque wrapper, run the underlying steps as explicit, directly-inspectable commands so the gate can adjudicate each one." | _pfg_json_string)"
+  exit 0
+fi
+if [ -n "$_SW_PATH" ]; then
+  _pfg_stage "script-inspect:resolved=$_SW_PATH"
+  # committed config text for the in-script push policy (builtins; reuse fast walk result if present).
+  _SW_CFG_TEXT="${_FAST_CFG_TEXT:-}"
+  if [ -z "$_SW_CFG_TEXT" ]; then
+    _sw_dir="$PWD"; _sw_n=0
+    while [ -n "$_sw_dir" ] && [ "$_sw_n" -lt 64 ]; do
+      [ -f "$_sw_dir/.preflight/config.json" ] && { _SW_CFG_TEXT="$(<"$_sw_dir/.preflight/config.json")" 2>/dev/null; break; }
+      case "$_sw_dir" in */*) _sw_dir="${_sw_dir%/*}"; [ -z "$_sw_dir" ] && _sw_dir="/" ;; *) break ;; esac
+      [ "$_sw_dir" = "/" ] && break; _sw_n=$((_sw_n+1))
+    done
+  fi
+  _SW_VERDICT="$(_sw_inspect "$_SW_PATH" 0)"
+  _pfg_stage "script-inspect:verdict=${_SW_VERDICT%%|*}"
+  _sw_v="${_SW_VERDICT%%|*}"; _sw_d="${_SW_VERDICT#*|}"
+  case "$_sw_v" in
+    FORBIDDEN)
+      echo "BLOCKED: $_sw_d." >&2
+      echo "  The governed operation is hidden inside the script '$_SW_PATH' — inspected without executing it." >&2
+      echo "  Surface to a human; do NOT retarget automatically. (Agent Bash-tool guard only; not server-side" >&2
+      echo "  protection — see docs/parity-gate-limitations.md.)" >&2
+      exit 2 ;;
+    SAFE)
+      # Emit a TOCTOU snapshot of the inspected bytes + allow. If the platform honors updatedInput, the
+      # snapshot (immutable inspected bytes) is what executes; if not, normal flow applies (no worse than
+      # today). Snapshot under TMPDIR, mode 0600.
+      _SW_SNAP="$(mktemp 2>/dev/null).preflight-inspected.sh" || _SW_SNAP=""
+      if [ -n "$_SW_SNAP" ] && cat "$_SW_PATH" > "$_SW_SNAP" 2>/dev/null; then
+        chmod 0600 "$_SW_SNAP" 2>/dev/null || true
+        printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":%s,"updatedInput":{"command":%s}}}\n' \
+          "$(printf '%s' "Inspected local script '$_SW_PATH': all operations are read-only/safe. Executing an inspected snapshot (TOCTOU-safe)." | _pfg_json_string)" \
+          "$(printf '%s' "bash $_SW_SNAP" | _pfg_json_string)"
+      else
+        printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":%s}}\n' \
+          "$(printf '%s' "Inspected local script '$_SW_PATH': all operations are read-only/safe." | _pfg_json_string)"
+      fi
+      exit 0 ;;
+    ASK)
+      printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":%s}}\n' \
+        "$(printf '%s' "CONFIRM: local script '$_SW_PATH' performs $_sw_d. No forbidden destination was detected, but the action is consequential — confirm to proceed. (Inspected without executing the script.)" | _pfg_json_string)"
+      exit 0 ;;
+    OPAQUE)
+      printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":%s}}\n' \
+        "$(printf '%s' "CONFIRM (fail-closed): local script '$_SW_PATH' could not be safely resolved by inspection ($_sw_d). Rather than approve an opaque wrapper, EXPAND the operation into directly-inspectable commands (run the underlying steps explicitly) so the gate can adjudicate each one. (Inspected without executing the script.)" | _pfg_json_string)"
+      exit 0 ;;
+  esac
+  # No verdict matched (shouldn't happen) → fall through to normal handling.
+fi
+
 # ── SENTINEL-MINT TRIPWIRE (gap #5) ───────────────────────────────────────────
 # Blocks, for the AGENT's Bash tool, shell commands that MINT the two protected
 # gate-clearance sentinels:

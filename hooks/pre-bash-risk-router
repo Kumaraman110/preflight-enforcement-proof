@@ -65,6 +65,35 @@ case "$BLOB" in
   # direction; this arm only adds the generic backslash gate-dir form for completeness.
   *.preflight\\\\gate\\\\*)    CANDIDATE=1 ;;
 esac
+# ── LOCAL-SCRIPT-EXECUTION shape (security gap: a governed git push / gh pr create / sentinel mint hidden
+# INSIDE a script file is invisible to the substring globs above, because the risk tokens live in the file,
+# not the command). Route a command that EXECUTES a local script to the engine, which inspects the script's
+# CONTENTS (bounded; never executes/sources it) and applies the SAME policy. To preserve the ordinary
+# fast-path latency guarantee, this is NARROW: it matches an interpreter (bash/sh/dash/zsh[.exe]) or a
+# source/dot-inclusion only at the START of the command or a sub-command (after a separator/`cd`/env-prefix
+# /`command`), followed by whitespace — NOT every command that merely contains the word "bash". A false
+# candidate still only costs one engine call (the engine fast-allows when no readable governed script is
+# found); it can never be wrongly blocked here. The matching is on the JSON blob — the leading `{"..."}`
+# wrapper means the command value is preceded by `"command":"`, so we match both true-start and post-quote.
+_RTR_SCRIPT_CANDIDATE=0
+# Interpreter (bash/sh/dash/zsh[.exe]) appearing at command start / after a shell separator / after the
+# JSON command-quote, followed by a token that is NOT a dash-flag. We use TWO arms per interpreter:
+#   • `…<bdy>INTERP <X>` where X is NOT '-' and NOT a quote-then-flag — i.e. a path/script argument
+#     (covers `bash run.sh`, `bash /abs/x.sh`, `bash ./x.sh`).
+# Anchored by a preceding boundary char [" ;&|({ ] or the env/`cd`/`command` prefixes the engine also peels.
+# A leading dash after the interpreter (`bash -c …`, `bash --version`) does NOT match here — `bash -c`
+# inline code is already routed by the existing eval/`bash -c` indirection coverage upstream of the engine
+# parser, and `--version`-style flags are not script execution. False candidates cost one engine call.
+for _itp in bash bash.exe sh dash zsh; do
+  case "$BLOB" in
+    *[\"\ \;\&\|\(\{]"$_itp"\ [!-]*) _RTR_SCRIPT_CANDIDATE=1; break ;;
+  esac
+done
+case "$BLOB" in
+  # source / dot inclusion of a path (`. ./x.sh`, `source /c/.../y.sh`).
+  *[\"\ \;\&\|\(\{]source\ [!-]*|*[\"\ \;\&\|\(\{].\ [!-]*) _RTR_SCRIPT_CANDIDATE=1 ;;
+esac
+[ "$_RTR_SCRIPT_CANDIDATE" = 1 ] && CANDIDATE=1
 
 # Ordinary command → ALLOW immediately. Nothing else runs; no spawn, no engine. This is the fast path
 # that the p95 SLO (Part C) measures.

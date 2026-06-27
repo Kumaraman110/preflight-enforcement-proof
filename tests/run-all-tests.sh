@@ -1198,6 +1198,19 @@ run_behavioral_tests() {
     yellow "SKIP: pre-push-fast-decision-test.sh not found"
   fi
 
+  # ── mission Phase 4 — script-wrapper inspection (governed ops hidden inside a local script) ──
+  local script_wrapper_test="$SCRIPT_DIR/behavioral/pre-push-script-wrapper-test.sh"
+  if [ -f "$script_wrapper_test" ]; then
+    if bash "$script_wrapper_test"; then
+      PASSES=$((PASSES + 25))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: pre-push-script-wrapper tests failed (a governed op hidden inside a local script — bash/sh/dash/zsh/source <path> — must be caught by inspecting the script CONTENTS without executing it: forbidden push/PR/sentinel → BLOCK naming the underlying op; safe read-only → allow + TOCTOU snapshot; mutation/consequential → ask; eval/cmd-subst/heredoc/function/loop/conditional/subshell/var-built/decode/oversize/binary/unresolved → fail-closed ask that instructs expanding into inspectable commands; nested forbidden → BLOCK; the script must NEVER execute during inspection)"
+    fi
+  else
+    yellow "SKIP: pre-push-script-wrapper-test.sh not found"
+  fi
+
   local gapa_test="$SCRIPT_DIR/behavioral/pre-push-gapa-prod-pattern-test.sh"
   if [ -f "$gapa_test" ]; then
     if bash "$gapa_test"; then
