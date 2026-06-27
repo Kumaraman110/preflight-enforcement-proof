@@ -1228,7 +1228,7 @@ run_behavioral_tests() {
   local pr_merge_test="$SCRIPT_DIR/behavioral/pre-pr-merge-policy-test.sh"
   if [ -f "$pr_merge_test" ]; then
     if bash "$pr_merge_test"; then
-      PASSES=$((PASSES + 15))
+      PASSES=$((PASSES + 14))
     else
       FAILURES=$((FAILURES + 1))
       red "FAIL: pre-pr-merge-policy tests failed (gh pr merge must be DERIVED FROM COMMITTED POLICY: forbiddenRepos target → BLOCK; non-canonical repo → BLOCK; --admin override → BLOCK; canonical/non-forbidden → CONFIRM (consequential protected-branch landing, never silent, never a generic timeout); a get-url wedge → fail-closed; no real merge — safe gh shim)"
