@@ -33,8 +33,22 @@ permissions:
   contents: read
 
 concurrency:
+  # One run per ref regardless of event: a push to pr/p0-router-engine-split AND the PR-sync event would
+  # otherwise schedule two identical full-suite runs. Keyed on ref so superseded runs cancel and duplicate
+  # push/PR runs for the same ref collapse to one (no lost protection — the same suite on the same SHA).
   group: preflight-ci-${{ github.ref }}
   cancel-in-progress: true
+
+# Deterministic git identity for fixture commits on clean runners (no ambient global identity exists on
+# ubuntu-latest / windows-latest; without this a fixture's `git commit` fails → no HEAD → the evidence gate
+# correctly BLOCKs as stale → spurious harness failures). Set at workflow scope so EVERY job — including the
+# slow-spawn job that invokes a suite directly (not via run-all-tests.sh) — inherits it. These author/
+# committer env vars survive a fixture re-pointing HOME/GIT_CONFIG_GLOBAL, unlike `git config --global`.
+env:
+  GIT_AUTHOR_NAME: Preflight CI
+  GIT_AUTHOR_EMAIL: ci@preflight.test
+  GIT_COMMITTER_NAME: Preflight CI
+  GIT_COMMITTER_EMAIL: ci@preflight.test
 
 jobs:
   linux-bash:
