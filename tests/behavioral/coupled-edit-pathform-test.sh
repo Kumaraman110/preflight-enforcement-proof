@@ -43,9 +43,16 @@ WS="$(mktemp -d)/repo"; mkdir -p "$WS/.preflight/gate"
 set_group() { printf '%s' "$1" > "$WS/.preflight/gate/active-groups.json"; }
 
 # edit_rc <file_path> [PATH_OVERRIDE] — drive the gate with an Edit on file_path; echo the exit code.
+# PORTABILITY FIX: build the JSON with jq so the file_path is PROPERLY ESCAPED. The old raw string-interp
+# (`"file_path":"$fp"`) produced INVALID JSON for the backslash case — a literal `Services\TokenProvider.cs`
+# embeds `\T`, an illegal JSON escape. jq then errored on extraction and the gate fell through; on Windows a
+# fallback happened to still BLOCK, but on Linux it passed through (exit 0) → a spurious cross-platform FAIL.
+# A backslash path is a legitimate Windows file_path the gate MUST still canonicalize+block, so the test must
+# send it as VALID JSON (jq encodes the lone backslash as `\\`). jq -n --arg is byte-exact and portable. If
+# jq is unavailable the gate is skipped at the top of this file, so jq is always present here.
 edit_rc() {
   local fp="$1" pe="${2:-}"
-  local json="{\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"$fp\",\"old_string\":\"a\",\"new_string\":\"b\"}}"
+  local json; json="$(jq -nc --arg fp "$fp" '{tool_name:"Edit",tool_input:{file_path:$fp,old_string:"a",new_string:"b"}}')"
   if [ -n "$pe" ]; then ( cd "$WS" && printf '%s' "$json" | PATH="$pe" bash "$GATE" >/dev/null 2>&1; echo $? )
   else                  ( cd "$WS" && printf '%s' "$json" | bash "$GATE" >/dev/null 2>&1; echo $? ); fi
 }
