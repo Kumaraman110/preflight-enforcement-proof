@@ -119,20 +119,35 @@ eng=$(nlines "$ENGINE_WITNESS")
                  || bad "3: candidate push did NOT reach the engine"
 
 # ── 4: a TIMED-OUT candidate blocks only that candidate (engine made slow + tight deadline) ──────────────
-# DETERMINISTIC TIMEOUT (CI portability): the prior form relied on the cumulative +${PFG_SPAWN_DELAY}s/spawn
-# tax pushing the engine past a 3s deadline. But the engine's candidate path is now builtins-first and makes
-# very FEW external spawns, so on a fast runner (ubuntu-latest) it FINISHES under 3s even with the per-spawn
-# tax → no timeout → RC=0 → a flaky FAIL. We instead inject a SINGLE deterministic delay that ALONE exceeds
-# the deadline: a test-only `git` shim that sleeps 8s (the engine calls `git` at least once on the candidate
-# path), against a 3s deadline → guaranteed >3s with margin on ANY host. The PRODUCTION deadline is unchanged;
-# only this test's git binary is made slow, and only for this one assertion (restored immediately after).
-_SLOWGIT_BAK=""
-if [ -f "$SHIM/git" ]; then _SLOWGIT_BAK="$SHIM/.git.bak.$$"; cp "$SHIM/git" "$_SLOWGIT_BAK"; fi
-{ echo '#!/bin/sh'; printf 'printf "git\\n" >> "%s"\n' "$WITNESS"; echo 'sleep 8'; real_git="$(command -v git 2>/dev/null || true)"; [ -n "$real_git" ] && printf 'exec "%s" "$@"\n' "$real_git" || echo 'exit 0'; } > "$SHIM/git"
-chmod +x "$SHIM/git"
-run_router "$(mkjson "git push poc HEAD:feature/topic")" 3
-# restore the normal +delay git shim for the remaining items
-[ -n "$_SLOWGIT_BAK" ] && { mv "$_SLOWGIT_BAK" "$SHIM/git"; chmod +x "$SHIM/git"; }
+# DETERMINISTIC TIMEOUT (CI portability — replaces a host-speed-dependent design). PRIOR forms relied on the
+# engine taking >deadline on a fast runner; but (a) the engine's candidate path is builtins-first and, for a
+# wrong-remote push like `git push poc`, spawns ONLY jq (no git) — and (b) the router FLOORS the engine
+# deadline at 10s (it never honors a <10s value), so an 8s injection never tripped on fast Linux. The robust
+# fix: drive a push to the CONFIGURED SAFE remote so the engine reaches the AUTO path, which invokes the
+# evidence gate via UN-BOUNDED `bash pre-push-gate` (NOT wrapped by the engine's 3s Layer-2 subprocess cap).
+# That gate spawns `git rev-parse/diff`; a test-only `git` shim that sleeps 15s makes that single un-bounded
+# call exceed the floored 10s router deadline (+ margin) → the router fail-CLOSES (exit 2) with the engine-
+# failure message — DETERMINISTICALLY on any host. PRODUCTION deadline unchanged; the slow git + AUTO config
+# live in a DEDICATED throwaway workspace so the shared WS and the other items are untouched.
+WS4="$T/ws4"; mkdir -p "$WS4/.preflight/gate" "$WS4/hooks" "$WS4/lib"
+cp "$ROUTER" "$ENGINE" "$ROOT/hooks/pre-push-gate" "$WS4/hooks/" 2>/dev/null
+# wrap the engine copy with the same invocation witness used by the main WS
+{ echo '#!/usr/bin/env bash'; printf 'printf "engine\\n" >> "%s"\n' "$ENGINE_WITNESS"; printf 'exec bash "%s" "$@"\n' "$WS4/hooks/.engine-real"; } > "$WS4/hooks/pre-push-gate-engine"
+cp "$ENGINE" "$WS4/hooks/.engine-real"; chmod +x "$WS4/hooks/pre-push-gate-engine"
+cp "$ROOT/lib/config-overlay.sh" "$ROOT/lib/heartbeat.sh" "$WS4/lib/" 2>/dev/null
+( cd "$WS4" && git init -q && git config user.email t@t && git config user.name t && git commit -q --allow-empty -m init && git checkout -q -b feature/topic && git remote add origin https://github.com/safe-org/app.git ) >/dev/null 2>&1
+_h4="$(cd "$WS4" && git rev-parse HEAD)"; for ev in tests-pass stage1-clean; do printf 'HEAD=%s\nts=now\n' "$_h4" > "$WS4/.preflight/gate/$ev"; done
+# configured remote=origin (safe), unprotected branch → push to origin classifies AUTO → evidence gate runs.
+printf '{"branch":{"base":"main","remote":"origin","forbiddenRemotes":[],"forbiddenRepos":[],"safeRemotes":[]}}' > "$WS4/.preflight/config.json"
+# 15s git shim (un-bounded evidence-gate git call → exceeds the floored 10s router deadline with margin).
+SHIM4="$T/shim4"; mkdir -p "$SHIM4"; _rg4="$(command -v git 2>/dev/null || true)"
+{ echo '#!/bin/sh'; echo 'sleep 15'; [ -n "$_rg4" ] && printf 'exec "%s" "$@"\n' "$_rg4" || echo 'exit 0'; } > "$SHIM4/git"; chmod +x "$SHIM4/git"
+# also provide jq (real, no delay) so command-extraction works
+_rjq="$(command -v jq 2>/dev/null || true)"; [ -n "$_rjq" ] && { printf '#!/bin/sh\nexec "%s" "$@"\n' "$_rjq" > "$SHIM4/jq"; chmod +x "$SHIM4/jq"; }
+_J4="$(mkjson "git push origin HEAD:feature/topic")"
+s="$EPOCHREALTIME"
+( cd "$WS4" && printf '%s' "$_J4" | PATH="$SHIM4:$PATH" PREFLIGHT_ENGINE_DEADLINE=3 timeout 120 bash "$WS4/hooks/pre-bash-risk-router" "$_J4" >"$T/.o" 2>"$T/.e" ); RC=$?
+e="$EPOCHREALTIME"; EL="$(awk -v s="$s" -v e="$e" 'BEGIN{printf "%.1f",e-s}')"
 # The router's candidate-timeout diagnostic now states ENGINE FAILURE (not a policy approval) and names the
 # deadline; match the new wording (flatten newlines — the message wraps) and require NO human-shell steering.
 _e4="$(tr '\n' ' ' < "$T/.e" 2>/dev/null)"
