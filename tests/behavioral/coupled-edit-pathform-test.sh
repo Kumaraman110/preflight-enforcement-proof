@@ -68,11 +68,66 @@ set_group "$GROUP_REL"
 assert_block "H3 relative 'Services/TokenProvider.cs'"            "Services/TokenProvider.cs"
 assert_block "H3 absolute '<abs>/Services/TokenProvider.cs'"      "$WS/Services/TokenProvider.cs"
 assert_block "H3 ./-prefixed './Services/TokenProvider.cs'"       "./Services/TokenProvider.cs"
-assert_block "H3 backslash 'Services\\\\TokenProvider.cs'"        "Services\\\\TokenProvider.cs"
+# H3-backslash: a governed member stored with '/' edited via a '\' path. THE cross-platform regression:
+# the gate canonicalizes '\'->'/' (so by policy it is the SAME file) and MUST BLOCK on BOTH Linux and
+# Windows. The old line-144 fast-path keyed off `basename "$FILE_PATH"` of the RAW path — MSYS basename
+# splits '\' (matched -> BLOCK) but GNU basename does NOT (whole 'Services\Token.cs' -> grep MISS ->
+# exit 0 ALLOW), a Linux-only fail-OPEN. Fixed by keying the fast-path off the canonical basename
+# (${CANON_FP##*/}) with a fixed-string match. This assertion is identical on every platform — NEVER
+# make it platform-conditional; a platform-specific BLOCK would re-hide the fail-open.
+assert_block "H3 backslash 'Services\\\\TokenProvider.cs' (Linux+Windows, the fail-open regression)" "Services\\\\TokenProvider.cs"
+# H3 mixed separators: backslash dir + forward-slash leaf, member of a stored subdir path.
+set_group '[{"files":["Services/Subdir/TokenProvider.cs"],"findings":["x"],"acknowledged":false}]'
+assert_block "H3 mixed-sep 'Services\\\\Subdir/TokenProvider.cs'"  "Services\\\\Subdir/TokenProvider.cs"
+# H3 Windows-style absolute (drive + backslashes): canonical /-anchored suffix of the stored member.
+set_group "$GROUP_REL"
+assert_block "H3 win-absolute 'C:\\\\repo\\\\Services\\\\TokenProvider.cs'" "C:\\\\repo\\\\Services\\\\TokenProvider.cs"
 echo "──── H3 NO-FALSE-POSITIVE (must ALLOW — the load-bearing anti-regression) ────"
 assert_allow "H3-NFP shared-basename '<abs>/OtherDir/TokenProvider.cs'"   "$WS/OtherDir/TokenProvider.cs"
 assert_allow "H3-NFP basename-superstring '<abs>/Services/TokenProviderTests.cs'" "$WS/Services/TokenProviderTests.cs"
 assert_allow "H3-NFP unrelated file"                              "$WS/Other/Unrelated.cs"
+assert_allow "H3-NFP backslash non-member 'Services\\\\Unrelated.cs'"     "Services\\\\Unrelated.cs"
+assert_allow "H3-NFP same-basename-different-dir 'Other/TokenProvider.cs'" "Other/TokenProvider.cs"
+# H3-NFP substring-dir anti-regression: the canonical-basename fast-path keys off ${CANON_FP##*/} so the
+# basename matches the groups file, but membership is decided by the AUTHORITATIVE /-anchored suffix —
+# 'XServices/TokenProvider.cs' shares the basename AND has 'Services/TokenProvider.cs' as a raw substring,
+# yet the char before 'Services' is 'X' (not '/'), so it is NOT a member and must ALLOW. Proves the
+# fast-path's fixed-string basename match never escalates a substring into a false BLOCK.
+assert_allow "H3-NFP substring-dir 'XServices/TokenProvider.cs' (basename+substring but not /-anchored)" "XServices/TokenProvider.cs"
+
+echo "──── H3 REGEX-SAFETY (fixed-string match — a basename with regex metachars must NOT be interpreted) ────"
+# The fast-path uses `grep -qF -- ` so a member basename containing [ ] + . or a leading '-' is matched
+# LITERALLY (a regex-interpreted needle could either miss -> fail-open, or over-match -> false block).
+set_group '[{"files":["Service[1].cs"],"findings":["x"],"acknowledged":false}]'
+assert_block "H3-regex literal member 'Service[1].cs' (bracket class not interpreted)" "Service[1].cs"
+assert_allow "H3-regex NFP 'ServiceX.cs' (would match if '[1]' were a regex class)"      "ServiceX.cs"
+set_group '[{"files":["Service+.cs"],"findings":["x"],"acknowledged":false}]'
+assert_block "H3-regex literal member 'Service+.cs' ('+' not a quantifier)"              "Service+.cs"
+set_group '[{"files":["Service.test.cs"],"findings":["x"],"acknowledged":false}]'
+assert_block "H3-regex literal member 'Service.test.cs' ('.' not any-char)"              "Service.test.cs"
+set_group '[{"files":["-weird.cs"],"findings":["x"],"acknowledged":false}]'
+assert_block "H3-regex leading-dash member '-weird.cs' (grep -- end-of-options)"          "-weird.cs"
+
+echo "──── H3 separator-normalization (pin current canonicalization; BLOCK = anti-regression) ────"
+set_group "$GROUP_REL"
+# Adjacent '//' collapses (single pass) so a doubled separator is still a member -> BLOCK.
+assert_block "H3-sep double-separator 'Services//TokenProvider.cs'"        "Services//TokenProvider.cs"
+# Absolute path whose prefix is NOT the repo root: the repo-prefix strip does not apply, but the
+# stored 'Services/TokenProvider.cs' is still a /-anchored suffix -> member -> BLOCK.
+assert_block "H3-sep abs-different-prefix '/other/loc/Services/TokenProvider.cs'" "/other/loc/Services/TokenProvider.cs"
+# KNOWN under-normalization (pinned, OFF THE LIVE PATH): _canon_path does NOT strip a trailing '/'
+# and its '//' collapse is single-pass, so a directory-style trailing slash or a 3+-repeated separator
+# is treated as a non-member (ALLOW). The real Edit/Write tool targets a FILE and sends a clean path,
+# never these forms. These assertions PIN the current behavior so a future canonicalization-hardening
+# change (add trailing-/ strip + repeated-// collapse) is a deliberate, test-visible flip — NOT a
+# silent drift. They are documentation of a separate known item, not an endorsement of fail-open.
+assert_allow "H3-sep trailing-slash 'Services/TokenProvider.cs/' (known under-normalization, off-live-path)" "Services/TokenProvider.cs/"
+assert_allow "H3-sep triple-separator 'Services///TokenProvider.cs' (known under-normalization, off-live-path)" "Services///TokenProvider.cs"
+
+echo "──── H3 CRLF groups file (a CRLF-terminated active-groups.json must still BLOCK a member) ────"
+# A groups file written with CRLF line endings (legacy/Windows editor) must not defeat membership.
+printf '[{"files":["A.cs"],"findings":["x"],"acknowledged":false}]\r\n' > "$WS/.preflight/gate/active-groups.json"
+assert_block "H3-CRLF member 'A.cs' with CRLF-terminated groups file"                     "A.cs"
 
 echo "════════ H4 — malformed acknowledged shapes (edit A.cs, member of the group) ════════"
 set_group '[{"files":["A.cs"],"findings":["x"]}]';                 assert_block "H4 missing acknowledged"      "A.cs"
