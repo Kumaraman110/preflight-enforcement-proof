@@ -2,16 +2,33 @@
 set -euo pipefail
 
 # preflight-verify.sh — Verify installed framework integrity in a consumer repo.
-# Checks: manifest exists, no drift from installed blobs, and optionally whether
-# the pinned version is current vs the latest release tag in code-forge.
+# Checks: manifest exists, no drift from installed blobs, and (optionally, given a code-forge path) the
+# ANCESTRY-AWARE release relation of the installed SHA to the latest release tag.
 #
 # Usage:
 #   ./tools/preflight-verify.sh <CONSUMER_DIR> [CODE_FORGE_DIR]
 #
-# Exit codes:
-#   0 — PASS (installed, no drift, current or intentionally pinned)
-#   1 — FAIL (missing manifest, drift detected, or other error)
-#   2 — STALE (installed and intact, but newer release exists in code-forge)
+# The verifier reports FOUR clearly-separated dimensions:
+#   Integrity            — do installed artifacts match the manifest blobs?
+#   Installation identity— pinned ref / resolved SHA / runtime registration / hazard state.
+#   Release relation     — ancestry of the installed SHA vs the latest release tag.
+#   Final classification — the single status below.
+#
+# Release-relation classifications (Step 3) and exit codes:
+#   CURRENT_RELEASE       (exit 0)  — installed SHA == latest release tag commit.
+#   PINNED_AHEAD          (exit 0)  — installed SHA is a DESCENDANT of the latest tag (deliberately pinned,
+#                                     intact, newer than the latest tagged release). NOT stale.
+#   STALE                 (exit 2)  — installed SHA is an ANCESTOR of the latest tag (a newer release exists).
+#   DIVERGED_OR_UNKNOWN   (exit 3)  — installed SHA and latest tag are unrelated, ancestry can't be
+#                                     established, or required source objects are unavailable (advisory,
+#                                     distinct from integrity drift).
+#
+# Integrity / identity exit codes (take precedence — never hidden behind release status):
+#   0 — PASS (installed, no drift; release relation is CURRENT_RELEASE or PINNED_AHEAD or skipped)
+#   1 — FAIL/INTEGRITY_FAILURE (missing manifest, artifact drift, runtime/manifest mismatch, registration
+#       hazard, or other integrity error)
+#   2 — STALE (integrity OK, but the installed SHA is behind the latest release tag)
+#   3 — DIVERGED_OR_UNKNOWN (integrity OK, but the release relation could not be established)
 
 CONSUMER_DIR="${1:?Usage: preflight-verify.sh <CONSUMER_DIR> [CODE_FORGE_DIR]}"
 CODE_FORGE_DIR="${2:-${CODE_FORGE_DIR:-}}"
@@ -323,36 +340,92 @@ else
 fi
 echo ""
 
-# ── Step 3: Staleness check (optional — requires code-forge path) ────────────
+# ── Step 3: Release relation — ANCESTRY-AWARE (optional; requires code-forge path) ───────────────────────
+# THE DEFECT THIS REPLACES: the old check did a bare SHA inequality `latest-tag-SHA != installed-SHA -> STALE
+# (exit 2)`. That mislabels an exact, deliberately-pinned candidate that is NEWER than the latest tag (a
+# descendant) as STALE — exactly the pilot's case (latest tag v0.9.0; installed 4d45e46 is a descendant).
+# We now classify by COMMIT ANCESTRY between the installed SHA and the latest tag's COMMIT:
+#   ==              -> CURRENT_RELEASE   (exit 0)
+#   installed is descendant of tag  -> PINNED_AHEAD (exit 0): intact + newer than the latest tagged release
+#   installed is ancestor   of tag  -> STALE        (exit 2): a newer release exists
+#   unrelated / unresolvable        -> DIVERGED_OR_UNKNOWN (exit 3): advisory, distinct from integrity drift
+# This NEVER overrides an integrity/hazard FAIL (those exit 1 below, and take precedence). RELEASE_EXIT holds
+# the release-relation exit; we apply it only AFTER the hazard gate, so an integrity failure is never hidden
+# behind a release status.
+RELEASE_STATUS="SKIPPED"
+RELEASE_EXIT=0
+echo "Release relation (ancestry-aware):"
 if [ -n "$CODE_FORGE_DIR" ] && [ -d "$CODE_FORGE_DIR/.git" ]; then
-    cd "$CODE_FORGE_DIR"
-    LATEST_TAG=$(git tag --list 'v*' --sort=-version:refname | head -1)
-
-    if [ -n "$LATEST_TAG" ]; then
-        LATEST_SHA=$(git rev-parse "$LATEST_TAG" 2>/dev/null)
-        if [ "$LATEST_SHA" != "$RESOLVED_SHA" ]; then
-            echo "STALE: consumer has preflight ${PINNED_REF} @ ${RESOLVED_SHA:0:7}"
-            echo "       latest release is ${LATEST_TAG} @ ${LATEST_SHA:0:7}"
-            echo "       Run preflight-install to update, or this is intentional if pinning deliberately."
-            exit 2
-        else
-            echo "Version: CURRENT — installed SHA matches latest tag ${LATEST_TAG}."
-        fi
+    LATEST_TAG=$(git -C "$CODE_FORGE_DIR" tag --list 'v*' --sort=-version:refname 2>/dev/null | head -1)
+    if [ -z "$LATEST_TAG" ]; then
+        RELEASE_STATUS="DIVERGED_OR_UNKNOWN"
+        RELEASE_EXIT=3
+        echo "  DIVERGED_OR_UNKNOWN: no release tags (v*) in code-forge — cannot establish a release relation."
     else
-        echo "Version: no release tags in code-forge — skipping staleness check."
+        # Resolve the COMMIT each ref points at (a tag may be annotated -> ^{commit} dereferences it).
+        LATEST_COMMIT=$(git -C "$CODE_FORGE_DIR" rev-parse --verify --quiet "${LATEST_TAG}^{commit}" 2>/dev/null || echo "")
+        INSTALLED_COMMIT=$(git -C "$CODE_FORGE_DIR" rev-parse --verify --quiet "${RESOLVED_SHA}^{commit}" 2>/dev/null || echo "")
+        if [ -z "$LATEST_COMMIT" ] || [ -z "$INSTALLED_COMMIT" ]; then
+            # One of the objects is absent locally (e.g. shallow clone, or the pinned SHA was never fetched).
+            RELEASE_STATUS="DIVERGED_OR_UNKNOWN"
+            RELEASE_EXIT=3
+            echo "  DIVERGED_OR_UNKNOWN: cannot resolve commit objects for ${LATEST_TAG} and/or installed ${RESOLVED_SHA:0:7}"
+            echo "    in code-forge (shallow clone or missing objects) — ancestry undeterminable."
+        elif [ "$LATEST_COMMIT" = "$INSTALLED_COMMIT" ]; then
+            RELEASE_STATUS="CURRENT_RELEASE"
+            RELEASE_EXIT=0
+            echo "  CURRENT_RELEASE: installed SHA ${RESOLVED_SHA:0:7} == latest release tag ${LATEST_TAG} (${LATEST_COMMIT:0:7})."
+        elif git -C "$CODE_FORGE_DIR" merge-base --is-ancestor "$LATEST_COMMIT" "$INSTALLED_COMMIT" 2>/dev/null; then
+            # latest tag is an ANCESTOR of installed -> installed is a DESCENDANT -> pinned ahead.
+            RELEASE_STATUS="PINNED_AHEAD"
+            RELEASE_EXIT=0
+            echo "  PINNED_AHEAD: installed SHA ${RESOLVED_SHA:0:7} is INTACT and NEWER than the latest tagged"
+            echo "    release ${LATEST_TAG} (${LATEST_COMMIT:0:7}) — a deliberately-pinned descendant. Not stale."
+        elif git -C "$CODE_FORGE_DIR" merge-base --is-ancestor "$INSTALLED_COMMIT" "$LATEST_COMMIT" 2>/dev/null; then
+            # installed is an ANCESTOR of the latest tag -> a newer release exists -> STALE.
+            RELEASE_STATUS="STALE"
+            RELEASE_EXIT=2
+            echo "  STALE: installed SHA ${RESOLVED_SHA:0:7} is an ANCESTOR of the latest release ${LATEST_TAG}"
+            echo "    (${LATEST_COMMIT:0:7}) — a newer release exists. Run preflight-install to update."
+        else
+            # Neither is an ancestor of the other -> divergent branches.
+            RELEASE_STATUS="DIVERGED_OR_UNKNOWN"
+            RELEASE_EXIT=3
+            echo "  DIVERGED_OR_UNKNOWN: installed SHA ${RESOLVED_SHA:0:7} and latest tag ${LATEST_TAG}"
+            echo "    (${LATEST_COMMIT:0:7}) are on UNRELATED histories (no ancestry either direction)."
+        fi
     fi
 else
-    echo "Version: code-forge path not provided — skipping staleness check."
+    echo "  SKIPPED: code-forge path not provided — release relation not evaluated (integrity/identity only)."
 fi
+echo ""
 
+# ── Final classification — integrity/hazard (exit 1) takes precedence over release relation ──────────────
 if [ "${RUNTIME_HAZARD:-0}" -ne 0 ]; then
-    echo ""
-    echo "=== FAIL: preflight ${PINNED_REF} @ ${RESOLVED_SHA:0:7} — artifacts intact, but a branch-stable-runtime"
-    echo "    HAZARD (legacy/duplicate Bash registration or missing pinned runtime) makes defect #3 NOT closed"
-    echo "    for this consumer. Migrate with tools/preflight-runtime-install.sh, then re-verify. ==="
+    echo "=== FAIL (INTEGRITY_FAILURE): preflight ${PINNED_REF} @ ${RESOLVED_SHA:0:7} — artifacts intact, but a"
+    echo "    branch-stable-runtime HAZARD (legacy/duplicate Bash registration or missing pinned runtime) makes"
+    echo "    defect #3 NOT closed for this consumer. Migrate with tools/preflight-runtime-install.sh, re-verify. ==="
     exit 1
 fi
 
-echo ""
-echo "=== PASS: preflight ${PINNED_REF} @ ${RESOLVED_SHA:0:7} — installed and intact ==="
-exit 0
+case "$RELEASE_STATUS" in
+  CURRENT_RELEASE)
+    echo "=== PASS (CURRENT_RELEASE): preflight ${PINNED_REF} @ ${RESOLVED_SHA:0:7} — installed, intact, current. ==="
+    exit 0 ;;
+  PINNED_AHEAD)
+    echo "=== PASS (PINNED_AHEAD): preflight ${PINNED_REF} @ ${RESOLVED_SHA:0:7} — installed, intact, deliberately"
+    echo "    pinned NEWER than the latest tagged release. ==="
+    exit 0 ;;
+  STALE)
+    echo "=== STALE: preflight ${PINNED_REF} @ ${RESOLVED_SHA:0:7} — installed and intact, but behind the latest"
+    echo "    release tag. ==="
+    exit 2 ;;
+  DIVERGED_OR_UNKNOWN)
+    echo "=== ADVISORY (DIVERGED_OR_UNKNOWN): preflight ${PINNED_REF} @ ${RESOLVED_SHA:0:7} — installed and"
+    echo "    intact; release relation undeterminable (see above). This is NOT integrity drift. ==="
+    exit 3 ;;
+  SKIPPED|*)
+    echo "=== PASS: preflight ${PINNED_REF} @ ${RESOLVED_SHA:0:7} — installed and intact (release relation not"
+    echo "    evaluated; no code-forge path). ==="
+    exit 0 ;;
+esac

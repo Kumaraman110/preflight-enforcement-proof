@@ -592,6 +592,19 @@ run_behavioral_tests() {
     yellow "SKIP: verify-manifest-floor-test.sh not found"
   fi
 
+  # ── BLOCKER 1 (release-hardening) — ancestry-aware verifier release-relation classification ──
+  local verify_rel_test="$SCRIPT_DIR/behavioral/verify-release-relation-test.sh"
+  if [ -f "$verify_rel_test" ]; then
+    if bash "$verify_rel_test"; then
+      PASSES=$((PASSES + 11))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: verify-release-relation tests failed (the verifier must classify the installed SHA vs the latest release tag by COMMIT ANCESTRY: ==→CURRENT_RELEASE/0, descendant→PINNED_AHEAD/0, ancestor→STALE/2, unrelated/unresolvable/no-tag→DIVERGED_OR_UNKNOWN/3; integrity drift / missing artifact / corrupt manifest must still FAIL exit 1, never hidden behind a release status)"
+    fi
+  else
+    yellow "SKIP: verify-release-relation-test.sh not found"
+  fi
+
   local coverage_default_test="$SCRIPT_DIR/behavioral/coverage-default-consistency-test.sh"
   if [ -f "$coverage_default_test" ]; then
     if bash "$coverage_default_test"; then
