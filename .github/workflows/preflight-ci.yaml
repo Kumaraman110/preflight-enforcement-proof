@@ -1,0 +1,122 @@
+---
+# Preflight CI — canonical test-suite execution for the framework source (BLOCKER 2).
+#
+# Runs the framework's OWN test suite (tests the reviewer/gates, not consumer service code) on every PR
+# targeting the integration branch and on pushes to the active P0 branch. Three jobs:
+#   • linux-bash      — full canonical suite on ubuntu-latest (fast spawns).
+#   • windows-gitbash — canonical suite through Git Bash on windows-latest (the supported consumer host).
+#   • slow-spawn      — the spawn-delay harness with PREFLIGHT_RUN_SPAWN_DELAY=1 (a dedicated, bounded job
+#                       so it never inflates the main jobs' wall time).
+#
+# SAFETY POSTURE (matches the framework's own discipline):
+#   • permissions: contents:read ONLY — no write scope, no PR/issue mutation, no automatic merge.
+#   • no secrets referenced; the suite contacts NO network and NO consumer repository (all fixtures are
+#     ephemeral local mktemp repos with string-only remotes).
+#   • full history checkout (fetch-depth: 0) so the verifier's ancestry/tag tests have real objects+tags.
+#   • concurrency cancels superseded runs on the same ref; explicit per-job timeouts.
+#   • on failure, the run log is uploaded as an artifact for triage.
+#
+# This workflow does NOT mark a PR ready, merge, tag, or release. It only reports pass/fail.
+
+name: Preflight CI
+
+on:
+  pull_request:
+    branches:
+      - feature/preflight-framework
+  push:
+    branches:
+      - pr/p0-router-engine-split
+      # future protected/release branches may be added here in lockstep with branch protection.
+
+permissions:
+  contents: read
+
+concurrency:
+  group: preflight-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux-bash:
+    name: Linux Bash — canonical suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout (full history for ancestry/tag tests)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Tooling versions
+        run: |
+          bash --version | head -1
+          jq --version || true
+          git --version
+      - name: Run canonical suite
+        run: |
+          set -o pipefail
+          bash tests/run-all-tests.sh 2>&1 | tee preflight-ci-linux.log
+      - name: Upload log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: preflight-ci-linux-log
+          path: preflight-ci-linux.log
+          if-no-files-found: ignore
+
+  windows-gitbash:
+    name: Windows Git-Bash — canonical suite
+    runs-on: windows-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash   # GitHub's windows-latest 'bash' is Git Bash (MSYS2) — the supported consumer host.
+    steps:
+      - name: Checkout (full history for ancestry/tag tests)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Tooling versions (confirm Git Bash)
+        run: |
+          uname -s
+          bash --version | head -1
+          jq --version || true
+          git --version
+      - name: Run canonical suite (Git Bash)
+        run: |
+          set -o pipefail
+          # Full canonical suite. The suite self-SKIPs any env-unavailable case (jq/timeout) and exits
+          # nonzero on ANY failed assertion — explicitly covering router, parser, continuation,
+          # forbidden-remote, wrapper, PR-policy, installer, and verifier suites on the Windows host.
+          bash tests/run-all-tests.sh 2>&1 | tee preflight-ci-windows.log
+      - name: Upload log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: preflight-ci-windows-log
+          path: preflight-ci-windows.log
+          if-no-files-found: ignore
+
+  slow-spawn:
+    name: Slow-spawn harness (scan-on-exec tax)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Run spawn-delay harness only (bounded)
+        env:
+          PREFLIGHT_RUN_SPAWN_DELAY: "1"
+        run: |
+          set -o pipefail
+          # The spawn-delay harness injects a per-spawn tax to recreate the Windows/CrowdStrike scan-on-exec
+          # incident deterministically; run it as a DEDICATED job so it never inflates the main suites.
+          bash tests/behavioral/spawn-delay-harness-test.sh 2>&1 | tee preflight-ci-slowspawn.log
+      - name: Upload log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: preflight-ci-slowspawn-log
+          path: preflight-ci-slowspawn.log
+          if-no-files-found: ignore
