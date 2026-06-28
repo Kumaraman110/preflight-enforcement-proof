@@ -20,13 +20,37 @@ FAILURES=0
 PASSES=0
 SUITE="${1:-all}"
 
+# ── Deterministic git identity for fixture commits (CI portability) ──────────────────────────────────────
+# Many behavioral fixtures do `git init && git commit` in a throwaway repo to mint a HEAD that gate-evidence
+# binds to. They relied on an AMBIENT global git identity, which exists on a dev box but NOT on clean CI
+# runners (ubuntu-latest / windows-latest) — there `git commit` fails ("Author identity unknown"), so no
+# commit is made, `git rev-parse HEAD` cannot resolve, and the evidence gate then correctly BLOCKs as
+# "stale (was at HEAD, now at HEAD)" — a spurious harness failure, not a runtime defect. Export the
+# author/committer identity here (the canonical suite entry point) so EVERY fixture commit succeeds
+# deterministically on every platform. These env vars are inherited by child processes and are NOT
+# overridden by a fixture that re-points HOME/GIT_CONFIG_GLOBAL (unlike a `git config --global`), so they
+# are the robust single-source fix. We do NOT clobber a caller's pre-set identity.
+: "${GIT_AUTHOR_NAME:=Preflight CI}"
+: "${GIT_AUTHOR_EMAIL:=ci@preflight.test}"
+: "${GIT_COMMITTER_NAME:=Preflight CI}"
+: "${GIT_COMMITTER_EMAIL:=ci@preflight.test}"
+export GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
+
 red() { printf "\033[31m%s\033[0m\n" "$1"; }
 green() { printf "\033[32m%s\033[0m\n" "$1"; }
 yellow() { printf "\033[33m%s\033[0m\n" "$1"; }
 
+# PORTABILITY (CI): feed the haystack to grep via a HERE-STRING, not `echo "$haystack" | grep`. With
+# `set -o pipefail`, when grep -q finds an EARLY match in a LARGE multiline haystack it exits immediately;
+# the still-writing `echo` then takes SIGPIPE/EPIPE → nonzero → pipefail propagates it → the `if` wrongly
+# takes the else branch → a spurious FAIL ("echo: write error: Broken pipe"). This raced green on Windows
+# Git-Bash but failed deterministically on ubuntu-latest. A here-string has NO producer process, so there is
+# no broken pipe — and it preserves the exact grep semantics: still `grep -i` (case-insensitive), still a
+# BRE pattern (so existing `\|` alternations and `.*`/`§` patterns behave identically), still multiline, no
+# global pipefail change, no `|| true`, grep failures still surface as a real FAIL.
 assert_contains() {
   local haystack="$1" needle="$2" context="$3"
-  if echo "$haystack" | grep -qi "$needle"; then
+  if grep -qi -- "$needle" <<< "$haystack"; then
     PASSES=$((PASSES + 1))
   else
     red "FAIL: $context — expected to contain '$needle'"
@@ -36,7 +60,7 @@ assert_contains() {
 
 assert_not_contains() {
   local haystack="$1" needle="$2" context="$3"
-  if ! echo "$haystack" | grep -qi "$needle"; then
+  if ! grep -qi -- "$needle" <<< "$haystack"; then
     PASSES=$((PASSES + 1))
   else
     red "FAIL: $context — expected NOT to contain '$needle'"
