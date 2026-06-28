@@ -119,9 +119,20 @@ eng=$(nlines "$ENGINE_WITNESS")
                  || bad "3: candidate push did NOT reach the engine"
 
 # ── 4: a TIMED-OUT candidate blocks only that candidate (engine made slow + tight deadline) ──────────────
-# With every git/jq spawn delayed +${PFG_SPAWN_DELAY}s and a 3s candidate deadline, the engine cannot finish
-# → router BLOCKs THIS candidate (exit 2), naming the deadline.
+# DETERMINISTIC TIMEOUT (CI portability): the prior form relied on the cumulative +${PFG_SPAWN_DELAY}s/spawn
+# tax pushing the engine past a 3s deadline. But the engine's candidate path is now builtins-first and makes
+# very FEW external spawns, so on a fast runner (ubuntu-latest) it FINISHES under 3s even with the per-spawn
+# tax → no timeout → RC=0 → a flaky FAIL. We instead inject a SINGLE deterministic delay that ALONE exceeds
+# the deadline: a test-only `git` shim that sleeps 8s (the engine calls `git` at least once on the candidate
+# path), against a 3s deadline → guaranteed >3s with margin on ANY host. The PRODUCTION deadline is unchanged;
+# only this test's git binary is made slow, and only for this one assertion (restored immediately after).
+_SLOWGIT_BAK=""
+if [ -f "$SHIM/git" ]; then _SLOWGIT_BAK="$SHIM/.git.bak.$$"; cp "$SHIM/git" "$_SLOWGIT_BAK"; fi
+{ echo '#!/bin/sh'; printf 'printf "git\\n" >> "%s"\n' "$WITNESS"; echo 'sleep 8'; real_git="$(command -v git 2>/dev/null || true)"; [ -n "$real_git" ] && printf 'exec "%s" "$@"\n' "$real_git" || echo 'exit 0'; } > "$SHIM/git"
+chmod +x "$SHIM/git"
 run_router "$(mkjson "git push poc HEAD:feature/topic")" 3
+# restore the normal +delay git shim for the remaining items
+[ -n "$_SLOWGIT_BAK" ] && { mv "$_SLOWGIT_BAK" "$SHIM/git"; chmod +x "$SHIM/git"; }
 # The router's candidate-timeout diagnostic now states ENGINE FAILURE (not a policy approval) and names the
 # deadline; match the new wording (flatten newlines — the message wraps) and require NO human-shell steering.
 _e4="$(tr '\n' ' ' < "$T/.e" 2>/dev/null)"
