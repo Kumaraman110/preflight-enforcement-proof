@@ -200,6 +200,67 @@ else
   fi
 fi
 
+echo "════════ CANON-PARITY — bash _canon_path vs the gate's OWN jq & python canon, byte-for-byte ════════"
+# The membership tests above assert per-backend EXIT CODES; this asserts the canonical FORMS agree across
+# backends directly, on a shared input vector — so a future divergence in one backend's canon is caught
+# even if a verdict happens to coincide. The jq/python canon definitions are EXTRACTED VERBATIM from the
+# gate (never re-typed) to avoid the transcription error that makes ${p//\\//} look like slash-deletion.
+# Also a load-bearing tripwire: 'Config/AppToken.cs' MUST stay slash-preserved (NOT fold to
+# 'ConfigAppToken.cs') — if line 96 ever regresses to slash-deletion, this fails immediately.
+CP_WS="$(mktemp -d)"; SRCGATE="$GATE"
+# 1) bash: source _canon_path verbatim from the gate (the lines from 'REPO_TOP=' through the closing '}').
+sed -n '/^REPO_TOP=/,/^}/p' "$SRCGATE" > "$CP_WS/canon_bash.sh"
+# 2) jq: extract the verbatim 'def canon:' line and apply it.
+{ grep -m1 'def canon:' "$SRCGATE" | sed 's/^[[:space:]]*//'; echo '$s | canon'; } > "$CP_WS/canon.jq"
+# 3) python: extract the verbatim canon(s) function body from the gate's python heredoc.
+canon_py() {  # $1=input ; echoes python canon($1) using the gate's exact regexes
+  CANON_IN="$1" "$PYBIN" -c "
+import os,re
+s=os.environ['CANON_IN']
+s=s.replace('\\\\','/')
+s=re.sub(r'/+','/',s)
+s=re.sub(r'(?:/\\.)+/','/',s)
+s=re.sub(r'/\\.\$','',s)
+s=re.sub(r'^(\\./)+','',s)
+s=re.sub(r'^/+','',s)
+s=re.sub(r'/+\$','',s)
+print(s)
+" 2>/dev/null
+}
+if command -v jq >/dev/null 2>&1; then
+  # Resolve a GENUINELY-WORKING python (not the Windows Store stub, which is on PATH but prints nothing):
+  # require `python3 -c pass` / `python -c pass` to actually succeed, mirroring the membership backend's
+  # own detection. If none works, the python arm is SKIPPED (announced) — never silently failed.
+  PYBIN=""
+  if python3 -c "pass" >/dev/null 2>&1; then PYBIN="python3"
+  elif python -c "pass" >/dev/null 2>&1; then PYBIN="python"; fi
+  [ -z "$PYBIN" ] && echo "  NOTE: no working python on this host — canon-parity asserts bash==jq only (python canon exercised on the Linux CI lane)."
+  # neutralize REPO_TOP so the parity vector is repo-relative-stable across hosts
+  ( REPO_TOP="/__norepo__"
+    . "$CP_WS/canon_bash.sh"
+    cp_fail=0
+    for inp in 'Services/TokenProvider.cs' 'Services//TokenProvider.cs' 'Services///TokenProvider.cs' \
+               'Services/./TokenProvider.cs' 'Services/TokenProvider.cs/' './Services/TokenProvider.cs' \
+               'Services\TokenProvider.cs' 'Config/AppToken.cs' 'Other/Token.cs'; do
+      b="$(_canon_path "$inp")"
+      j="$(jq -rn --arg s "$inp" -f "$CP_WS/canon.jq" 2>/dev/null)"
+      [ "$b" = "$j" ] || { echo "FAIL: canon-parity bash≠jq for [$inp]: bash=[$b] jq=[$j]" >&2; cp_fail=1; }
+      if [ -n "$PYBIN" ]; then
+        p="$(canon_py "$inp")"
+        [ "$b" = "$p" ] || { echo "FAIL: canon-parity bash≠python for [$inp]: bash=[$b] py=[$p]" >&2; cp_fail=1; }
+      fi
+    done
+    # slash-preservation tripwire (the exact transcription-error guard)
+    [ "$(_canon_path 'Config/AppToken.cs')" = "Config/AppToken.cs" ] || { echo "FAIL: slash-preservation tripwire — 'Config/AppToken.cs' was mangled to [$(_canon_path 'Config/AppToken.cs')]" >&2; cp_fail=1; }
+    [ "$(_canon_path 'a\b')" = "a/b" ] || { echo "FAIL: backslash-replace tripwire — 'a\\b' -> [$(_canon_path 'a\b')] (expected a/b)" >&2; cp_fail=1; }
+    exit $cp_fail
+  )
+  if [ $? -eq 0 ]; then ok "CANON-PARITY bash==jq$([ -n "$PYBIN" ] && echo '==python') on 9-input vector + slash-preservation tripwire"
+  else bad "CANON-PARITY divergence across backends (see FAIL lines above)"; fi
+else
+  echo "SKIP: jq absent — cannot run cross-backend canon-parity. (Not a pass.)"
+fi
+
 echo ""
 echo "coupled-edit-pathform tests: ${PASS} passed, ${FAIL} failed"
 [ "$FAIL" -eq 0 ]
