@@ -108,21 +108,49 @@ assert_block "H3-regex literal member 'Service.test.cs' ('.' not any-char)"     
 set_group '[{"files":["-weird.cs"],"findings":["x"],"acknowledged":false}]'
 assert_block "H3-regex leading-dash member '-weird.cs' (grep -- end-of-options)"          "-weird.cs"
 
-echo "──── H3 separator-normalization (pin current canonicalization; BLOCK = anti-regression) ────"
+echo "──── H3 CANONICALIZATION INVARIANT — every representation of the governed file reaches BLOCK ────"
+# ENFORCEMENT INVARIANT: a governed member stored as 'Services/TokenProvider.cs' MUST BLOCK for EVERY
+# representation that denotes the same file — separator style, repeated separators, trailing separator,
+# dot-prefix, repo-absolute, drive-qualified, UNC. _canon_path folds them all to the same repo-relative
+# form. These were previously ALLOW bypasses (pinned as "off-live-path"); the gate must not rely on the
+# caller supplying a clean representation, so they are now closed and asserted BLOCK on every platform.
 set_group "$GROUP_REL"
-# Adjacent '//' collapses (single pass) so a doubled separator is still a member -> BLOCK.
-assert_block "H3-sep double-separator 'Services//TokenProvider.cs'"        "Services//TokenProvider.cs"
-# Absolute path whose prefix is NOT the repo root: the repo-prefix strip does not apply, but the
-# stored 'Services/TokenProvider.cs' is still a /-anchored suffix -> member -> BLOCK.
-assert_block "H3-sep abs-different-prefix '/other/loc/Services/TokenProvider.cs'" "/other/loc/Services/TokenProvider.cs"
-# KNOWN under-normalization (pinned, OFF THE LIVE PATH): _canon_path does NOT strip a trailing '/'
-# and its '//' collapse is single-pass, so a directory-style trailing slash or a 3+-repeated separator
-# is treated as a non-member (ALLOW). The real Edit/Write tool targets a FILE and sends a clean path,
-# never these forms. These assertions PIN the current behavior so a future canonicalization-hardening
-# change (add trailing-/ strip + repeated-// collapse) is a deliberate, test-visible flip — NOT a
-# silent drift. They are documentation of a separate known item, not an endorsement of fail-open.
-assert_allow "H3-sep trailing-slash 'Services/TokenProvider.cs/' (known under-normalization, off-live-path)" "Services/TokenProvider.cs/"
-assert_allow "H3-sep triple-separator 'Services///TokenProvider.cs' (known under-normalization, off-live-path)" "Services///TokenProvider.cs"
+assert_block "H3-canon double-separator 'Services//TokenProvider.cs'"               "Services//TokenProvider.cs"
+assert_block "H3-canon triple-separator 'Services///TokenProvider.cs'"              "Services///TokenProvider.cs"
+assert_block "H3-canon trailing-fwd-slash 'Services/TokenProvider.cs/'"             "Services/TokenProvider.cs/"
+assert_block "H3-canon trailing-back-slash 'Services\\\\TokenProvider.cs\\\\'"      "Services\\\\TokenProvider.cs\\\\"
+assert_block "H3-canon mixed-repeated 'Services\\\\//TokenProvider.cs'"             "Services\\\\//TokenProvider.cs"
+assert_block "H3-canon abs-different-prefix '/other/loc/Services/TokenProvider.cs'" "/other/loc/Services/TokenProvider.cs"
+assert_block "H3-canon abs-different-prefix+trailing '/other/loc/Services/TokenProvider.cs/'" "/other/loc/Services/TokenProvider.cs/"
+assert_block "H3-canon drive-qualified 'D:\\\\proj\\\\Services\\\\TokenProvider.cs'" "D:\\\\proj\\\\Services\\\\TokenProvider.cs"
+assert_block "H3-canon UNC-style '\\\\\\\\srv\\\\share\\\\Services\\\\TokenProvider.cs'" "\\\\\\\\srv\\\\share\\\\Services\\\\TokenProvider.cs"
+# Single-dot (current-dir) no-op segments are lexical equivalents of the governed file → BLOCK. The gate
+# folds an embedded '/./' and a trailing '/.' (and leading './'). NOTE: '..' (parent) is NOT folded —
+# lexical '..' collapse is unsound across symlinks — so a '..'-bearing form is a documented residual
+# (treated as a non-member), not asserted here.
+assert_block "H3-canon embedded-dot 'Services/./TokenProvider.cs'"                  "Services/./TokenProvider.cs"
+assert_block "H3-canon trailing-dot 'Services/TokenProvider.cs/.'"                  "Services/TokenProvider.cs/."
+assert_block "H3-canon repeated-embedded-dot 'Services/././TokenProvider.cs'"       "Services/././TokenProvider.cs"
+assert_block "H3-canon dot+backslash 'Services\\\\.\\\\TokenProvider.cs'"           "Services\\\\.\\\\TokenProvider.cs"
+echo "──── H3 CANONICALIZATION — dotfiles must NOT be eaten by the dot-collapse (genuine non-member ALLOW) ────"
+# The '/./' collapse must only remove a SOLE dot segment, never a dotfile name. Editing a dotfile that is
+# not a member must ALLOW (no over-eager dot stripping turning '.hidden' into a member).
+assert_allow "H3-canon dotfile non-member 'X/.hidden' (member is Services/TokenProvider.cs)" "X/.hidden"
+echo "──── H3 CANONICALIZATION — degenerate inputs are NON-members (ALLOW; they denote no governed file) ────"
+# A root/drive-root/empty/separators-only input canonicalizes to '' or a bare prefix — it denotes no
+# file, so it is correctly a NON-member (ALLOW). It is not a bypass: there is no governed member it could
+# match. (If a future contract wants these to hard-BLOCK as invalid targets, that is a deliberate flip.)
+assert_allow "H3-canon root '/'                          → no member"   "/"
+assert_allow "H3-canon drive-root 'C:\\\\'               → no member"   "C:\\\\"
+assert_allow "H3-canon separators-only '///'             → no member"   "///"
+assert_allow "H3-canon separators-only-backslash '\\\\\\\\' → no member" "\\\\\\\\"
+echo "──── H3 STORED-side canonicalization (a hand-authored/legacy groups member with messy separators still BLOCKs) ────"
+# The stored member side (jq/python canon) normalizes identically, so even a corrupt/legacy groups file
+# whose member has a doubled or trailing separator still matches a clean incoming edit -> BLOCK.
+set_group '[{"files":["Services//TokenProvider.cs"],"findings":["x"],"acknowledged":false}]'
+assert_block "H3-stored double-sep member, clean edit 'Services/TokenProvider.cs'"  "Services/TokenProvider.cs"
+set_group '[{"files":["Services/TokenProvider.cs/"],"findings":["x"],"acknowledged":false}]'
+assert_block "H3-stored trailing-sep member, clean edit 'Services/TokenProvider.cs'" "Services/TokenProvider.cs"
 
 echo "──── H3 CRLF groups file (a CRLF-terminated active-groups.json must still BLOCK a member) ────"
 # A groups file written with CRLF line endings (legacy/Windows editor) must not defeat membership.

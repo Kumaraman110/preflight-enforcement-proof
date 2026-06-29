@@ -82,18 +82,19 @@ fi
 # silent ALLOW on every coupled block (the live path). Fix: LEXICALLY canonicalize the incoming path
 # to repo-relative (no realpath/on-disk dependency — an Edit may target a not-yet-created file), then
 # match by exact-equality OR /-anchored-suffix against each (likewise-canonicalized) stored path.
-# LEXICAL only: \→/, collapse ADJACENT // into / (single pass), strip a leading repo-root prefix,
-# strip leading ./, strip a single leading /. NOTE (mechanism-over-prose, honest label): this does
-# NOT strip a TRAILING '/' and the // collapse is single-pass, so a directory-style 'X/Token.cs/' or a
-# 3+-repeated-separator 'X///Token.cs' under-normalizes and the authoritative suffix-match below treats
-# it as a non-member (ALLOW). That is off the live path (the real Edit/Write tool targets a FILE and
-# sends a clean path, never a trailing-slash/dir form) and is unrelated to the GNU-vs-MSYS basename
-# fail-open fixed here; it is a separate canonicalization-hardening item, deliberately not changed here.
+# LEXICAL only (no realpath/on-disk dependency): \→/, collapse ALL runs of repeated / into a single /
+# (multi-pass — so 'X///Token.cs' and 'X//Token.cs' fold to 'X/Token.cs'), strip a leading repo-root
+# prefix, strip leading ./, strip a leading /, and strip TRAILING /(s) from a file target (so
+# 'X/Token.cs/' folds to 'X/Token.cs'). RESULT: every representation that denotes the same governed
+# file — forward/back slash, doubled/tripled separators, trailing separator, ./-prefixed, repo-absolute,
+# drive- or UNC-qualified absolute — canonicalizes to the SAME repo-relative form and therefore reaches
+# the SAME policy decision (the enforcement invariant). The authoritative suffix-match below compares
+# this against each (likewise-canonicalized) stored member.
 REPO_TOP="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 _canon_path() {  # $1 = a path; echoes its lexical repo-relative canonical form. Always returns 0.
   local p="$1"
-  p="${p//\\//}"                      # backslash -> forward slash
-  p="${p//\/\///}"                    # collapse any // into /
+  p="${p//\\//}"                       # backslash -> forward slash
+  while case "$p" in *//*) true ;; *) false ;; esac; do p="${p//\/\///}"; done   # collapse ALL // runs -> / (multi-pass: '///'->'/' too)
   # Strip the repo-root prefix if the path is absolute and under the repo (so /repo/Services/X -> Services/X).
   if [ -n "$REPO_TOP" ]; then
     local top="${REPO_TOP//\\//}"
@@ -101,8 +102,15 @@ _canon_path() {  # $1 = a path; echoes its lexical repo-relative canonical form.
       "$top"/*) p="${p#"$top"/}" ;;   # exact repo-root prefix + /
     esac
   fi
+  while case "$p" in */./*) true ;; *) false ;; esac; do p="${p//\/.\///}"; done   # collapse embedded '/./' -> '/' (multi-pass; a current-dir no-op segment)
+  case "$p" in */.) p="${p%/.}" ;; esac   # strip a trailing '/.' (current-dir no-op)
   while [ "${p#./}" != "$p" ]; do p="${p#./}"; done   # strip leading ./ (repeatable)
   p="${p#/}"                           # strip a single leading / (path outside repo-root, best-effort)
+  while [ -n "$p" ] && [ "$p" != "${p%/}" ]; do p="${p%/}"; done   # strip TRAILING /(s): a file target, never a dir form
+  # NOTE: '.' (current-dir) segments are folded above — purely lexical, always safe. A '..' (parent)
+  # segment is NOT folded: lexical '..' collapse is unsound when the preceding segment is a symlink, so
+  # 'X/foo/../Token.cs' is left as-is (treated as a non-member) rather than improvise an unsafe path
+  # model. This is a documented residual, not a regression (see docs/parity-gate-limitations.md scope).
   printf '%s' "$p"
   return 0
 }
@@ -180,7 +188,7 @@ fi
 # All three backends use the SAME canonical-suffix + non-true semantics (parity requirement).
 if command -v jq &>/dev/null; then
   UNACKED=$(jq -r --arg fp "$CANON_FP" '
-    def canon: gsub("\\\\"; "/") | sub("^(\\./)+"; "") | sub("^/+"; "");
+    def canon: gsub("\\\\"; "/") | gsub("/+"; "/") | gsub("(/\\.)+/"; "/") | sub("/\\.$"; "") | sub("^(\\./)+"; "") | sub("^/+"; "") | sub("/+$"; "");
     [ .[]
       | select(.acknowledged != true)
       | select(.files[]? | canon as $sf | ($sf != "") and (($fp == $sf) or ($fp | endswith("/" + $sf))))
@@ -193,8 +201,12 @@ import json,os,re
 fp=os.environ['CANON_FP']
 def canon(s):
     s=s.replace('\\\\','/')
+    s=re.sub(r'/+','/',s)
+    s=re.sub(r'(?:/\\.)+/','/',s)
+    s=re.sub(r'/\\.$','',s)
     s=re.sub(r'^(\\./)+','',s)
     s=re.sub(r'^/+','',s)
+    s=re.sub(r'/+$','',s)
     return s
 groups=json.load(open(os.environ['GROUPS_FILE']))
 def member(g):
