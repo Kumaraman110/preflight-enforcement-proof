@@ -159,6 +159,126 @@ if [ -z "$COMMAND" ]; then
 fi
 _pfg_stage "command-extracted"
 
+# ── (FAST-INLINE) BOUNDED STATIC INSPECTION OF `bash -c <payload>` INLINE-SHELL WRAPPERS (BLOCKER-E) ──────
+# THE GAP (confirmed fail-open): `bash -c 'gh pr merge --repo <forbidden> 12 --merge'` (and `gh pr create`)
+# was silently ALLOWED. A `bash -c <inline code>` is neither a git push (so the structural push parser does
+# not engage) nor a script FILE (so `_sw_resolve_script` returns '' — inline `-c` is not a file), and the
+# gh-pr detection runs on the OUTER raw string where the inner `gh pr …` is hidden inside the quoted payload.
+# The command therefore reached the non-push `exit 0` ungated. (git push inside bash -c was already caught
+# structurally; only the gh-pr family leaked.)
+#
+# THE FIX (no second policy engine; reuse THIS engine via bounded recursion): if the command is structurally
+# an inline `bash|sh|dash|zsh [-l|-i] -c <STATICALLY-RECOVERABLE literal>` wrapper, extract the literal
+# payload WITHOUT executing it and re-feed it through THIS engine (synthesized stdin), then relay the inner
+# verdict to the outer command verbatim: inner ALLOW→ALLOW, inner CONFIRM(ask)→CONFIRM, inner BLOCK→BLOCK,
+# inner engine-failure→fail-closed. A DYNAMIC/opaque payload ($VAR, $(...), ``, ${...}, eval, malformed/
+# concatenated quoting, unterminated) is a DETERMINISTIC BLOCK — never executed, never approved. Bounded
+# recursion (PREFLIGHT_INLINE_DEPTH, max 3) supports a nested inspectable wrapper; depth-exhaustion BLOCKs.
+# Pure bash builtins for the extraction (no spawn): the env var NEVER interpolates the payload, no profile is
+# sourced, the shell parser is never invoked on the payload.
+: "${PREFLIGHT_INLINE_DEPTH:=0}"
+_PFG_INLINE_MAX=3
+# _pfg_inline_payload <command>  → echoes: '__NOTSHAPE__' (not an inline -c wrapper; engine handles normally)
+#                                          '__OPAQUE__'    (IS an inline -c wrapper but payload not statically
+#                                                           recoverable → caller must BLOCK)
+#                                          <payload>       (statically-recovered literal → caller recurses)
+_pfg_inline_payload() {
+  local s="$1"
+  # peel a leading run of well-formed env-assignment (NAME=val) and command/exec/builtin prefixes (builtins).
+  while :; do
+    local first="${s%%[[:space:]]*}"
+    case "$first" in
+      *=*) local nm="${first%%=*}"; case "$nm" in *[!A-Za-z0-9_]*|'') break ;; esac
+           s="${s#"$first"}"; s="${s#"${s%%[![:space:]]*}"}"; continue ;;
+    esac
+    case "$s" in
+      command\ *|exec\ *|builtin\ *) s="${s#* }"; s="${s#"${s%%[![:space:]]*}"}"; continue ;;
+    esac
+    break
+  done
+  # program token must be a shell, optionally dir-prefixed and/or .exe-suffixed.
+  local prog="${s%%[[:space:]]*}" base
+  base="${prog##*/}"; base="${base%.exe}"
+  # `eval`/`xargs` as the LEADING program are runtime-indirection: they re-parse their argument with full
+  # shell expansion at run time, so a governed op inside cannot be statically resolved → OPAQUE (fail-closed).
+  # This closes the same inline-indirection class as bash -c for the eval/xargs path (it only fires when eval/
+  # xargs is the leading program token — a mere mention like `echo eval` is unaffected).
+  case "$base" in eval|xargs) printf '__OPAQUE__'; return ;; esac
+  case "$base" in bash|sh|dash|zsh) ;; *) printf '__NOTSHAPE__'; return ;; esac
+  s="${s#"$prog"}"; s="${s#"${s%%[![:space:]]*}"}"
+  # consume options until -c/--command. Allow ONLY harmless login/interactive opts (-l/-i and -l/-i clusters
+  # ending in c, e.g. -lc); any other option before -c → opaque (be safe). A non-option token → not -c shape.
+  local found_c=0
+  while [ -n "$s" ]; do
+    local tok="${s%%[[:space:]]*}"
+    case "$tok" in
+      --command|-c) found_c=1; s="${s#"$tok"}"; s="${s#"${s%%[![:space:]]*}"}"; break ;;
+      -*c) local mid="${tok#-}"; mid="${mid%c}"; case "$mid" in *[!li]*) printf '__OPAQUE__'; return ;; esac
+           found_c=1; s="${s#"$tok"}"; s="${s#"${s%%[![:space:]]*}"}"; break ;;
+      -[li]|-[li][li]) s="${s#"$tok"}"; s="${s#"${s%%[![:space:]]*}"}"; continue ;;
+      -*) printf '__OPAQUE__'; return ;;
+      *)  printf '__NOTSHAPE__'; return ;;
+    esac
+  done
+  [ "$found_c" = 1 ] || { printf '__NOTSHAPE__'; return; }
+  local rest="$s" payload="" after q
+  [ -n "$rest" ] || { printf '__OPAQUE__'; return; }
+  q="${rest%"${rest#?}"}"   # first char of the payload region
+  case "$q" in
+    "'")  rest="${rest#?}"; case "$rest" in *"'"*) payload="${rest%%\'*}";; *) printf '__OPAQUE__'; return ;; esac
+          after="${rest#*\'}"; [ -n "$after" ] && { printf '__OPAQUE__'; return; } ;;   # concatenated/odd → opaque
+    '"')  rest="${rest#?}"; case "$rest" in *'"'*) payload="${rest%%\"*}";; *) printf '__OPAQUE__'; return ;; esac
+          after="${rest#*\"}"; [ -n "$after" ] && { printf '__OPAQUE__'; return; }
+          case "$payload" in *'$'*|*'`'*) printf '__OPAQUE__'; return ;; esac ;;   # interpolation in "" → opaque
+    *)    case "$rest" in *'$'*|*'`'*|*'"'*|*"'"*|*[[:space:]]*) printf '__OPAQUE__'; return ;; esac; payload="$rest" ;;
+  esac
+  case "$payload" in *'$('*|*'${'*|*'`'*|*'$'*) printf '__OPAQUE__'; return ;; esac   # residual substitution → opaque
+  printf '%s' "$payload"
+}
+_pfg_inline_opaque_block() {  # deterministic BLOCK for an un-recoverable inline payload
+  _pfg_stage "fast-inline:OPAQUE-BLOCK"
+  echo "BLOCKED: an inline shell wrapper (bash/sh -c …) carries a payload that cannot be statically resolved" >&2
+  echo "  for inspection (dynamic \$VAR / \$(…) / backtick / eval / \${…} / malformed or concatenated quoting)." >&2
+  echo "  Preflight will not execute or eval the inline content to find out what it does, so it is failed" >&2
+  echo "  CLOSED — NOT approved. No represented command executed. Re-express the underlying steps as direct," >&2
+  echo "  individually-inspectable commands so the gate can adjudicate each for policy. (Agent Bash-tool guard" >&2
+  echo "  only; not server-side protection — see docs/parity-gate-limitations.md.)" >&2
+  exit 2
+}
+_PFG_INLINE_PAYLOAD="$(_pfg_inline_payload "$COMMAND")"
+case "$_PFG_INLINE_PAYLOAD" in
+  __NOTSHAPE__) : ;;                 # not an inline -c wrapper → fall through to the normal policy path
+  __OPAQUE__)   _pfg_inline_opaque_block ;;
+  *)
+    # A statically-recovered inline payload. Recurse THIS engine on it (bounded), relay its verdict verbatim.
+    if [ "$PREFLIGHT_INLINE_DEPTH" -ge "$_PFG_INLINE_MAX" ]; then
+      _pfg_stage "fast-inline:DEPTH-EXHAUSTED-BLOCK"
+      echo "BLOCKED: nested inline-shell wrappers (bash/sh -c …) exceeded the supported inspection depth" >&2
+      echo "  (${_PFG_INLINE_MAX}). Preflight cannot fully resolve arbitrarily-nested inline indirection, so it is" >&2
+      echo "  failed CLOSED — NOT approved. No represented command executed. Re-express the operation as a direct," >&2
+      echo "  individually-inspectable command. (Agent Bash-tool guard only; not server-side protection.)" >&2
+      exit 2
+    fi
+    _pfg_stage "fast-inline:recurse(depth=$PREFLIGHT_INLINE_DEPTH)"
+    _PFG_INLINE_JSON="$(printf '%s' "$_PFG_INLINE_PAYLOAD" | jq -Rs '{tool_input:{command:.}}' 2>/dev/null)"
+    if [ -z "$_PFG_INLINE_JSON" ]; then _pfg_inline_opaque_block; fi   # could not even encode → fail closed
+    _PFG_INLINE_OUT="$(printf '%s' "$_PFG_INLINE_JSON" | PREFLIGHT_INLINE_DEPTH="$((PREFLIGHT_INLINE_DEPTH+1))" bash "$_PFG_SELF_DIR/pre-push-gate-engine" 2>"${TMPDIR:-/tmp}/.pfg-inline-err.$$" )"
+    _PFG_INLINE_RC=$?
+    _pfg_stage "fast-inline:inner-rc=$_PFG_INLINE_RC"
+    if [ "$_PFG_INLINE_RC" -eq 2 ]; then
+      # inner BLOCK → outer BLOCK; relay the inner diagnostic + note the inline-shell indirection.
+      cat "${TMPDIR:-/tmp}/.pfg-inline-err.$$" >&2 2>/dev/null || true
+      echo "  (Found through inline-shell indirection: bash -c '<payload>'. Inspected statically, not executed.)" >&2
+      rm -f "${TMPDIR:-/tmp}/.pfg-inline-err.$$" 2>/dev/null || true
+      exit 2
+    fi
+    rm -f "${TMPDIR:-/tmp}/.pfg-inline-err.$$" 2>/dev/null || true
+    # inner ALLOW (rc 0, no JSON) or inner CONFIRM (rc 0 + permissionDecision JSON): relay stdout + rc verbatim.
+    [ -n "$_PFG_INLINE_OUT" ] && printf '%s\n' "$_PFG_INLINE_OUT"
+    exit "$_PFG_INLINE_RC"
+    ;;
+esac
+
 # ── (FAST-0) BUILTINS-ONLY EXPLICIT-REMOTE FORBIDDEN FAST PATH (live Gate-4 23s-timeout fix) ──────────────
 # THE PROBLEM: the existing early forbidden-remote block (B-EARLY, below) already decides the cheapest case
 # — an explicit push to a forbiddenRemotes NAME — but only AFTER the sentinel-tripwire greps, the
@@ -622,7 +742,7 @@ fi
 # config + no overlay; anything else falls through to the unchanged heavy #3a guard.
 # Verdict classes (identical to #3a): explicit/default target slug on forbiddenRepos → BLOCK; target slug
 # != canonical slug → BLOCK (non-canonical); else → ALLOW (gh pr create is not a push; nothing more to gate).
-if printf '%s' "$COMMAND" | grep -qE '(^|&&|\|\||;|")[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+|command[[:space:]]+)*gh[[:space:]]+pr[[:space:]]+create'; then
+if printf '%s' "$COMMAND" | grep -qE '(^|&&|\|\||;)[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+|command[[:space:]]+)*gh[[:space:]]+pr[[:space:]]+create'; then
   # The leading group `([A-Za-z_]…=…[[:space:]]+|command[[:space:]]+)*` peels an optional run of env-
   # assignment prefixes (VAR=val) and a `command` prefix before `gh`, so `PATH=… gh pr create` and
   # `command gh pr create` are detected — matching how the git-push parser already peels those prefixes.
@@ -724,7 +844,7 @@ fi
 #     reversibility model (CLAUDE.md rule 6): a protected-branch landing is the CONFIRM tier.
 # CONSERVATIVE: engages only for a clearly-shaped leading `gh pr merge` with committed config; a get-url
 # wedge falls through to the normal (non-push) handling. FAIL-OPEN posture is preserved (no config → inert).
-if printf '%s' "$COMMAND" | grep -qE '(^|&&|\|\||;|")[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+|command[[:space:]]+)*gh[[:space:]]+pr[[:space:]]+merge'; then
+if printf '%s' "$COMMAND" | grep -qE '(^|&&|\|\||;)[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+|command[[:space:]]+)*gh[[:space:]]+pr[[:space:]]+merge'; then
   # env-assignment / `command` prefixes are peeled (see the gh-pr-create note above) so `PATH=… gh pr merge`
   # is detected, not silently allowed.
   _pfg_stage "fast-prmerge:enter"
@@ -1647,7 +1767,7 @@ fi
 # — see docs/parity-gate-limitations.md. Block messages DELIBERATELY do NOT recommend
 # a specific remote/repo: on an inverted clone the "canonical" value is itself the
 # dangerous one, so steering toward it is the original A1 defect. Surface to a human.
-if printf '%s' "$COMMAND" | grep -qE '(^|&&|\|\||;|")[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+|command[[:space:]]+)*gh[[:space:]]+pr[[:space:]]+create'; then
+if printf '%s' "$COMMAND" | grep -qE '(^|&&|\|\||;)[[:space:]]*([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+|command[[:space:]]+)*gh[[:space:]]+pr[[:space:]]+create'; then
   PR_CMD="$(printf '%s' "$COMMAND" | grep -oE 'gh[[:space:]]+pr[[:space:]]+create[^&|;]*' | head -1 || true)"
   CFG="$(_pfg_config)"
   CANON_REMOTE="$(_pfg_branch_field "$CFG" remote)"

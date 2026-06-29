@@ -1274,6 +1274,19 @@ run_behavioral_tests() {
     yellow "SKIP: pre-pr-merge-policy-test.sh not found"
   fi
 
+  # ── BLOCKER-E — inline-shell `bash -c '<gh pr …>'` fail-open (bounded static inspection) ──
+  local inline_shell_test="$SCRIPT_DIR/behavioral/pre-push-inline-shell-test.sh"
+  if [ -f "$inline_shell_test" ]; then
+    if bash "$inline_shell_test"; then
+      PASSES=$((PASSES + 31))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: pre-push-inline-shell tests failed (a governed gh pr create/merge hidden inside an inline bash/sh -c '<literal>' must be statically recovered — NEVER executed/eval'd — and re-classified through the SAME policy: forbidden/non-canonical/--admin → BLOCK, canonical → CONFIRM, benign → ALLOW; dynamic/opaque payloads (\$VAR/\$(…)/backtick/\${…}/eval/xargs/malformed-quoting) → DETERMINISTIC BLOCK; bounded recursion depth → BLOCK on exhaustion; a benign quoted MENTION must NOT false-positive; direct-command and git-push-in-bash-c behavior unchanged)"
+    fi
+  else
+    yellow "SKIP: pre-push-inline-shell-test.sh not found"
+  fi
+
   local gapa_test="$SCRIPT_DIR/behavioral/pre-push-gapa-prod-pattern-test.sh"
   if [ -f "$gapa_test" ]; then
     if bash "$gapa_test"; then
