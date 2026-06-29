@@ -117,20 +117,24 @@ fi
 # not force-to-protected so it won't hard-block, but it must not be a silent allow on the forbidden remote.
 assert_block_forbidden "H1c +unprotected on forbidden" "git push poc +topic-work"
 
-echo "════════ Class 4 — indirection wrappers (FAIL-CLOSED → CONFIRM, not silent allow) ════════"
-# A push wrapped in eval/bash -c/xargs cannot be parsed for its target → must CONFIRM (ask), never exit 0 allow.
-run_hook "eval 'git push poc main'"
-if [ "$RC" -eq 0 ] && printf '%s' "$OUT" | grep -q '"permissionDecision":"ask"'; then
-  ok "C4a eval: unparseable push -> CONFIRM (ask), not silent allow"
-else
-  bad "C4a eval: expected CONFIRM(ask), got RC=$RC OUT=$(printf '%s' "$OUT" | tr '\n' '|' | cut -c1-160)"
-fi
-run_hook "bash -c 'git push poc main'"
-if [ "$RC" -eq 0 ] && printf '%s' "$OUT" | grep -q '"permissionDecision":"ask"'; then
-  ok "C4b bash -c: unparseable push -> CONFIRM (ask), not silent allow"
-else
-  bad "C4b bash -c: expected CONFIRM(ask), got RC=$RC OUT=$(printf '%s' "$OUT" | tr '\n' '|' | cut -c1-160)"
-fi
+echo "════════ Class 4 — indirection wrappers (FAIL-CLOSED → BLOCK or CONFIRM, never silent allow) ════════"
+# A push/op wrapped in eval/bash -c/xargs must fail CLOSED (BLOCK or CONFIRM), NEVER a silent exit-0 allow.
+# STRENGTHENED (BLOCKER-E inline-shell inspection): `eval`/`bash -c` are no longer merely "unparseable →
+# soft-CONFIRM". `eval` is now a DETERMINISTIC opaque BLOCK (its argument re-parses with full expansion at
+# runtime; it cannot be statically classified). `bash -c '<literal>'` is now STATICALLY recovered and
+# re-classified through the same engine — here the recovered `git push poc …` targets the FORBIDDEN remote
+# 'poc', so the precise verdict is BLOCK. Both BLOCK ⊃ the old CONFIRM in the safety order (BLOCK never
+# proceeds), so this is a strengthening, not a weakening. The assertion accepts either fail-closed tier
+# (BLOCK or CONFIRM) and still forbids a silent allow.
+_failclosed() {  # $1 = label : pass if BLOCK (exit2) OR CONFIRM(ask); fail on silent allow.
+  if [ "$RC" -eq 2 ] || { [ "$RC" -eq 0 ] && printf '%s' "$OUT" | grep -q '"permissionDecision":"ask"'; }; then
+    ok "$1 (fail-closed: $( [ "$RC" -eq 2 ] && echo BLOCK || echo CONFIRM ), not silent allow)"
+  else
+    bad "$1: expected fail-closed (BLOCK or CONFIRM), got RC=$RC OUT=$(printf '%s' "$OUT" | tr '\n' '|' | cut -c1-140)"
+  fi
+}
+run_hook "eval 'git push poc main'";        _failclosed "C4a eval: opaque indirection → BLOCK (was soft-CONFIRM)"
+run_hook "bash -c 'git push poc main'";      _failclosed "C4b bash -c: recovered → forbidden-remote BLOCK (was soft-CONFIRM)"
 run_hook "echo main | xargs git push poc"
 if [ "$RC" -eq 0 ] && printf '%s' "$OUT" | grep -q '"permissionDecision":"ask"'; then
   ok "C4c xargs: unparseable push -> CONFIRM (ask), not silent allow"

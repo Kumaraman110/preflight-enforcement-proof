@@ -206,18 +206,25 @@ _pfg_inline_payload() {
   case "$base" in eval|xargs) printf '__OPAQUE__'; return ;; esac
   case "$base" in bash|sh|dash|zsh) ;; *) printf '__NOTSHAPE__'; return ;; esac
   s="${s#"$prog"}"; s="${s#"${s%%[![:space:]]*}"}"
-  # consume options until -c/--command. Allow ONLY harmless login/interactive opts (-l/-i and -l/-i clusters
-  # ending in c, e.g. -lc); any other option before -c → opaque (be safe). A non-option token → not -c shape.
+  # Scan options looking for the inline-code flag (-c / --command). The THREAT is an inline -c PAYLOAD; an
+  # invocation with NO -c (bash --version, bash -x, bash -i, bash --noprofile …) runs no governed inline
+  # payload → NOTSHAPE (benign, engine handles normally). So an UNKNOWN option is SKIPPED (keep scanning),
+  # never treated as opaque. Only a flag CLUSTER ending in 'c' whose leading letters are NOT the known
+  # short-opts (l/i/s/e/x/u/f/m/n/v/B/C/E/H/P/T … i.e. a cluster that mixes -c with other letters like -xc)
+  # is ambiguous about where the code argument binds → opaque (be safe). A non-option token before any -c
+  # (e.g. `bash script.sh`) → NOTSHAPE (a script FILE, handled by _sw_resolve_script, not here).
   local found_c=0
   while [ -n "$s" ]; do
     local tok="${s%%[[:space:]]*}"
     case "$tok" in
       --command|-c) found_c=1; s="${s#"$tok"}"; s="${s#"${s%%[![:space:]]*}"}"; break ;;
-      -*c) local mid="${tok#-}"; mid="${mid%c}"; case "$mid" in *[!li]*) printf '__OPAQUE__'; return ;; esac
+      -*c) # a short-flag cluster ending in c (e.g. -lc, -ic, -xc). Known harmless leaders (l/i/x/e/u/f/m/n/B/H/T)
+           # → treat as -c with the code following; an unrecognized leader letter → opaque (ambiguous binding).
+           local mid="${tok#-}"; mid="${mid%c}"
+           case "$mid" in *[!lixeufmnBHT]*) printf '__OPAQUE__'; return ;; esac
            found_c=1; s="${s#"$tok"}"; s="${s#"${s%%[![:space:]]*}"}"; break ;;
-      -[li]|-[li][li]) s="${s#"$tok"}"; s="${s#"${s%%[![:space:]]*}"}"; continue ;;
-      -*) printf '__OPAQUE__'; return ;;
-      *)  printf '__NOTSHAPE__'; return ;;
+      -*) s="${s#"$tok"}"; s="${s#"${s%%[![:space:]]*}"}"; continue ;;   # unknown opt w/o -c → skip, keep scanning
+      *)  printf '__NOTSHAPE__'; return ;;                               # a non-option token → script-file shape
     esac
   done
   [ "$found_c" = 1 ] || { printf '__NOTSHAPE__'; return; }
