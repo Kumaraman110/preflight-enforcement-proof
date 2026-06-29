@@ -1278,7 +1278,7 @@ run_behavioral_tests() {
   local inline_shell_test="$SCRIPT_DIR/behavioral/pre-push-inline-shell-test.sh"
   if [ -f "$inline_shell_test" ]; then
     if bash "$inline_shell_test"; then
-      PASSES=$((PASSES + 31))
+      PASSES=$((PASSES + 34))
     else
       FAILURES=$((FAILURES + 1))
       red "FAIL: pre-push-inline-shell tests failed (a governed gh pr create/merge hidden inside an inline bash/sh -c '<literal>' must be statically recovered — NEVER executed/eval'd — and re-classified through the SAME policy: forbidden/non-canonical/--admin → BLOCK, canonical → CONFIRM, benign → ALLOW; dynamic/opaque payloads (\$VAR/\$(…)/backtick/\${…}/eval/xargs/malformed-quoting) → DETERMINISTIC BLOCK; bounded recursion depth → BLOCK on exhaustion; a benign quoted MENTION must NOT false-positive; direct-command and git-push-in-bash-c behavior unchanged)"

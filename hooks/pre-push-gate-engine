@@ -184,6 +184,7 @@ _PFG_INLINE_MAX=3
 #                                          <payload>       (statically-recovered literal → caller recurses)
 _pfg_inline_payload() {
   local s="$1"
+  s="${s#"${s%%[![:space:]]*}"}"   # strip LEADING whitespace (else ' bash -c …' would mis-parse to NOTSHAPE → bypass)
   # peel a leading run of well-formed env-assignment (NAME=val) and command/exec/builtin prefixes (builtins).
   while :; do
     local first="${s%%[[:space:]]*}"
@@ -279,10 +280,22 @@ case "$_PFG_INLINE_PAYLOAD" in
       rm -f "${TMPDIR:-/tmp}/.pfg-inline-err.$$" 2>/dev/null || true
       exit 2
     fi
+    # ONLY a clean inner rc 0 (allow, or CONFIRM via the permissionDecision JSON in stdout) is relayed as
+    # allow/confirm. ANY OTHER inner rc (1, 127, 137, …) means the recursed engine did NOT reach a clean
+    # decision (crash / abnormal exit) → fail CLOSED (BLOCK), never relay a non-2 abnormal rc that the
+    # PreToolUse protocol would treat as non-blocking (an inner-engine-failure must not become an allow).
+    if [ "$_PFG_INLINE_RC" -ne 0 ]; then
+      cat "${TMPDIR:-/tmp}/.pfg-inline-err.$$" >&2 2>/dev/null || true
+      rm -f "${TMPDIR:-/tmp}/.pfg-inline-err.$$" 2>/dev/null || true
+      echo "BLOCKED: inspecting an inline shell wrapper's payload, the recursed policy engine exited abnormally" >&2
+      echo "  (rc=$_PFG_INLINE_RC, neither a clean allow nor a block) — this is an ENGINE FAILURE, not a policy" >&2
+      echo "  approval. Failed CLOSED; no represented command executed. (Agent Bash-tool guard only.)" >&2
+      exit 2
+    fi
     rm -f "${TMPDIR:-/tmp}/.pfg-inline-err.$$" 2>/dev/null || true
-    # inner ALLOW (rc 0, no JSON) or inner CONFIRM (rc 0 + permissionDecision JSON): relay stdout + rc verbatim.
+    # inner clean ALLOW (rc 0, no JSON) or inner CONFIRM (rc 0 + permissionDecision JSON): relay stdout verbatim.
     [ -n "$_PFG_INLINE_OUT" ] && printf '%s\n' "$_PFG_INLINE_OUT"
-    exit "$_PFG_INLINE_RC"
+    exit 0
     ;;
 esac
 

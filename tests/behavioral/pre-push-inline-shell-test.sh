@@ -90,6 +90,9 @@ run "/usr/bin/bash -c 'gh pr merge 12 --repo $FORB --merge'";   expect "C12 /usr
 run "bash -lc 'gh pr merge 12 --repo $FORB --merge'";           expect "C13 bash -lc"             BLOCK
 run "PATH=/x:\$PATH bash -c 'gh pr merge 12 --repo $FORB --merge'"; expect "C14 env prefix OUTSIDE" BLOCK
 run "bash -c 'FOO=bar gh pr merge 12 --repo $FORB --merge'";    expect "C15 env prefix INSIDE body" BLOCK
+run " bash -c 'gh pr merge 12 --repo $FORB --merge'";           expect "C16 LEADING SPACE before bash (no NOTSHAPE bypass)" BLOCK
+run "$(printf '\t')bash -c 'gh pr merge 12 --repo $FORB --merge'"; expect "C16b LEADING TAB before bash"  BLOCK
+run "  bash -c 'echo safe'";                                    expect "C16c leading-space benign body stays ALLOW" ALLOW
 
 echo "════ D. command structure inside the body (forbidden inner → BLOCK) ════"
 run "bash -c 'echo ok && gh pr merge 12 --repo $FORB --merge'";       expect "D17 echo && merge"  BLOCK
