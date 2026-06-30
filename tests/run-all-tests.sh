@@ -1300,6 +1300,34 @@ run_behavioral_tests() {
     yellow "SKIP: pre-push-grouping-subst-test.sh not found"
   fi
 
+  # ── Stage 1 shared shell-structure parser — PARSER-ONLY + UNWIRED (lib/shell-structure.sh). These tests
+  #    exercise the parser/IR directly and assert NO enforcement decision; the parser is NOT in the router/
+  #    engine policy path, so production enforcement behavior is unchanged. (1) spec corpus over the IR;
+  #    (2) differential real-bash oracle (marker shims, isolated repo, no network/consumer). ──
+  local ss_parser_test="$SCRIPT_DIR/behavioral/pre-bash-structure-parser-test.sh"
+  if [ -f "$ss_parser_test" ]; then
+    if bash "$ss_parser_test"; then
+      PASSES=$((PASSES + 59))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: pre-bash-structure-parser tests failed (the shared lib/shell-structure.sh IR must, for every command position — simple/list/pipeline/subshell/brace/if/while/until/for/case/\$( )/backtick/<( )/>( )/inline-bash-c — emit a command node with the correct execution context and statically-known executable+subcommand tokens; a computed program OR governed-subcommand token → OPAQUE; literal/quoted/comment/arithmetic/heredoc-DATA → no governed node; malformed/unterminated → OPAQUE; size/node/depth budgets → explicit limit result at boundary; PARSER-ONLY, NOT wired into enforcement)"
+    fi
+  else
+    yellow "SKIP: pre-bash-structure-parser-test.sh not found"
+  fi
+
+  local ss_oracle_test="$SCRIPT_DIR/behavioral/pre-bash-structure-oracle-test.sh"
+  if [ -f "$ss_oracle_test" ]; then
+    if bash "$ss_oracle_test"; then
+      PASSES=$((PASSES + 29))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: pre-bash-structure-oracle tests failed (the differential real-bash oracle must confirm the parser FINDS every governed op real bash executes across all command positions — zero MISSED fail-opens — marks computed/heredoc-into-shell forms OPAQUE, and emits zero FALSE_POSITIVE governed nodes on literal/quoted/comment/arithmetic/heredoc-DATA text; marker shims only, no network, isolated temp repo, never the consumer)"
+    fi
+  else
+    yellow "SKIP: pre-bash-structure-oracle-test.sh not found"
+  fi
+
   local gapa_test="$SCRIPT_DIR/behavioral/pre-push-gapa-prod-pattern-test.sh"
   if [ -f "$gapa_test" ]; then
     if bash "$gapa_test"; then
