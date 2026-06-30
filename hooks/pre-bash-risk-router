@@ -101,12 +101,20 @@ _rtr_structural() {  # $1 = command string (raw, JSON-escaped — we operate ZER
         *tee\ *|*touch\ *|*'cp '*|*'mv '*|*install\ *|*' dd '*|*truncate\ *|*'sed '*)  CANDIDATE=1; return ;;
       esac ;;
   esac
-  # Segment on the shell separators the router can see (&& || | ; & ( ) { } and newlines) via parameter
-  # expansion, then iterate each segment as its own logical command.
+  # Segment on the shell separators the router can see (&& || | ; & ( ) { } ` and newlines) via parameter
+  # expansion, then iterate each segment as its own logical command. Splitting on ( and ) exposes a
+  # subshell `( gh pr … )` and a command-substitution `$( gh pr … )` body as its own segment (the leading
+  # `$` stays on the prior segment), so the gh-pr arm below classifies the inner op. Splitting on the
+  # backtick exposes a `` `gh pr …` `` substitution body likewise — without it, a backtick-wrapped gh-pr
+  # op would never be classified a candidate and would reach the tool ungated (the router half of the
+  # subshell/cmd-subst bypass). This is COARSE on purpose: it can only OVER-route (route a benign backtick
+  # like `echo \`date\`` to the engine, which then ALLOWs it) — never hide a governed op. The engine's
+  # quote-aware grouping scanner is the AUTHORITATIVE decision; this split only ensures the engine is asked.
   local _seg="$cmd"
   _seg="${_seg//&&/$_lf}"; _seg="${_seg//||/$_lf}"; _seg="${_seg//|/$_lf}"
   _seg="${_seg//;/$_lf}";  _seg="${_seg//&/$_lf}"
   _seg="${_seg//(/$_lf}";  _seg="${_seg//)/$_lf}"; _seg="${_seg//\{/$_lf}"; _seg="${_seg//\}/$_lf}"
+  _seg="${_seg//\`/$_lf}"
   local _oldifs="$IFS"
   while IFS= read -r seg; do
     [ -n "$seg" ] || continue
