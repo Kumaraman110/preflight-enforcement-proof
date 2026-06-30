@@ -1287,6 +1287,19 @@ run_behavioral_tests() {
     yellow "SKIP: pre-push-inline-shell-test.sh not found"
   fi
 
+  # ── BLOCKER-G — subshell ( … ) / command-substitution $( … ) / backtick ` … ` fail-open (quote-aware) ──
+  local grouping_subst_test="$SCRIPT_DIR/behavioral/pre-push-grouping-subst-test.sh"
+  if [ -f "$grouping_subst_test" ]; then
+    if bash "$grouping_subst_test"; then
+      PASSES=$((PASSES + 33))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: pre-push-grouping-subst tests failed (a governed gh pr create/merge — or git push — wrapped in a subshell ( … ), a command-substitution \$( … )/echo \"\$( … )\", or a backtick \` … \` must be quote-aware-recovered (NEVER executed/eval'd) and re-classified through the SAME policy: forbidden/non-canonical/--admin → BLOCK, canonical → CONFIRM, benign → ALLOW; a command substitution's body must be decided BEFORE it could execute; an OUTER governed op must dominate a benign/inner body (worst-wins); malformed/unterminated groups → DETERMINISTIC BLOCK; bounded recursion depth → BLOCK; single-quoted literals / double-quoted mentions / \$(( )) arithmetic / comments must NOT false-positive; direct + inline-bash-c baselines unchanged)"
+    fi
+  else
+    yellow "SKIP: pre-push-grouping-subst-test.sh not found"
+  fi
+
   local gapa_test="$SCRIPT_DIR/behavioral/pre-push-gapa-prod-pattern-test.sh"
   if [ -f "$gapa_test" ]; then
     if bash "$gapa_test"; then
