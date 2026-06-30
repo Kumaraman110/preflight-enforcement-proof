@@ -141,23 +141,37 @@ _pfg_wedge_block_if_flagged() {
 }
 
 _pfg_stage "heartbeat+overlay-sourced"
-STDIN_JSON="$(cat)"
-_pfg_stage "stdin-read"
 
-# Primary: extract the command field via jq (bounded — a wedge here falls to the raw-blob
-# fallback below, which fail-safely greps for 'git push'; no flag needed on this path).
-if _pfg_have_timeout; then
-  COMMAND="$(printf '%s' "$STDIN_JSON" | timeout "$_PFG_SUBPROC_TIMEOUT" jq -r '.tool_input.command // empty' 2>/dev/null || true)"
+# ── RECURSION FAST-PATH (latency): an INTERNAL re-invocation (inline-`-c` / grouping recursion, identified
+# by PREFLIGHT_INLINE_DEPTH > 0) passes the already-recovered command literal in PREFLIGHT_RECURSE_CMD so the
+# child can SKIP the stdin `cat` (~1s) and the `jq -r` extract (~3s) on this slow-spawn host — the two
+# spawns that, stacked across recursion levels, blew the router's candidate deadline and over-blocked a
+# legitimate CANONICAL grouping/substitution merge (timeout → fail-closed BLOCK). This is purely a transport
+# optimization: the command still flows through the IDENTICAL policy below. It is honored ONLY for an
+# internal recursion (depth>0); a depth-0 platform call always reads stdin. An external caller setting these
+# vars merely passes a command through the same policy (no bypass), and a hostile DEPTH>=max just forces the
+# fail-closed depth-exhaustion BLOCK — the SAFE direction.
+if [ "${PREFLIGHT_INLINE_DEPTH:-0}" -gt 0 ] && [ -n "${PREFLIGHT_RECURSE_CMD:-}" ]; then
+  COMMAND="$PREFLIGHT_RECURSE_CMD"
+  STDIN_JSON=""   # not read on the recursion fast-path
+  _pfg_stage "command-extracted(recurse-fastpath)"
 else
-  COMMAND="$(printf '%s' "$STDIN_JSON" | jq -r '.tool_input.command // empty' 2>/dev/null || true)"
+  STDIN_JSON="$(cat)"
+  _pfg_stage "stdin-read"
+  # Primary: extract the command field via jq (bounded — a wedge here falls to the raw-blob
+  # fallback below, which fail-safely greps for 'git push'; no flag needed on this path).
+  if _pfg_have_timeout; then
+    COMMAND="$(printf '%s' "$STDIN_JSON" | timeout "$_PFG_SUBPROC_TIMEOUT" jq -r '.tool_input.command // empty' 2>/dev/null || true)"
+  else
+    COMMAND="$(printf '%s' "$STDIN_JSON" | jq -r '.tool_input.command // empty' 2>/dev/null || true)"
+  fi
+  # Fallback: if extraction yielded nothing, use the raw blob so a push
+  # is still detected (fail-safe for the push case; non-pushes still pass).
+  if [ -z "$COMMAND" ]; then
+    COMMAND="$STDIN_JSON"
+  fi
+  _pfg_stage "command-extracted"
 fi
-
-# Fallback: if extraction yielded nothing, use the raw blob so a push
-# is still detected (fail-safe for the push case; non-pushes still pass).
-if [ -z "$COMMAND" ]; then
-  COMMAND="$STDIN_JSON"
-fi
-_pfg_stage "command-extracted"
 
 # ── (FAST-INLINE) BOUNDED STATIC INSPECTION OF `bash -c <payload>` INLINE-SHELL WRAPPERS (BLOCKER-E) ──────
 # THE GAP (confirmed fail-open): `bash -c 'gh pr merge --repo <forbidden> 12 --merge'` (and `gh pr create`)
@@ -268,9 +282,10 @@ case "$_PFG_INLINE_PAYLOAD" in
       exit 2
     fi
     _pfg_stage "fast-inline:recurse(depth=$PREFLIGHT_INLINE_DEPTH)"
-    _PFG_INLINE_JSON="$(printf '%s' "$_PFG_INLINE_PAYLOAD" | jq -Rs '{tool_input:{command:.}}' 2>/dev/null)"
-    if [ -z "$_PFG_INLINE_JSON" ]; then _pfg_inline_opaque_block; fi   # could not even encode → fail closed
-    _PFG_INLINE_OUT="$(printf '%s' "$_PFG_INLINE_JSON" | PREFLIGHT_INLINE_DEPTH="$((PREFLIGHT_INLINE_DEPTH+1))" bash "$_PFG_SELF_DIR/pre-push-gate-engine" 2>"${TMPDIR:-/tmp}/.pfg-inline-err.$$" )"
+    # Recurse via the PREFLIGHT_RECURSE_CMD env fast-path (skips the child's stdin cat + jq extract — the
+    # latency that stacked across recursion levels and timed out a legitimate canonical merge). stdin is
+    # closed (</dev/null) since the child reads the command from the env on this path.
+    _PFG_INLINE_OUT="$(PREFLIGHT_INLINE_DEPTH="$((PREFLIGHT_INLINE_DEPTH+1))" PREFLIGHT_RECURSE_CMD="$_PFG_INLINE_PAYLOAD" bash "$_PFG_SELF_DIR/pre-push-gate-engine" </dev/null 2>"${TMPDIR:-/tmp}/.pfg-inline-err.$$" )"
     _PFG_INLINE_RC=$?
     _pfg_stage "fast-inline:inner-rc=$_PFG_INLINE_RC"
     if [ "$_PFG_INLINE_RC" -eq 2 ]; then
@@ -295,6 +310,221 @@ case "$_PFG_INLINE_PAYLOAD" in
     rm -f "${TMPDIR:-/tmp}/.pfg-inline-err.$$" 2>/dev/null || true
     # inner clean ALLOW (rc 0, no JSON) or inner CONFIRM (rc 0 + permissionDecision JSON): relay stdout verbatim.
     [ -n "$_PFG_INLINE_OUT" ] && printf '%s\n' "$_PFG_INLINE_OUT"
+    exit 0
+    ;;
+esac
+
+# ── (FAST-GROUP) QUOTE-AWARE INSPECTION OF SHELL GROUPING `( … )` / COMMAND-SUBSTITUTION `$( … )` / `` ` ` `` ─
+# THE GAP (confirmed live fail-open): a forbidden/non-canonical `gh pr merge`/`gh pr create` wrapped in a
+# subshell grouping `( gh pr merge … )`, a command-substitution `$(gh pr merge …)` / `echo "$(gh pr merge …)"`,
+# or a backtick `` `gh pr merge …` `` was ALLOWED. The inline-`-c` stage above only inspects a LEADING
+# `bash -c`; the gh-pr detectors below anchor on `(^|&&|\|\||;)` and so DO NOT match a `gh pr` preceded by
+# `(`, `$(`, or `"` — so the represented op reached the non-push `exit 0` ungated. A command substitution is
+# worse than benign-looking: `$( body )` / `` `body` `` runs its BODY *before* the surrounding command, so a
+# command that merely MENTIONS the substitution (`echo "$(gh pr merge …forbidden…)"`) still executes the
+# forbidden op. (The router half — backtick was not a candidate-segmentation separator — is fixed in
+# pre-bash-risk-router; `(`/`$(` already route via the paren split.)
+#
+# THE FIX (no second policy engine; reuse THIS engine via the SAME bounded recursion as inline-`-c`): a
+# QUOTE-AWARE single-pass scanner (`_pfg_grouping_scan`, bash builtins only — never executes/evals/sources,
+# never interpolates) recovers every LIVE grouping/substitution body and a SKELETON (each live region
+# replaced by an inert bareword placeholder). Each BODY and the SKELETON are re-fed through THIS engine
+# (bounded recursion, shared PREFLIGHT_INLINE_DEPTH), and the verdicts combine WORST-WINS: any inner BLOCK →
+# outer BLOCK; else any inner CONFIRM → outer CONFIRM; else ALLOW. Recursing the SKELETON makes an OUTER
+# governed op dominate an inner one (`gh pr merge …forbidden… "$(echo safe)"` BLOCKs on the skeleton, not the
+# benign body). LIVE contexts: `$( )` and `` ` ` `` in NORMAL and inside double-quotes; `( )` subshell in
+# NORMAL only (a `(` inside "…" is literal). NOT live (→ no body, correctly ALLOWed as a mention): single-
+# quoted text, `\$ \( \``, `# …` comments, and `$(( ))` / `(( ))` arithmetic. A malformed/unterminated live
+# group, or an unterminated quote, is OPAQUE → deterministic BLOCK (never executed, never approved).
+_PFG_GRP_SKEL=""
+_PFG_GRP_BODIES=()
+_PFG_GRP_GB=""; _PFG_GRP_GC=-1
+# Grab a balanced `( … )` body starting at $1 (index of the first body char after '('). Honors nested
+# parens and inner single/double quotes (a ')' inside a quote does not close the group). Sets _PFG_GRP_GB to
+# the body and _PFG_GRP_GC to the index just past the matching ')'. Returns 1 (unterminated) → caller opaque.
+_pfg_grp_grab_paren() {
+  local j="$1" n="$2" depth=1 st=NORMAL ch nch; _PFG_GRP_GB=""
+  while [ "$j" -lt "$n" ]; do
+    ch="${_PFG_GRP_S:$j:1}"
+    if [ "$st" = NORMAL ]; then
+      case "$ch" in
+        '\') nch="${_PFG_GRP_S:$((j+1)):1}"; _PFG_GRP_GB+="$ch$nch"; j=$((j+2)); continue ;;
+        "'") st=SQUOTE ;; '"') st=DQUOTE ;;
+        '(') depth=$((depth+1)) ;;
+        ')') depth=$((depth-1)); if [ "$depth" -eq 0 ]; then _PFG_GRP_GC=$((j+1)); return 0; fi ;;
+      esac
+    elif [ "$st" = SQUOTE ]; then case "$ch" in "'") st=NORMAL ;; esac
+    elif [ "$st" = DQUOTE ]; then
+      case "$ch" in '\') nch="${_PFG_GRP_S:$((j+1)):1}"; _PFG_GRP_GB+="$ch$nch"; j=$((j+2)); continue ;; '"') st=NORMAL ;; esac
+    fi
+    _PFG_GRP_GB+="$ch"; j=$((j+1))
+  done
+  _PFG_GRP_GC=-1; return 1
+}
+# Grab a `` ` … ` `` body starting at $1 (index after the opening backtick). Closes on the next UNESCAPED
+# backtick. Sets _PFG_GRP_GB / _PFG_GRP_GC. Returns 1 (unterminated) → caller opaque.
+_pfg_grp_grab_bt() {
+  local j="$1" n="$2" ch nch; _PFG_GRP_GB=""
+  while [ "$j" -lt "$n" ]; do
+    ch="${_PFG_GRP_S:$j:1}"
+    case "$ch" in
+      '\') nch="${_PFG_GRP_S:$((j+1)):1}"; _PFG_GRP_GB+="$ch$nch"; j=$((j+2)); continue ;;
+      '`') _PFG_GRP_GC=$((j+1)); return 0 ;;
+    esac
+    _PFG_GRP_GB+="$ch"; j=$((j+1))
+  done
+  _PFG_GRP_GC=-1; return 1
+}
+# Scan $1. Populates _PFG_GRP_SKEL + _PFG_GRP_BODIES. Returns: 0 = ≥1 live body found; 1 = none (__NONE__,
+# caller falls through unchanged); 2 = opaque/malformed (caller BLOCKs). Builtins only; no spawn.
+#
+# COMMAND-POSITION AWARENESS (verified against a real-bash execution oracle): `$( … )` and `` ` … ` `` are
+# substitutions live in ANY position; but a BARE `( … )` is a live SUBSHELL only in COMMAND position (start
+# of command / after ; && || | & { newline). A bare `(` in ARGUMENT position (`echo foo ( … )`, or after a
+# consumed `\$`) is NOT a live subshell — real bash treats it as a literal word / syntax error and does NOT
+# execute the contents (NOEXEC). Tracking `cmdpos` prevents the false positive of flagging `echo \$( … )`
+# (escaped dollar → the `(` lands in arg position) or `echo foo ( … )` as live. `wordstart` (true at the
+# start of a word) gates `#` so a `#` mid-word (e.g. a URL fragment) does not start a comment.
+_pfg_grouping_scan() {
+  _PFG_GRP_S="$1"; local n=${#1} i=0 c nx nn state=NORMAL skel="" cmdpos=1 wordstart=1
+  _PFG_GRP_BODIES=(); local _ph='__PFG_GROUP__'
+  while [ "$i" -lt "$n" ]; do
+    c="${_PFG_GRP_S:$i:1}"; nx="${_PFG_GRP_S:$((i+1)):1}"; nn="${_PFG_GRP_S:$((i+2)):1}"
+    if [ "$state" = NORMAL ]; then
+      case "$c" in
+        '\') skel+="$c$nx"; i=$((i+2)); cmdpos=0; wordstart=0; continue ;;
+        "'") state=SQUOTE; skel+="$c"; i=$((i+1)); cmdpos=0; wordstart=0; continue ;;
+        '"') state=DQUOTE; skel+="$c"; i=$((i+1)); cmdpos=0; wordstart=0; continue ;;
+        '#') if [ "$wordstart" = 1 ]; then state=COMMENT; skel+="$c"; i=$((i+1)); continue; fi
+             skel+="$c"; i=$((i+1)); cmdpos=0; wordstart=0; continue ;;
+        '`') if _pfg_grp_grab_bt "$((i+1))" "$n"; then _PFG_GRP_BODIES+=("$_PFG_GRP_GB"); skel+="$_ph"; i=$_PFG_GRP_GC; cmdpos=0; wordstart=0; continue; else return 2; fi ;;
+        '$') if [ "$nx" = '(' ]; then
+               if [ "$nn" = '(' ]; then skel+="$c$nx$nn"; i=$((i+3)); cmdpos=0; wordstart=0; continue; fi   # $(( arithmetic )) — not live
+               if _pfg_grp_grab_paren "$((i+2))" "$n"; then _PFG_GRP_BODIES+=("$_PFG_GRP_GB"); skel+="$_ph"; i=$_PFG_GRP_GC; cmdpos=0; wordstart=0; continue; else return 2; fi
+             fi; skel+="$c"; i=$((i+1)); cmdpos=0; wordstart=0; continue ;;
+        '(') if [ "$nx" = '(' ]; then skel+="$c$nx"; i=$((i+2)); cmdpos=1; wordstart=1; continue; fi          # (( arithmetic )) — not live
+             if [ "$cmdpos" = 1 ]; then
+               if _pfg_grp_grab_paren "$((i+1))" "$n"; then _PFG_GRP_BODIES+=("$_PFG_GRP_GB"); skel+="$_ph"; i=$_PFG_GRP_GC; cmdpos=0; wordstart=0; continue; else return 2; fi
+             fi
+             skel+="$c"; i=$((i+1)); cmdpos=0; wordstart=0; continue ;;   # bare '(' in ARG position → literal word (NOEXEC), not live
+        ';'|'&'|'|') skel+="$c"; i=$((i+1)); cmdpos=1; wordstart=1; continue ;;   # separators → next is a command
+        '{') skel+="$c"; i=$((i+1)); cmdpos=1; wordstart=1; continue ;;
+        ')'|'}') skel+="$c"; i=$((i+1)); cmdpos=0; wordstart=0; continue ;;
+        ' '|$'\t') skel+="$c"; i=$((i+1)); wordstart=1; continue ;;        # whitespace transparent to cmdpos, starts a new word
+        $'\n') skel+="$c"; i=$((i+1)); cmdpos=1; wordstart=1; continue ;;
+        *) skel+="$c"; i=$((i+1)); cmdpos=0; wordstart=0; continue ;;
+      esac
+    elif [ "$state" = SQUOTE ]; then
+      case "$c" in "'") state=NORMAL ;; esac; skel+="$c"; i=$((i+1)); cmdpos=0; wordstart=0; continue
+    elif [ "$state" = DQUOTE ]; then
+      case "$c" in
+        '\') case "$nx" in '"'|'\'|'$'|'`') skel+="$c$nx"; i=$((i+2)); continue ;; esac; skel+="$c"; i=$((i+1)); continue ;;
+        '"') state=NORMAL; skel+="$c"; i=$((i+1)); cmdpos=0; wordstart=0; continue ;;
+        '`') if _pfg_grp_grab_bt "$((i+1))" "$n"; then _PFG_GRP_BODIES+=("$_PFG_GRP_GB"); skel+="$_ph"; i=$_PFG_GRP_GC; continue; else return 2; fi ;;
+        '$') if [ "$nx" = '(' ]; then
+               if [ "$nn" = '(' ]; then skel+="$c$nx$nn"; i=$((i+3)); continue; fi
+               if _pfg_grp_grab_paren "$((i+2))" "$n"; then _PFG_GRP_BODIES+=("$_PFG_GRP_GB"); skel+="$_ph"; i=$_PFG_GRP_GC; continue; else return 2; fi
+             fi; skel+="$c"; i=$((i+1)); continue ;;
+        *) skel+="$c"; i=$((i+1)); continue ;;
+      esac
+    elif [ "$state" = COMMENT ]; then
+      case "$c" in $'\n') state=NORMAL; cmdpos=1; wordstart=1 ;; esac; skel+="$c"; i=$((i+1)); continue
+    fi
+  done
+  if [ "$state" = SQUOTE ] || [ "$state" = DQUOTE ]; then return 2; fi   # unterminated quote → opaque
+  [ "${#_PFG_GRP_BODIES[@]}" -gt 0 ] || return 1                          # no live grouping → fall through
+  _PFG_GRP_SKEL="$skel"; return 0
+}
+_pfg_grouping_opaque_block() {  # deterministic BLOCK for a malformed/unterminated live grouping
+  _pfg_stage "fast-group:OPAQUE-BLOCK"
+  echo "BLOCKED: a shell grouping/command-substitution ( … ) / \$( … ) / \` … \` is malformed or unterminated," >&2
+  echo "  so its represented command cannot be statically resolved for inspection. Preflight will not execute" >&2
+  echo "  or eval the content to find out what it does, so it is failed CLOSED — NOT approved. No represented" >&2
+  echo "  command executed. Re-express the underlying steps as direct, individually-inspectable commands so" >&2
+  echo "  the gate can adjudicate each. (Agent Bash-tool guard only; not server-side protection.)" >&2
+  exit 2
+}
+# A piece is worth a recursion ONLY if it could carry a governed op or a further live grouping. A piece with
+# NONE of these tokens would recurse straight to ALLOW (no push/gh-pr/sentinel/grouping for any detector to
+# fire on), so we skip the ~6-9s engine spawn for it — critical for the skeleton, which after masking is
+# usually a bare `echo "__PFG_GROUP__"`. This is a LATENCY filter ONLY in the ALLOW direction: it can only
+# skip a piece that would have ALLOWed anyway (verified — the placeholder is an inert bareword, no token), so
+# it can never turn a BLOCK/CONFIRM into an ALLOW. Conservative: any doubt → keep the candidate (recurse).
+_pfg_grouping_piece_is_candidate() {  # $1 = piece. 0 = recurse; 1 = certainly-ALLOW, skip.
+  # A governed token any detector keys on, OR a residual live-grouping char `(`/`$(`/backtick (a nested
+  # group needing its own recursion), OR an inline-shell wrapper / indirection token.
+  case "$1" in
+    *push*|*gh*pr*|*parity-clean*|*bootstrap-write-approved*|*write-gate-evidence*|*'.preflight/gate/'*) return 0 ;;
+    *'('*|*'`'*) return 0 ;;
+    *bash*c*|*sh*c*|*dash*c*|*zsh*c*|*eval*|*xargs*) return 0 ;;
+  esac
+  return 1
+}
+# Recurse THIS engine on one piece (a body or the skeleton). Echoes a verdict token on stdout:
+#   BLOCK | CONFIRM<TAB><json> | ALLOW<TAB><json>. Builtins + one engine spawn. Fail-closed on abnormal rc.
+_pfg_grouping_adjudicate_piece() {  # $1 = command piece
+  local _piece="$1" _out _rc _err="${TMPDIR:-/tmp}/.pfg-grp-err.$$.$RANDOM"
+  # Trim surrounding whitespace from the recovered body. A subshell/substitution body is recovered WITH the
+  # spaces just inside its delimiters (`( bash -c '…' )` → ` bash -c '…' `); the leading space is handled by
+  # most stages, but a TRAILING space after a closing quote makes the inline-`-c` extractor see "concatenated
+  # content after the close" → opaque BLOCK, over-blocking a legitimate nested command. Whitespace around a
+  # command is insignificant to its policy classification, so trim both ends before re-feeding. (Builtins.)
+  _piece="${_piece#"${_piece%%[![:space:]]*}"}"; _piece="${_piece%"${_piece##*[![:space:]]}"}"
+  # Latency: a piece with no governed/grouping token recurses to ALLOW — skip the spawn (ALLOW-only filter).
+  if ! _pfg_grouping_piece_is_candidate "$_piece"; then echo "ALLOW"; return; fi
+  # Recurse via the PREFLIGHT_RECURSE_CMD env fast-path (skips the child's stdin cat + jq extract). stdin
+  # closed (</dev/null) — the child reads the command from the env on this path.
+  _out="$(PREFLIGHT_INLINE_DEPTH="$((PREFLIGHT_INLINE_DEPTH+1))" PREFLIGHT_RECURSE_CMD="$_piece" bash "$_PFG_SELF_DIR/pre-push-gate-engine" </dev/null 2>"$_err")"
+  _rc=$?
+  if [ "$_rc" -eq 2 ]; then
+    cat "$_err" >&2 2>/dev/null || true; rm -f "$_err" 2>/dev/null || true; echo "BLOCK"; return
+  fi
+  rm -f "$_err" 2>/dev/null || true
+  if [ "$_rc" -ne 0 ]; then echo "BLOCK"; return; fi   # abnormal (1/127/137/…) → fail-closed BLOCK (engine failure)
+  if printf '%s' "$_out" | grep -q '"permissionDecision":"ask"'; then printf 'CONFIRM\t%s' "$_out"; return; fi
+  printf 'ALLOW\t%s' "$_out"
+}
+_PFG_GRP_RC=1
+set +e
+_pfg_grouping_scan "$COMMAND"
+_PFG_GRP_RC=$?
+set -e
+case "$_PFG_GRP_RC" in
+  1) : ;;                            # no live grouping/substitution → fall through to the normal policy path
+  2) _pfg_grouping_opaque_block ;;   # malformed/unterminated live grouping → deterministic BLOCK
+  0)
+    # At least one live grouping/substitution body. Bounded recursion (shared with the inline-`-c` budget).
+    if [ "$PREFLIGHT_INLINE_DEPTH" -ge "$_PFG_INLINE_MAX" ]; then
+      _pfg_stage "fast-group:DEPTH-EXHAUSTED-BLOCK"
+      echo "BLOCKED: nested shell grouping / command-substitution exceeded the supported inspection depth" >&2
+      echo "  (${_PFG_INLINE_MAX}). Preflight cannot fully resolve arbitrarily-nested indirection, so it is failed" >&2
+      echo "  CLOSED — NOT approved. No represented command executed. Re-express the operation as a direct," >&2
+      echo "  individually-inspectable command. (Agent Bash-tool guard only; not server-side protection.)" >&2
+      exit 2
+    fi
+    _pfg_stage "fast-group:recurse(depth=$PREFLIGHT_INLINE_DEPTH,bodies=${#_PFG_GRP_BODIES[@]})"
+    # Adjudicate the SKELETON first (it carries the OUTER command — most often the governed op, decided by a
+    # fast builtins path — so an outer BLOCK short-circuits before any body recursion), then each body.
+    # WORST-WINS: first BLOCK → outer BLOCK; else remember a CONFIRM; else ALLOW.
+    _PFG_GRP_CONFIRM=""
+    for _piece in "$_PFG_GRP_SKEL" "${_PFG_GRP_BODIES[@]}"; do
+      _PFG_GRP_VERDICT="$(_pfg_grouping_adjudicate_piece "$_piece")"
+      case "$_PFG_GRP_VERDICT" in
+        BLOCK*)
+          _pfg_stage "fast-group:inner-BLOCK"
+          echo "  (Found through shell grouping / command-substitution: ( … ) / \$( … ) / \` … \`. A command" >&2
+          echo "  substitution runs its body BEFORE the surrounding command, so the represented op was blocked" >&2
+          echo "  before it could execute. Inspected statically, not executed.)" >&2
+          exit 2 ;;
+        CONFIRM*) [ -z "$_PFG_GRP_CONFIRM" ] && _PFG_GRP_CONFIRM="${_PFG_GRP_VERDICT#CONFIRM$'\t'}" ;;
+      esac
+    done
+    if [ -n "$_PFG_GRP_CONFIRM" ]; then
+      _pfg_stage "fast-group:CONFIRM"
+      printf '%s\n' "$_PFG_GRP_CONFIRM"
+      exit 0
+    fi
+    _pfg_stage "fast-group:ALLOW"
     exit 0
     ;;
 esac
