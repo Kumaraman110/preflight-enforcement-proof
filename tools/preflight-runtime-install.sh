@@ -49,10 +49,15 @@ git -C "$CODE_FORGE_DIR" rev-parse --git-dir >/dev/null 2>&1 || {
 
 # ── The minimal RUNTIME CLOSURE for the Bash gate (what must ship outside branch control) ─────────────────
 # The Bash PreToolUse path needs exactly: the entry shim, the router, the engine it invokes, the evidence
-# gate the engine invokes, and the two libs the engine sources. NOTHING else (skills/agents/other gates are
+# gate the engine invokes, and the libs the engine sources/uses. NOTHING else (skills/agents/other gates are
 # not on the Bash candidate path). Keeping this set minimal keeps the immutable runtime small + reviewable.
+# STAGE 2B: the engine now makes the shared shell-structure IR AUTHORITATIVE for git-push identification, so
+# it depends on lib/shell-structure.sh (the wrapper) AND lib/shell-structure-lexer.awk (the POSIX-awk lexer
+# it `-f`'s). BOTH must ship in the runtime — otherwise the installed engine reports "IR library not found"
+# and fails CLOSED, blocking EVERY candidate push (a total-block regression on the consumer). This closure
+# set is the SINGLE SOURCE for the runtime deps; keep it in lockstep with what the engine sources/reads.
 RUNTIME_HOOKS="run-hook.cmd pre-bash-risk-router pre-push-gate-engine pre-push-gate session-start"
-RUNTIME_LIBS="config-overlay.sh heartbeat.sh"
+RUNTIME_LIBS="config-overlay.sh heartbeat.sh shell-structure.sh shell-structure-lexer.awk"
 
 # ── git-common-dir resolution — worktree-safe + absolutized (the research caveat) ─────────────────────────
 # `git rev-parse --git-common-dir` may return a RELATIVE path (often literally ".git") from the main

@@ -167,6 +167,37 @@ else
   bad "12: pinned runtime router missing at $RTR"
 fi
 
+# 16 (STAGE 2B). RUNTIME CLOSURE COMPLETENESS: the engine now makes the shared shell-structure IR
+# AUTHORITATIVE for git-push, so the installer MUST ship lib/shell-structure.sh + lib/shell-structure-lexer.awk
+# beside the runtime engine. If it doesn't, the installed engine reports "IR library not found" and fails
+# CLOSED, BLOCKING EVERY candidate push (a total-block regression on the consumer). Assert BOTH: (a) the two
+# parser files are present in the runtime lib/, and (b) the runtime engine authoritatively processes a safe
+# push WITHOUT an "IR library not found" error (i.e. the closure is complete, not merely file-present).
+RT_LIBDIR="$C/.git/preflight/runtime/$ACTIVE_AFTER/lib"
+RT_ENG="$C/.git/preflight/runtime/$ACTIVE_AFTER/hooks/pre-push-gate-engine"
+if [ -f "$RT_LIBDIR/shell-structure.sh" ] && [ -f "$RT_LIBDIR/shell-structure-lexer.awk" ]; then
+  ok "16a: runtime ships the authoritative IR parser closure (shell-structure.sh + shell-structure-lexer.awk)"
+else
+  bad "16a: runtime lib/ MISSING the IR parser ($(ls "$RT_LIBDIR" 2>/dev/null | tr '\n' ' ')) — installed engine will fail-closed 'IR library not found' on every push"
+fi
+if [ -f "$RT_ENG" ]; then
+  # a safe push through the installed runtime engine in an isolated fixture repo (no network, string remote).
+  RW="$(mktemp -d)"; ( cd "$RW" && git init -q && git commit -q --allow-empty -m i && git checkout -q -b feature/x ) >/dev/null 2>&1
+  RWH="$(cd "$RW" && git rev-parse HEAD 2>/dev/null)"; mkdir -p "$RW/.preflight/gate"
+  for ev in tests-pass stage1-clean; do printf 'HEAD=%s\nts=now\n' "$RWH" > "$RW/.preflight/gate/$ev"; done
+  printf '{"branch":{"base":"main","remote":"origin"}}' > "$RW/.preflight/config.json"
+  _rj='{"tool_name":"Bash","tool_input":{"command":"git push origin HEAD:feature/x"}}'
+  _ro="$( cd "$RW" && printf '%s' "$_rj" | CLAUDE_PROJECT_DIR="$RW" timeout 120 bash "$RT_ENG" "$_rj" 2>&1 )"
+  if printf '%s' "$_ro" | grep -q 'IR library not found'; then
+    bad "16b: installed runtime engine reports 'IR library not found' on a safe push — runtime closure incomplete"
+  else
+    ok "16b: installed runtime engine authoritatively processes a push (no 'IR library not found'; closure complete)"
+  fi
+  rm -rf "$RW"
+else
+  bad "16b: pinned runtime engine missing at $RT_ENG"
+fi
+
 echo ""
 echo "branch-stable-runtime: ${PASS} passed, ${FAIL} failed"
 [ "$FAIL" -eq 0 ]
