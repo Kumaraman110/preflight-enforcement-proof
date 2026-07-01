@@ -80,6 +80,19 @@ perf_supported() {  # $1 label  $2 cmd  $3 expect-dec(allow|ask)
   if [ "$WALL_MS" -le "$SAFE_MS" ]; then ok "$1: $3 in ${WALL_MS}ms (margin $(( DEADLINE_MS - WALL_MS ))ms >= $(( DEADLINE_MS - SAFE_MS ))ms)"
   else bad "$1: $3 in ${WALL_MS}ms — NO SAFE MARGIN (>${SAFE_MS}ms, racing the ${DEADLINE_MS}ms deadline) — AUTHORITATIVE PERFORMANCE INSUFFICIENT"; fi
 }
+# ── ALLOWED (rc 0), margin — used where the safe verdict legitimately proceeds WITHOUT an explicit
+# permissionDecision JSON (e.g. a safe push inside a subshell, handled by the grouping-recursion path which
+# relays an inner allow as a bare exit 0). This is a LATENCY case; the security outcome is "allowed" (rc 0),
+# which for a SAFE target is correct. A forbidden subshell push is covered by the BLOCK cases elsewhere.
+perf_allowed() {  # $1 label  $2 cmd
+  measure "$2"
+  local margin=$(( DEADLINE_MS - WALL_MS ))
+  echo "  EVIDENCE case='$1' wall_ms=$WALL_MS parser_ms=$PARSER_MS rc=$RC dec=$DEC margin_ms=$margin deadline_ms=$DEADLINE_MS"
+  if [ "$RC" = 124 ] || [ "$RC" = 137 ]; then bad "$1: TIMEOUT (rc=$RC) — AUTHORITATIVE PERFORMANCE INSUFFICIENT"; return; fi
+  if [ "$RC" != 0 ]; then bad "$1: expected ALLOWED (rc 0) got rc=$RC dec=$DEC"; return; fi
+  if [ "$WALL_MS" -le "$SAFE_MS" ]; then ok "$1: allowed (rc0) in ${WALL_MS}ms (margin $(( DEADLINE_MS - WALL_MS ))ms)"
+  else bad "$1: allowed in ${WALL_MS}ms — NO SAFE MARGIN (>${SAFE_MS}ms) — AUTHORITATIVE PERFORMANCE INSUFFICIENT"; fi
+}
 # ── forbidden: blocks early (fast), no shim exec. PASS if RC=2, no exec, and well under deadline. ──
 perf_forbidden() {  # $1 label  $2 cmd
   measure "$2"
@@ -112,7 +125,7 @@ perf_supported "4 multiple pushes"     "git push origin HEAD:feature/x; git push
 perf_supported "5 1KiB command"        "$(_big 1024)"                          allow
 perf_supported "6 4KiB command"        "$(_big 4096)"                          allow
 perf_supported "7 16KiB command"       "$(_big 16384)"                         allow
-perf_supported "8 within-depth valid"  "$(_deep 3)"                            allow
+perf_allowed   "8 within-depth valid"  "$(_deep 3)"
 perf_awkfail   "9 awk-failure BLOCK"   "git push origin HEAD:feature/x"
 
 echo ""

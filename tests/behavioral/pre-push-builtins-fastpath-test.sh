@@ -188,8 +188,13 @@ is_block || bad "G2 precondition: exact candidate did not BLOCK (RC=$RC) — wit
                        || bad "15c. early path ran 'git remote get-url' ${_w_geturl}x"
 [ "$_w_date" -eq 0 ]   && ok "15d. early forbidden path spawned 'date' ZERO times (heartbeat is builtins-only)" \
                        || bad "15d. early path spawned date ${_w_date}x"
-[ "$_w_awk" -eq 0 ]    && ok "15e. early forbidden path spawned 'awk' ZERO times (no continuation-join awk)" \
-                       || bad "15e. early path spawned awk ${_w_awk}x"
+# STAGE 2B: the authoritative IR-identify runs ONCE per candidate, BEFORE fast0 (the ordering that closes
+# the multi-push fail-open). That ONE step spawns awk exactly TWICE — `awk --version` (impl banner) + the
+# `awk -f lexer` scan (both inside lib/shell-structure.sh's single pfg_ss_parse). So the early forbidden
+# path spawns awk <=2 (the IR only) — and NOT the heavy-path continuation-join / structural awk. More than
+# 2 would mean the heavy pipeline's awk also ran, i.e. fast0 failed to short-circuit.
+[ "$_w_awk" -le 2 ]    && ok "15e. early forbidden path spawned 'awk' ${_w_awk}x (<=2: the Stage-2B IR-identify only — awk --version + lexer; fast0 short-circuits before the heavy continuation-join/structural awk)" \
+                       || bad "15e. early path spawned awk ${_w_awk}x (>2 → heavy-path awk also ran; fast0 not short-circuiting)"
 [ "$_w_sed" -eq 0 ]    && ok "15f. early forbidden path spawned 'sed' ZERO times (no structural-parser sed)" \
                        || bad "15f. early path spawned sed ${_w_sed}x"
 [ "$_w_grep" -eq 0 ]   && ok "15g. early forbidden path spawned 'grep' ZERO times (no tripwire/structural grep)" \
