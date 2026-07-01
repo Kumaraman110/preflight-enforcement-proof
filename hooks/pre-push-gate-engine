@@ -285,6 +285,7 @@ _PFG_IR_HAS_OPAQUE=0         # 1 if ANY node is opaque (governed execution poten
 _PFG_IR_HAS_COMPUTED=0       # 1 if ANY node has a computed executable OR computed governed-subcommand token
 _PFG_IR_PUSH_SPANS=()        # per static git-push node: "start:end" byte offsets into COMMAND (arg-recovery locator)
 _PFG_IR_FAILCLOSED=0         # 1 if the IR status itself mandates a deterministic BLOCK
+_PFG_IR_INLINE_PUSH=0        # 1 if a git-push was seen inside an inline-shell payload (payload-relative span)
 _PFG_IR_FAIL_REASON=""
 _pfg_ir_identify() {
   # RECURSION RE-ENTRY: when the engine re-invokes itself for a recovered inline-`-c`/grouping payload
@@ -298,15 +299,32 @@ _pfg_ir_identify() {
   if [ ! -f "$_PFG_SS_LIB" ]; then
     _PFG_IR_STATUS="UNAVAIL"; _PFG_IR_FAILCLOSED=1; _PFG_IR_FAIL_REASON="shell-structure IR library not found"; return 0
   fi
-  local _facts _rc
+  # PERF: resolve awk ONCE here and inject it into the child AFTER the source (the lib resets _PFG_SS_AWK=""
+  # at source time, so we set it post-source, before pfg_ss_parse). This makes the lib's _pfg_ss_resolve_awk
+  # short-circuit, dropping TWO taxed spawns per candidate on a slow-spawn host (the lib's own
+  # `command -v awk` + `awk --version`), leaving the IR at a SINGLE awk spawn (the lexer). Addresses the
+  # re-review perf finding (the 3-spawn IR wrapper flirted with its own 8s budget on a slow host). Fail-soft:
+  # if awk is absent, _ir_awk is empty → the lib re-resolves and reports ERROR → fail closed. lib is 0-diff.
+  local _ir_awk _facts _rc
+  _ir_awk="$(command -v awk 2>/dev/null || true)"
   set +e
-  # ONE awk spawn, timeout-bounded, in a nested subshell so a crash/`set -e` inside cannot escape. Emits:
-  #   one "PUSH <start> <end>" line per NON-opaque git-push node, then "ST=<status> OP=<0|1> CP=<0|1>".
+  # ONE awk spawn (the lexer), timeout-bounded, in a nested subshell so a crash/`set -e` inside cannot
+  # escape. Emits one "PUSH <start> <end>" per NON-opaque git-push node, then "ST=… OP=… CP=… IP=…".
   _facts="$(timeout "${PFG_SS_IR_TIMEOUT:-8}" bash -c '
       set +e
-      source "$1" 2>/dev/null || { echo "ST=PROTO OP=0 CP=0"; exit 0; }
+      source "$1" 2>/dev/null || { echo "ST=PROTO OP=0 CP=0 IP=0"; exit 0; }
+      [ -n "$3" ] && { _PFG_SS_AWK="$3"; _PFG_SS_AWK_IMPL="ir-preresolved"; }   # skip the lib re-resolve spawns
       pfg_ss_parse "$2"
-      op=0; cp=0
+      op=0; cp=0; ip=0
+      # A node reached THROUGH an inline shell (bash/sh -c payload) has a PAYLOAD-RELATIVE span (the lexer
+      # re-bases the recursed payload to offset 0), so its START/END do NOT index the outer COMMAND — the
+      # per-node loop must NOT slice them (that mis-slices to a fragment of the OUTER command, a fail-open:
+      # `git push origin …; bash -c "git push evil …"` had the evil node span 0:23 re-slice to the safe
+      # origin push). Detect INLINE_SHELL-descendant nodes by walking parents; a git-push inside one is
+      # flagged IP=1 so the wrapper treats the command as inline-recursion-required (fail-closed), NOT as a
+      # cleanly-sliceable top-level push. The engine`s own inline-`-c` recursion path evaluates the payload
+      # authoritatively (proven: a lone `bash -c "git push evil"` BLOCKs).
+      inctx() { local n="$1"; while [ "$n" != -1 ]; do [ "${PFG_SS_CTX[$n]}" = INLINE_SHELL ] && { echo 1; return; }; n="${PFG_SS_PARENT[$n]}"; done; echo 0; }
       for ((i=0; i<PFG_SS_NODE_COUNT; i++)); do
         [ "${PFG_SS_OPACITY[$i]}" = OPAQUE ] && op=1
         [ "${PFG_SS_EXEC_COMPUTED[$i]}" = 1 ] && cp=1
@@ -315,13 +333,18 @@ _pfg_ir_identify() {
           b="$(pfg_ss_exec_basename "$i")"
           if [ "$b" = git ]; then
             case " ${PFG_SS_SUBCMD[$i]} " in
-              *" push "*|*" push ") printf "PUSH %s %s\n" "${PFG_SS_START[$i]}" "${PFG_SS_END[$i]}" ;;
+              *" push "*|*" push ")
+                if [ "${PFG_SS_CTX[$i]}" = INLINE_SHELL ] || [ "$(inctx "${PFG_SS_PARENT[$i]}")" = 1 ]; then
+                  ip=1   # payload-relative git-push: NOT a sliceable top-level span → inline-recursion territory
+                else
+                  printf "PUSH %s %s\n" "${PFG_SS_START[$i]}" "${PFG_SS_END[$i]}"
+                fi ;;
             esac
           fi
         fi
       done
-      printf "ST=%s OP=%s CP=%s\n" "$PFG_SS_STATUS" "$op" "$cp"
-    ' _ "$_PFG_SS_LIB" "$COMMAND" 2>/dev/null)"
+      printf "ST=%s OP=%s CP=%s IP=%s\n" "$PFG_SS_STATUS" "$op" "$cp" "$ip"
+    ' _ "$_PFG_SS_LIB" "$COMMAND" "$_ir_awk" 2>/dev/null)"
   _rc=$?
   set -e
   if [ "$_rc" -eq 124 ] || [ "$_rc" -eq 137 ] || [ "$_rc" -gt 128 ]; then
@@ -342,7 +365,18 @@ _pfg_ir_identify() {
       "ST="*)
         _PFG_IR_STATUS="${_l#ST=}"; _PFG_IR_STATUS="${_PFG_IR_STATUS%% *}"
         case "$_l" in *"OP=1"*) _PFG_IR_HAS_OPAQUE=1 ;; esac
-        case "$_l" in *"CP=1"*) _PFG_IR_HAS_COMPUTED=1 ;; esac ;;
+        case "$_l" in *"CP=1"*) _PFG_IR_HAS_COMPUTED=1 ;; esac
+        # IP=1: a git-push reached THROUGH an inline shell (bash/sh -c payload). Its span is payload-relative
+        # (re-based to 0 by the lexer), so it can NOT be sliced from the outer COMMAND — slicing it mis-reads
+        # a fragment of a DIFFERENT command position (the span-alias fail-open the re-review found:
+        # `git push origin …; bash -c "git push evil …"` re-sliced the evil node onto the safe origin push).
+        # The engine's inline-`-c` recursion stage evaluates a LONE inline push correctly, but when an inline
+        # push is COMBINED with other command positions the recursion is not reliably reached. So fold IP into
+        # HAS_OPAQUE → deterministic BLOCK: fail CLOSED. This is an intentional, documented ALLOW→BLOCK change
+        # for the rare "governed push inside an inline shell alongside other positions" shape — never a
+        # fail-open, and it cannot downgrade any previously-correct BLOCK/CONFIRM. (A lone inline push still
+        # blocks, which matches the recursion path's own forbidden→BLOCK and is a safe superset.)
+        case "$_l" in *"IP=1"*) _PFG_IR_HAS_OPAQUE=1; _PFG_IR_INLINE_PUSH=1 ;; esac ;;
     esac
   done <<< "$_facts"
   # Map status → fail-closed classes (contract items 4/5/6). OK is the only non-blocking status; OPAQUE at
@@ -2663,6 +2697,12 @@ set +e
 # host it false-blocked a LEGITIMATE fresh-evidence run (the gate's own spawn tax, not a wedge, exceeded
 # the cap), which is a fail-CLOSED-the-wrong-way regression. The 124/137 remap below stays as
 # defence-in-depth in case a future caller runs this body unwrapped (no router/outer deadline at all).
+if [ -n "${PFG_PROBE_TIER:-}" ]; then
+  echo "PROBE_IR: status=$_PFG_IR_STATUS push_count=$_PFG_IR_PUSH_COUNT inline_push=${_PFG_IR_INLINE_PUSH:-NA} opq=$_PFG_IR_HAS_OPAQUE cmp=$_PFG_IR_HAS_COMPUTED spans=[${_PFG_IR_PUSH_SPANS[*]:-}]" >&2
+  echo "PROBE_IS_PUSH=$_PFG_IS_PUSH PUSH_UNRESOLVED=${_PFG_PUSH_UNRESOLVED:-unset}" >&2
+  if [ -n "$CONFIRM_REASON" ]; then echo "PROBE_VERDICT=CONFIRM reason=[$CONFIRM_REASON]" >&2; else echo "PROBE_VERDICT=AUTO(allow)" >&2; fi
+  exit 0
+fi
 bash "$SCRIPT_DIR/pre-push-gate" </dev/null
 EVIDENCE_RC=$?
 set -e
