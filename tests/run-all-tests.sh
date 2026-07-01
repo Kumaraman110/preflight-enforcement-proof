@@ -1391,7 +1391,7 @@ run_behavioral_tests() {
   local ir_push_test="$SCRIPT_DIR/behavioral/ir-authoritative-push-test.sh"
   if [ -f "$ir_push_test" ]; then
     if bash "$ir_push_test"; then
-      PASSES=$((PASSES + 33))
+      PASSES=$((PASSES + 35))
     else
       FAILURES=$((FAILURES + 1))
       red "FAIL: ir-authoritative-push tests failed (the shared IR must be authoritative for git-push identification — a forbidden push in ANY position [list/&&/pipe/subshell/brace/control] BLOCKs incl. a safe-then-forbidden multi-push worst-wins; computed program/subcommand + opaque + parser/awk failure → deterministic BLOCK, never a legacy allow; quoted/comment/arith stay unblocked; stale/fresh/forbidden/protected/safe policy verdicts preserved; BLOCK/CONFIRM never executes the git shim)"

