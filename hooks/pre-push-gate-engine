@@ -266,6 +266,119 @@ _pfg_push_shadow() {  # $1 = legacy classification tag (ALLOW|CONFIRM). Never af
   return 0
 }
 
+# ── (STAGE 2B) AUTHORITATIVE IR PUSH-POSITION IDENTIFICATION ────────────────────────────────────────────
+# The shared shell-structure IR (lib/shell-structure.sh, AWK-backed) is now the AUTHORITATIVE source for
+# WHERE git-push command positions are (it replaces the legacy regex/segmenter identification, which
+# fail-OPEN on: a 2nd forbidden push after `;`/`&&` that the fast path never saw, and computed program/
+# subcommand tokens it could not resolve). The IR sees EVERY command position (list/pipe/subshell/brace/
+# control/substitution/inline-shell) and marks computed/malformed/opaque structures OPAQUE.
+#
+# This helper runs the parser ONCE (one bounded awk spawn) and produces a FACT OBJECT consumed by (a) the
+# deterministic-BLOCK gate immediately below, (b) the fast-path eligibility gate, and (c) the authoritative
+# per-node push-policy loop. It DECIDES NOTHING itself — it only reports structural facts. Fail-CLOSED by
+# construction: _PFG_IR_STATUS is initialised to a failure sentinel and only set OK on a fully-validated
+# parse; every failure/limit/opacity/computed condition is surfaced as a flag the gate turns into a BLOCK.
+# Runs in a `set +e` subshell under `timeout` so a parser crash becomes a fail-closed BLOCK, never an abort.
+_PFG_IR_STATUS="UNINIT"      # OK | OPAQUE | SIZE_LIMIT | NODE_LIMIT | DEPTH_LIMIT | ERROR | UNAVAIL | TIMEOUT | EMPTY | SKIP_RECURSE | UNINIT
+_PFG_IR_PUSH_COUNT=0         # number of NON-opaque, static git-push command nodes
+_PFG_IR_HAS_OPAQUE=0         # 1 if ANY node is opaque (governed execution potential that cannot be resolved)
+_PFG_IR_HAS_COMPUTED=0       # 1 if ANY node has a computed executable OR computed governed-subcommand token
+_PFG_IR_PUSH_SPANS=()        # per static git-push node: "start:end" byte offsets into COMMAND (arg-recovery locator)
+_PFG_IR_FAILCLOSED=0         # 1 if the IR status itself mandates a deterministic BLOCK
+_PFG_IR_FAIL_REASON=""
+_pfg_ir_identify() {
+  # RECURSION RE-ENTRY: when the engine re-invokes itself for a recovered inline-`-c`/grouping payload
+  # (PREFLIGHT_RECURSE_CMD / an inline depth), the PARENT already established IR authority over the whole
+  # command and routed the recoverable literal here. Re-parsing the fragment as its own command is both
+  # redundant and could mis-bound spans, so skip: the recovered literal flows through the existing legacy
+  # path exactly as before (the parent's authority already governed the decision to recurse).
+  if [ -n "${PREFLIGHT_RECURSE_CMD:-}" ] || [ "${PREFLIGHT_INLINE_DEPTH:-0}" -gt 0 ]; then
+    _PFG_IR_STATUS="SKIP_RECURSE"; return 0
+  fi
+  if [ ! -f "$_PFG_SS_LIB" ]; then
+    _PFG_IR_STATUS="UNAVAIL"; _PFG_IR_FAILCLOSED=1; _PFG_IR_FAIL_REASON="shell-structure IR library not found"; return 0
+  fi
+  local _facts _rc
+  set +e
+  # ONE awk spawn, timeout-bounded, in a nested subshell so a crash/`set -e` inside cannot escape. Emits:
+  #   one "PUSH <start> <end>" line per NON-opaque git-push node, then "ST=<status> OP=<0|1> CP=<0|1>".
+  _facts="$(timeout "${PFG_SS_IR_TIMEOUT:-8}" bash -c '
+      set +e
+      source "$1" 2>/dev/null || { echo "ST=PROTO OP=0 CP=0"; exit 0; }
+      pfg_ss_parse "$2"
+      op=0; cp=0
+      for ((i=0; i<PFG_SS_NODE_COUNT; i++)); do
+        [ "${PFG_SS_OPACITY[$i]}" = OPAQUE ] && op=1
+        [ "${PFG_SS_EXEC_COMPUTED[$i]}" = 1 ] && cp=1
+        [ "${PFG_SS_SUBCMD_COMPUTED[$i]}" = 1 ] && cp=1
+        if [ "${PFG_SS_OPACITY[$i]}" != OPAQUE ]; then
+          b="$(pfg_ss_exec_basename "$i")"
+          if [ "$b" = git ]; then
+            case " ${PFG_SS_SUBCMD[$i]} " in
+              *" push "*|*" push ") printf "PUSH %s %s\n" "${PFG_SS_START[$i]}" "${PFG_SS_END[$i]}" ;;
+            esac
+          fi
+        fi
+      done
+      printf "ST=%s OP=%s CP=%s\n" "$PFG_SS_STATUS" "$op" "$cp"
+    ' _ "$_PFG_SS_LIB" "$COMMAND" 2>/dev/null)"
+  _rc=$?
+  set -e
+  if [ "$_rc" -eq 124 ] || [ "$_rc" -eq 137 ] || [ "$_rc" -gt 128 ]; then
+    _PFG_IR_STATUS="TIMEOUT"; _PFG_IR_FAILCLOSED=1; _PFG_IR_FAIL_REASON="IR parse timed out or was killed (rc=$_rc)"; return 0
+  fi
+  if [ -z "$_facts" ]; then
+    _PFG_IR_STATUS="EMPTY"; _PFG_IR_FAILCLOSED=1; _PFG_IR_FAIL_REASON="IR produced no output"; return 0
+  fi
+  # Ingest the fact lines with `read` (never eval; values came from OUR bounded child, but validate anyway).
+  local _l _s _e
+  while IFS= read -r _l; do
+    case "$_l" in
+      "PUSH "*)
+        set -- $_l   # PUSH <start> <end>
+        _s="${2:-}"; _e="${3:-}"
+        case "$_s$_e" in *[!0-9]*|'') _PFG_IR_FAILCLOSED=1; _PFG_IR_FAIL_REASON="IR push-span malformed"; continue ;; esac
+        _PFG_IR_PUSH_SPANS+=("$_s:$_e"); _PFG_IR_PUSH_COUNT=$((_PFG_IR_PUSH_COUNT+1)) ;;
+      "ST="*)
+        _PFG_IR_STATUS="${_l#ST=}"; _PFG_IR_STATUS="${_PFG_IR_STATUS%% *}"
+        case "$_l" in *"OP=1"*) _PFG_IR_HAS_OPAQUE=1 ;; esac
+        case "$_l" in *"CP=1"*) _PFG_IR_HAS_COMPUTED=1 ;; esac ;;
+    esac
+  done <<< "$_facts"
+  # Map status → fail-closed classes (contract items 4/5/6). OK is the only non-blocking status; OPAQUE at
+  # top level also forces the opaque flag (belt-and-braces with per-node OP).
+  case "$_PFG_IR_STATUS" in
+    OK) : ;;
+    OPAQUE) _PFG_IR_HAS_OPAQUE=1 ;;
+    PROTO|EMPTY|ERROR|"") _PFG_IR_FAILCLOSED=1; _PFG_IR_FAIL_REASON="IR protocol invalid or parser error" ;;
+    SIZE_LIMIT|NODE_LIMIT|DEPTH_LIMIT) _PFG_IR_FAILCLOSED=1; _PFG_IR_FAIL_REASON="IR parser budget limit ($_PFG_IR_STATUS)" ;;
+    *) _PFG_IR_FAILCLOSED=1; _PFG_IR_FAIL_REASON="IR unknown status ($_PFG_IR_STATUS)" ;;
+  esac
+  return 0
+}
+_pfg_ir_identify
+_pfg_stage "ir-identify(status=$_PFG_IR_STATUS push=$_PFG_IR_PUSH_COUNT opq=$_PFG_IR_HAS_OPAQUE cmp=$_PFG_IR_HAS_COMPUTED)"
+
+# ── (STAGE 2B) DETERMINISTIC BLOCK — the authoritative fail-closed gate ─────────────────────────────────
+# Runs BEFORE any allow-capable legacy path (fast-inline @~350, grouping, fast0 @~1000, fast-decision @~1060,
+# heavy policy). Contract items 3-6: a computed executable that could conceal git, a computed git subcommand,
+# any opacity with governed-execution potential, and any parser error/limit/timeout/absence/protocol-invalid
+# are DETERMINISTIC BLOCKS — no authoritative failure may fall through to a legacy ALLOW. SKIP_RECURSE (a
+# recovered inline payload the parent already governed) bypasses this gate: the legacy recursion path decides.
+if [ "$_PFG_IR_STATUS" != "SKIP_RECURSE" ]; then
+  if [ "$_PFG_IR_FAILCLOSED" = 1 ] || [ "$_PFG_IR_HAS_COMPUTED" = 1 ] || [ "$_PFG_IR_HAS_OPAQUE" = 1 ]; then
+    _pfg_stage "ir:DETERMINISTIC-BLOCK($_PFG_IR_STATUS)"
+    echo "BLOCKED: the command's executable structure could not be authoritatively resolved as statically safe" >&2
+    echo "  (${_PFG_IR_FAIL_REASON:-a computed executable/subcommand or an opaque/concealed command structure})." >&2
+    echo "  A push could be concealed in a form the guard cannot statically inspect (a computed program or" >&2
+    echo "  subcommand, an unresolved/opaque structure, or a parser/dependency failure), so Preflight fails" >&2
+    echo "  CLOSED rather than execute or eval the command to find out. No represented command was executed." >&2
+    echo "  Re-express the operation in a directly inspectable static form (e.g. a plain 'git push <remote>" >&2
+    echo "  <refspec>') so its target can be validated. (Agent Bash-tool guard only; not server-side protection.)" >&2
+    exit 2
+  fi
+fi
+
 # ── (FAST-INLINE) BOUNDED STATIC INSPECTION OF `bash -c <payload>` INLINE-SHELL WRAPPERS (BLOCKER-E) ──────
 # THE GAP (confirmed fail-open): `bash -c 'gh pr merge --repo <forbidden> 12 --merge'` (and `gh pr create`)
 # was silently ALLOWED. A `bash -c <inline code>` is neither a git push (so the structural push parser does
@@ -903,6 +1016,23 @@ _pfg_fast_remote_forbidden() {  # $1 = remote name ; $2 = config JSON text. retu
   return 1
 }
 _pfg_fast_parse_remote "$COMMAND"
+# ── (STAGE 2B) FAST-PATH ELIGIBILITY GATE ───────────────────────────────────────────────────────────────
+# The builtins-only fast paths below parse ONLY the FIRST `git…push` token-run and then render the full tier
+# verdict themselves (the Gate-4 spawn-budget fix). That is CORRECT and byte-identical to the heavy path ONLY
+# when the command is a single, statically-resolvable git-push with no other governed/opaque/computed command
+# position. For anything else — a 2nd push after `;`/`&&` (the proven multi-push fail-open), or any opaque/
+# computed node — the fast path would AUTO-allow while missing the other position. So the fast decision is
+# now GATED on the IR authority: it may fire ONLY when the IR proves exactly ONE static push node and zero
+# opaque/computed nodes. Otherwise control falls through to the authoritative per-node push-policy loop.
+# (SKIP_RECURSE keeps the legacy fast path for a parent-governed recovered payload.) The DETERMINISTIC-BLOCK
+# gate above already exited for opaque/computed/failure, so by here _PFG_IR_STATUS is OK or SKIP_RECURSE.
+_PFG_FAST_ELIGIBLE=0
+if [ "$_PFG_IR_STATUS" = "SKIP_RECURSE" ]; then
+  _PFG_FAST_ELIGIBLE=1
+elif [ "$_PFG_IR_STATUS" = "OK" ] && [ "$_PFG_IR_PUSH_COUNT" -le 1 ] \
+     && [ "$_PFG_IR_HAS_OPAQUE" = 0 ] && [ "$_PFG_IR_HAS_COMPUTED" = 0 ]; then
+  _PFG_FAST_ELIGIBLE=1
+fi
 # Resolve + read committed config ONCE (builtins; reused by the forbidden-name block AND the full
 # fast-decision block below). Pure-shell upward FS walk from $PWD — NO git rev-parse. Bounded <=64.
 _FAST_CFG=""; _FAST_CFG_TEXT=""; _FAST_CFG_DIR=""
@@ -956,7 +1086,9 @@ fi
 #   • push-gating is opted in (effective branch.remote is set — matches the heavy path's `-n "$REMOTE"` gate;
 #     absent → additive-guard INERT, fall through),
 #   • the target's verdict does not require resolving a NAMED remote's URL beyond one bounded git call.
-if [ "$_FAST_PARSED" = 1 ] && [ -n "$_FAST_CFG_TEXT" ] && [ -n "$_FAST_CFG_DIR" ]; then
+#   • (STAGE 2B) the IR proves this is a single static push with no other governed/opaque/computed position
+#     (_PFG_FAST_ELIGIBLE=1). A multi-push or opaque/computed command falls through to the authoritative loop.
+if [ "$_PFG_FAST_ELIGIBLE" = 1 ] && [ "$_FAST_PARSED" = 1 ] && [ -n "$_FAST_CFG_TEXT" ] && [ -n "$_FAST_CFG_DIR" ]; then
   _FD_REMOTE_CFG="$(_fast_json_scalar "$_FAST_CFG_TEXT" remote)"
   _FD_BASE="$(_fast_json_scalar "$_FAST_CFG_TEXT" base)"
   # ── apply the config.local.json OVERLAY for the two allowlisted topology scalars (builtins only) ──
@@ -1874,6 +2006,38 @@ _pfg_stage "continuation-normalize+enter-parse"
 _pfg_parse_push "$COMMAND"
 _pfg_stage "structural-parse-done"
 
+# ── (STAGE 2B) IR AUTHORITY OVER PUSH IDENTIFICATION ────────────────────────────────────────────────────
+# The legacy `_pfg_parse_push` above now runs ONLY as a silent comparison ORACLE — its _PFG_IS_PUSH /
+# _PFG_PUSH_UNRESOLVED / _PFG_PUSH_ARGS are preserved here for an optional differential log and then the
+# push IDENTIFICATION is taken over by the IR (which sees command positions the legacy segmenter misses:
+# multiple pushes, and — via the DETERMINISTIC-BLOCK gate above — computed/opaque forms). The IR does NOT
+# redesign policy: the per-node loop below drives the UNCHANGED policy body once per static push node.
+# SKIP_RECURSE (a parent-governed recovered payload) keeps the legacy signals as-is (parent already ruled).
+if [ "$_PFG_IR_STATUS" != "SKIP_RECURSE" ]; then
+  # optional differential oracle log (debug-only; matches the shadow's opt-in discipline; never affects policy)
+  if [ "${PFG_PUSH_ORACLE_LOG:-}" != "" ]; then
+    printf 'PFG_PUSH_ORACLE ir_push=%s legacy_push=%s legacy_unres=%s ir_status=%s\n' \
+      "$_PFG_IR_PUSH_COUNT" "${_PFG_IS_PUSH:-0}" "${_PFG_PUSH_UNRESOLVED:-0}" "$_PFG_IR_STATUS" \
+      >> "$PFG_PUSH_ORACLE_LOG" 2>/dev/null || true
+  fi
+  # IR is authoritative: a push exists iff the IR found >=1 static git-push node. (Opaque/computed forms
+  # already hard-blocked above, so they never reach here as a "no push → allow".)
+  if [ "$_PFG_IR_PUSH_COUNT" -gt 0 ]; then
+    _PFG_IS_PUSH=1
+    # Seed _PFG_PUSH_ARGS from the FIRST push node so the B-EARLY forbidden-name short-circuit (below) keeps
+    # its latency win on node-0; the authoritative per-node loop re-derives args for EVERY node.
+    _pfg_ir_seg_args() {  # $1 = "start:end" → echo the tokens after `push` for that node (via the legacy tokenizer)
+      local s="${1%%:*}" e="${1##*:}" seg; seg="${COMMAND:s:e-s}"
+      local _oldifs="$IFS"; set -f; set -- $seg; set +f; IFS="$_oldifs"
+      _pfg_seg_push_out=""; _pfg_seg_push_args "$@" >/dev/null 2>&1 && printf '%s' "$_pfg_seg_push_out"
+    }
+    _PFG_PUSH_ARGS="$(_pfg_ir_seg_args "${_PFG_IR_PUSH_SPANS[0]}")"
+    _PFG_PUSH_UNRESOLVED=0
+  else
+    _PFG_IS_PUSH=0
+  fi
+fi
+
 # ── Resolve canonical repo (owner/repo) from config.branch.remote. Fail-open. ─
 # Shared by the #3a pr-create guard below and reused by the #6b push guard.
 # REPO-AWARE: reads config from the PUSH-TARGET repo (PFG_TARGET_CWD), not the session root.
@@ -2225,6 +2389,44 @@ SAFE_REMOTES="$(_pfg_branch_array "$CONFIG" safeRemotes)"
 PROTECTED_BRANCHES="main master"
 [ -n "$BASE" ] && PROTECTED_BRANCHES="$PROTECTED_BRANCHES $BASE"
 
+# ── (STAGE 2B) AUTHORITATIVE PER-NODE PUSH-POLICY LOOP (worst-wins: BLOCK > CONFIRM > ALLOW) ─────────────
+# The IR found _PFG_IR_PUSH_COUNT static git-push command positions (>1 for a `git push …; git push …` list
+# the legacy fast path evaluated only the FIRST of — the proven fail-open). Run the UNCHANGED classification
+# body ONCE PER push node, feeding each node's own arg tail. Worst-wins falls out of the body's existing
+# structure with NO rewrite: a hard-BLOCK (`exit 2`) short-circuits immediately (BLOCK is worst), and every
+# CONFIRM is guarded by `[ -z "$CONFIRM_REASON" ]` so the FIRST confirm sticks while a later BLOCK still
+# exits. The evidence-gate + AUTO/CONFIRM emit tail below runs ONCE after the loop (evidence is HEAD-scoped,
+# identical across nodes), preserving the "stale-evidence exit 2 wins over CONFIRM" ordering.
+# Node arg source: each node's byte span [start,end) into COMMAND, re-tokenized by the SAME legacy
+# `_pfg_seg_push_args` grammar (single-source; no second parser). SKIP_RECURSE (parent-governed recovered
+# payload) or a legacy-only path runs exactly once on the legacy-derived _PFG_PUSH_ARGS (byte-identical to
+# pre-2B). A node whose span cannot be re-tokenized → treated as UNRESOLVED (fail-closed CONFIRM), never
+# silently skipped.
+_PFG_PUSH_NODE_ARGS=()   # the per-node arg tails to evaluate
+if [ "$_PFG_IR_STATUS" = "OK" ] && [ "$_PFG_IR_PUSH_COUNT" -gt 0 ]; then
+  for _pfg_span in "${_PFG_IR_PUSH_SPANS[@]}"; do
+    _pfg_s="${_pfg_span%%:*}"; _pfg_e="${_pfg_span##*:}"; _pfg_seg="${COMMAND:_pfg_s:_pfg_e-_pfg_s}"
+    _pfg_oldifs="$IFS"; set -f; set -- $_pfg_seg; set +f; IFS="$_pfg_oldifs"
+    _pfg_seg_push_out=""
+    if _pfg_seg_push_args "$@" >/dev/null 2>&1; then _PFG_PUSH_NODE_ARGS+=("$_pfg_seg_push_out")
+    else _PFG_PUSH_NODE_ARGS+=($'\x01UNRESOLVED'); fi   # sentinel → per-node unresolved CONFIRM
+  done
+else
+  # SKIP_RECURSE / legacy-only: one node from the legacy-derived args (byte-identical to pre-2B behavior).
+  _PFG_PUSH_NODE_ARGS+=("$_PFG_PUSH_ARGS")
+fi
+
+# CONFIRM_REASON accumulates ACROSS nodes (first-confirm-wins): initialise ONCE before the loop so a later
+# AUTO node cannot erase an earlier node's CONFIRM. A node BLOCK still `exit 2`s immediately (worst-wins).
+CONFIRM_REASON=""
+for _pfg_node_args in "${_PFG_PUSH_NODE_ARGS[@]}"; do
+# Per-node unresolved sentinel → mark unresolved (the B-unresolved CONFIRM below fires), empty real args.
+# Reset _PFG_PUSH_UNRESOLVED per node so a prior node's unresolved state cannot leak into a clean node.
+if [ "$_pfg_node_args" = $'\x01UNRESOLVED' ]; then
+  _PFG_PUSH_UNRESOLVED=1; _PFG_PUSH_ARGS=""
+else
+  _PFG_PUSH_UNRESOLVED=0; _PFG_PUSH_ARGS="$_pfg_node_args"
+fi
 # Parse the push args from the STRUCTURAL parser's token list (_PFG_PUSH_ARGS = everything after `push`),
 # NOT a re-grep/sed of the raw command. This is the single source for HAS_FORCE / ARG_REMOTE / ARG_REFSPEC,
 # so detection and extraction can never diverge (the old two-layer bug). Word-split the parsed args.
@@ -2311,7 +2513,9 @@ fi
 # (JSON is ignored on exit 2). So the HARD BLOCK (force-to-protected) exits 2 here; the CONFIRM tier is
 # deferred until AFTER the evidence gate (a missing/stale-evidence exit 2 is itself a hard block that must
 # win over a CONFIRM). We set CONFIRM_REASON now, run the evidence gate, then emit the tier decision.
-CONFIRM_REASON=""
+# (STAGE 2B) NOT reset here — CONFIRM_REASON is initialised ONCE before the per-node loop so an earlier
+# node's CONFIRM survives a later AUTO node (first-confirm-wins). All CONFIRM blocks below guard on
+# `[ -z "$CONFIRM_REASON" ]`, so re-entry per node is safe without a reset.
 
 # Resolve the would-be target branch (refspec dest after ':', else named ref, else current branch).
 TARGET_BRANCH="${ARG_REFSPEC##*:}"
@@ -2394,6 +2598,9 @@ if [ -z "$CONFIRM_REASON" ] && [ -n "$TARGET_BRANCH" ]; then
     fi
   done
 fi
+done   # ── (STAGE 2B) end authoritative per-node push-policy loop. A node's exit-2 already short-circuited
+       # (worst-wins BLOCK); CONFIRM_REASON holds the first CONFIRM across nodes; no node blocked/confirmed
+       # → fall through to the evidence gate + AUTO emit ONCE below.
 
 # Not a hard-blocked operation — run the evidence gate FIRST (a missing/stale-evidence exit 2 is a hard
 # block that must win over CONFIRM). pre-push-gate exits 2 to block, or returns 0 when evidence is fresh.
