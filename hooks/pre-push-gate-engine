@@ -173,6 +173,99 @@ else
   _pfg_stage "command-extracted"
 fi
 
+# ── (STAGE 2A) NON-AUTHORITATIVE PUSH SHADOW — completely isolated, cannot alter policy ─────────────────
+# The shared shell-structure parser (lib/shell-structure.sh, AWK-backed) is run in SHADOW mode to compare
+# its IR git-push facts against the legacy authoritative parser, so we can build confidence before ever
+# making the IR authoritative (Stage 2B). HARD ISOLATION PROPERTIES (each a safety requirement):
+#   • OFF BY DEFAULT: unless PFG_PUSH_SHADOW=1, `_pfg_push_shadow` is a single-`return 0` no-op. In
+#     production the var is unset, so the shadow adds ZERO work and CANNOT change exit code / stdout /
+#     stderr / decision JSON / diagnostic. (The no-behavior-change proof rests on this mechanically.)
+#   • CALLED ONLY on ALLOW/CONFIRM emit paths, and only AFTER the authoritative verdict is fully computed —
+#     NEVER before an `exit 2` BLOCK (a completed BLOCK is emitted with no shadow work; ordering rule 3).
+#   • RUNS IN A FULLY DETACHED SUBSHELL under `timeout` with a 6s hard budget; all its stdout/stderr are
+#     redirected to the shadow evidence file (or /dev/null), so it can emit NOTHING on the engine's fds.
+#   • Any shadow failure (awk absent, malformed protocol, timeout, parser ERROR) is CATEGORIZED and
+#     recorded; it NEVER propagates — the function always `return 0`. Tests (which set PFG_PUSH_SHADOW=1 and
+#     a shadow log) assert on the recorded category; runtime users never see it.
+# The comparison itself is family-neutral structural: does the IR contain a non-opaque git-push node, an
+# opaque node, or neither — vs the legacy _PFG_IS_PUSH/_PFG_PUSH_UNRESOLVED signals.
+# Resolve the parser lib from THIS file's location (BASH_SOURCE is always set; `_ppg_dir` is a LOCAL defined
+# later inside the fast-path helper, so referencing it here would be an unbound-var abort under `set -u`).
+# The `|| true` is load-bearing: this runs unconditionally at top level under `set -euo pipefail` (well
+# before the first `set +e`), so if `../lib` is unresolvable (a relocated/pruned engine) the failed `cd`
+# would otherwise abort the WHOLE engine via `set -e` before any policy runs. Fail SOFT here — an unresolved
+# lib just makes the (opt-in, non-authoritative) shadow a no-op via its own `[ -f ]` guard; it must never
+# take down the authoritative gate.
+_PFG_SS_LIB="$( { cd "$(dirname "${BASH_SOURCE[0]}")/../lib" 2>/dev/null && pwd; } || true )/shell-structure.sh"
+_pfg_push_shadow() {  # $1 = legacy classification tag (ALLOW|CONFIRM). Never affects the caller. Always returns 0.
+  [ "${PFG_PUSH_SHADOW:-0}" = "1" ] || return 0
+  local _legacy="$1"
+  local _sink="${PFG_PUSH_SHADOW_LOG:-/dev/null}"
+  # everything below runs in a subshell so a crash/`set -e` abort cannot escape into the engine; a 6s hard
+  # timeout bounds it; all fds are captured. The parse itself never executes the command (parser contract).
+  (
+    set +e
+    # remaining-deadline guard: if the engine is already near its outer deadline, skip (SHADOW_SKIPPED).
+    # We cannot read the router's clock precisely here; use a conservative env hint if present.
+    local _cat="SHADOW_ERROR" _irclass="?" _dur="" _nodes=0 _depthmax=0
+    if [ ! -f "$_PFG_SS_LIB" ]; then _cat="SHADOW_ERROR"; else
+      # source + parse under a 6s hard timeout in a nested subshell; capture the serialized facts.
+      local _facts
+      _facts="$(timeout 6 bash -c '
+        set +e
+        source "$1" 2>/dev/null || { echo "STATUS=ERROR"; exit 0; }
+        pfg_ss_parse "$2"
+        # derive git-push IR class: NONPQ (non-opaque git push node) | OPAQUE (any opaque) | NONE
+        cls=NONE
+        for ((i=0;i<PFG_SS_NODE_COUNT;i++)); do
+          if [ "${PFG_SS_OPACITY[$i]}" = OPAQUE ]; then [ "$cls" = NONE ] && cls=OPAQUE; fi
+          b="$(pfg_ss_exec_basename "$i")"
+          if [ "${PFG_SS_OPACITY[$i]}" != OPAQUE ] && [ "$b" = git ]; then
+            case " ${PFG_SS_SUBCMD[$i]} " in *" push "*) cls=NONPQ ;; esac
+          fi
+        done
+        printf "STATUS=%s NODES=%s CLASS=%s DUR=%s\n" "$PFG_SS_STATUS" "$PFG_SS_NODE_COUNT" "$cls" "${PFG_SS_SCANNER_DURATION_MS:-}"
+      ' _ "$_PFG_SS_LIB" "$COMMAND" 2>/dev/null)"
+      local _trc=$?
+      if [ "$_trc" -eq 124 ] || [ "$_trc" -eq 137 ]; then _cat="SHADOW_ERROR"; _irclass="timeout"
+      elif [ -z "$_facts" ]; then _cat="SHADOW_ERROR"; _irclass="empty"
+      else
+        local _st="" _cls=""
+        _st="$(printf '%s' "$_facts" | sed -n 's/.*STATUS=\([A-Z_]*\).*/\1/p')"
+        _cls="$(printf '%s' "$_facts" | sed -n 's/.*CLASS=\([A-Z]*\).*/\1/p')"
+        _dur="$(printf '%s' "$_facts" | sed -n 's/.*DUR=\([0-9]*\).*/\1/p')"
+        _nodes="$(printf '%s' "$_facts" | sed -n 's/.*NODES=\([0-9]*\).*/\1/p')"
+        case "$_st" in
+          ERROR) _cat="SHADOW_ERROR"; _irclass="parser-error" ;;
+          SIZE_LIMIT|NODE_LIMIT|DEPTH_LIMIT) _cat="SHADOW_LIMIT"; _irclass="$_st" ;;
+          OPAQUE) _irclass="OPAQUE"; _cat="__cmp__" ;;
+          OK) _irclass="$_cls"; _cat="__cmp__" ;;
+          *) _cat="SHADOW_ERROR"; _irclass="unknown-status" ;;
+        esac
+        if [ "$_cat" = "__cmp__" ]; then
+          # legacy push facts: _PFG_IS_PUSH (1 if legacy saw a push), _PFG_PUSH_UNRESOLVED (1 if present-but-unresolved)
+          local _legpush="${_PFG_IS_PUSH:-0}" _legunres="${_PFG_PUSH_UNRESOLVED:-0}"
+          if [ "$_irclass" = "OPAQUE" ]; then
+            # IR opaque: fail-closed structural. MATCH if legacy also unresolved/present; else IR_OPAQUE.
+            if [ "$_legunres" = 1 ] || [ "$_legpush" = 1 ]; then _cat="BOTH_OPAQUE"; else _cat="IR_OPAQUE"; fi
+          elif [ "$_irclass" = "NONPQ" ]; then
+            if [ "$_legpush" = 1 ]; then _cat="MATCH"; else _cat="IR_ONLY"; fi
+          else  # IR NONE
+            if [ "$_legpush" = 1 ]; then _cat="LEGACY_ONLY"; else _cat="MATCH"; fi
+          fi
+        fi
+      fi
+    fi
+    # record silently. command is hashed (not stored raw) unless PFG_PUSH_SHADOW_FIXTURE=1 (debug only).
+    local _cmdrepr
+    if [ "${PFG_PUSH_SHADOW_FIXTURE:-0}" = "1" ]; then _cmdrepr="cmd=${COMMAND}"
+    else _cmdrepr="cmdlen=${#COMMAND}"; fi
+    printf 'PFG_PUSH_SHADOW legacy=%s cat=%s ir=%s nodes=%s dur=%s %s\n' \
+      "$_legacy" "$_cat" "$_irclass" "$_nodes" "$_dur" "$_cmdrepr" >> "$_sink" 2>/dev/null || true
+  ) >/dev/null 2>&1 || true
+  return 0
+}
+
 # ── (FAST-INLINE) BOUNDED STATIC INSPECTION OF `bash -c <payload>` INLINE-SHELL WRAPPERS (BLOCKER-E) ──────
 # THE GAP (confirmed fail-open): `bash -c 'gh pr merge --repo <forbidden> 12 --merge'` (and `gh pr create`)
 # was silently ALLOWED. A `bash -c <inline code>` is neither a git push (so the structural push parser does
@@ -595,6 +688,7 @@ _pfg_json_string() {
 # path's CONFIRM tier (single source). Emits exit 0 + permissionDecision:ask, then exits 0.
 _fast_emit_confirm() {  # $1 = reason (content-derived, no human-shell steering)
   _pfg_stage "fast-decision:CONFIRM"
+  _pfg_push_shadow CONFIRM   # non-authoritative; no-op unless PFG_PUSH_SHADOW=1; cannot alter the emit below
   printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":%s}}\n' \
     "$(printf '%s' "CONSEQUENTIAL PUSH — confirm to proceed. $1" | _pfg_json_string)"
   exit 0
@@ -627,6 +721,7 @@ _fast_run_evidence_then_allow() {
   set -e
   if [ "$_rc" -eq 0 ]; then
     _pfg_stage "fast-decision:AUTO-allow"
+    _pfg_push_shadow ALLOW   # non-authoritative; no-op unless PFG_PUSH_SHADOW=1; cannot alter the emit below
     printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":"Reversible push: unprotected branch to the configured safe remote, non-force, gate evidence fresh."}}\n'
     exit 0
   fi
@@ -2353,6 +2448,7 @@ _pfg_wedge_block_if_flagged
 if [ -n "$CONFIRM_REASON" ]; then
   # CONFIRM tier: ask the user. permissionDecision:ask escalates to a human confirmation prompt; the
   # agent CANNOT self-approve (the accountability property — the consequential push is gated to a human).
+  _pfg_push_shadow CONFIRM   # non-authoritative; no-op unless PFG_PUSH_SHADOW=1; cannot alter the emit below
   printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":%s}}\n' \
     "$(printf '%s' "CONSEQUENTIAL PUSH — confirm to proceed. $CONFIRM_REASON" | _pfg_json_string)"
   exit 0
@@ -2360,5 +2456,6 @@ fi
 # AUTO tier: reversible/low-blast-radius (named safe remote, unprotected branch, non-force, evidence
 # fresh). Fall through with exit 0 + explicit allow so the safe push proceeds with NO human handoff —
 # the friction being removed.
+_pfg_push_shadow ALLOW   # non-authoritative; no-op unless PFG_PUSH_SHADOW=1; cannot alter the emit below
 printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow","permissionDecisionReason":"Reversible push: unprotected branch to the configured safe remote, non-force, gate evidence fresh."}}\n'
 exit 0
