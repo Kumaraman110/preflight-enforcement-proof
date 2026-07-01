@@ -92,9 +92,10 @@ echo "════ (3) authoritative fail-closed: broken awk → BLOCK (Stage-2B
 FAKE="$T/fakeawk"; mkdir -p "$FAKE"
 printf '#!/bin/sh\nexit 3\n' > "$FAKE/awk"; chmod +x "$FAKE/awk"
 brokenawk_blocks() {  # $1 label  $2 cmd → assert RC=2 (deterministic BLOCK) with broken awk
-  verdict "$WS" "$2" env "PATH=$FAKE:$PATH"
-  if [ "$RC" = 2 ]; then ok "$1: broken-awk → BLOCK (fail-closed authoritative)"
-  else bad "$1: broken-awk should BLOCK (RC=2), got RC=$RC DEC=$DEC"; fi
+  # verdict() ECHOES "RC=<n> DEC=<d>" (it does not set globals); parse the echoed RC.
+  local r rc; r="$(verdict "$WS" "$2" env "PATH=$FAKE:$PATH")"; rc="${r#RC=}"; rc="${rc%% *}"
+  if [ "$rc" = 2 ]; then ok "$1: broken-awk → BLOCK (fail-closed authoritative)"
+  else bad "$1: broken-awk should BLOCK (RC=2), got [$r]"; fi
 }
 brokenawk_blocks "broken-awk safe-push"    "git push origin HEAD:feature/x"
 brokenawk_blocks "broken-awk protected"    "git push origin HEAD:main"
