@@ -1328,6 +1328,62 @@ run_behavioral_tests() {
     yellow "SKIP: pre-bash-structure-oracle-test.sh not found"
   fi
 
+  # Stage-2A AWK backend gates: (3) field-for-field equivalence vs the frozen Stage-1 Bash parser over the
+  # full corpus + adversarial inputs; (4) protocol validation / failure-isolation (fail-closed on malformed,
+  # truncated, abnormal-exit, bad-version, fake-awk output, awk-absent). ──
+  local ss_equiv_test="$SCRIPT_DIR/behavioral/pre-bash-structure-equivalence-test.sh"
+  if [ -f "$ss_equiv_test" ]; then
+    if bash "$ss_equiv_test"; then
+      PASSES=$((PASSES + 116))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: pre-bash-structure-equivalence tests failed (the AWK-backed lib/shell-structure.sh must produce FIELD-FOR-FIELD identical IR — status/nodes/parents/context/spans/exec/subcmd/computed-flags/env/opacity/reason — to the frozen Stage-1 Bash parser across the full corpus AND adversarial inputs; ANY divergence is a regression in the drop-in replacement)"
+    fi
+  else
+    yellow "SKIP: pre-bash-structure-equivalence-test.sh not found"
+  fi
+
+  local ss_protocol_test="$SCRIPT_DIR/behavioral/pre-bash-structure-protocol-test.sh"
+  if [ -f "$ss_protocol_test" ]; then
+    if bash "$ss_protocol_test"; then
+      PASSES=$((PASSES + 24))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: pre-bash-structure-protocol tests failed (the wrapper must FAIL CLOSED — PFG_SS_STATUS=ERROR — on every malformed/truncated/abnormal lexer condition and on awk-absence; a fake awk earlier in PATH must not smuggle output past validation; the wrapper must NEVER eval lexer output)"
+    fi
+  else
+    yellow "SKIP: pre-bash-structure-protocol-test.sh not found"
+  fi
+
+  # (5) cross-AWK portability: the lexer must produce identical protocol/IR under every awk present
+  # (gawk on Windows; gawk+mawk on Linux CI). Byte-fidelity (CR) is also asserted. ──
+  local ss_portab_test="$SCRIPT_DIR/behavioral/pre-bash-structure-portability-test.sh"
+  if [ -f "$ss_portab_test" ]; then
+    if bash "$ss_portab_test"; then
+      PASSES=$((PASSES + 20))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: pre-bash-structure-portability tests failed (the POSIX-awk lexer must produce byte-identical protocol/IR under every awk implementation present — gawk and mawk must agree structurally; a divergence is the Stage-2A AWK PORTABILITY FAILURE gate)"
+    fi
+  else
+    yellow "SKIP: pre-bash-structure-portability-test.sh not found"
+  fi
+
+  # (6) push-shadow isolation + verdict identity: the non-authoritative shadow must never change the
+  # user-facing verdict (exit/stdout byte-identical shadow off==on), must run on ALLOW/CONFIRM not on a
+  # completed BLOCK, and must isolate every shadow failure (broken/absent awk). ──
+  local ss_shadow_test="$SCRIPT_DIR/behavioral/pre-push-shadow-isolation-test.sh"
+  if [ -f "$ss_shadow_test" ]; then
+    if bash "$ss_shadow_test"; then
+      PASSES=$((PASSES + 8))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: pre-push-shadow-isolation tests failed (the non-authoritative push shadow MUST NOT change the user-facing verdict — exit code + stdout byte-identical with PFG_PUSH_SHADOW off vs on — must not run on a completed BLOCK, and must isolate a broken/absent awk as SHADOW_ERROR with the legacy verdict unchanged)"
+    fi
+  else
+    yellow "SKIP: pre-push-shadow-isolation-test.sh not found"
+  fi
+
   local gapa_test="$SCRIPT_DIR/behavioral/pre-push-gapa-prod-pattern-test.sh"
   if [ -f "$gapa_test" ]; then
     if bash "$gapa_test"; then

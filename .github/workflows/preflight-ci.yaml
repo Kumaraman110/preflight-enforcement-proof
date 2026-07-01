@@ -60,11 +60,21 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      - name: Install mawk (cross-AWK portability coverage for the shell-structure lexer)
+        run: |
+          # The shell-structure lexer (lib/shell-structure-lexer.awk) is POSIX-awk and MUST produce identical
+          # IR under gawk AND mawk. ubuntu-latest ships gawk (as /usr/bin/awk); install mawk so the
+          # portability test (pre-bash-structure-portability-test.sh) actually exercises gawk-vs-mawk here
+          # (the Windows Git-Bash host has only gawk, so this Linux job is where cross-impl divergence is
+          # caught). Non-fatal if the package index is briefly unavailable — the test then self-notes single-impl.
+          sudo apt-get update -y && sudo apt-get install -y mawk || echo "note: mawk install skipped (apt unavailable)"
       - name: Tooling versions
         run: |
           bash --version | head -1
           jq --version || true
           git --version
+          awk --version 2>/dev/null | head -1 || true
+          mawk -W version 2>&1 | head -1 || echo "mawk: absent"
       - name: Run canonical suite
         run: |
           set -o pipefail
