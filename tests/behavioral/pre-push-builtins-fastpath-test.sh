@@ -102,6 +102,9 @@ cnt() {  # $1 = pattern, $2 = file
 HK="$(mktemp -d)/hooks"; mkdir -p "$HK" "$(dirname "$HK")/lib"; _CLEAN+=("$(dirname "$HK")")
 cp "$ENGINE" "$HK/pre-push-gate-engine"
 cp "$ROOT/lib/config-overlay.sh" "$ROOT/lib/heartbeat.sh" "$(dirname "$HK")/lib/" 2>/dev/null || true
+# Stage-2B: the engine's authoritative IR parser needs its lib beside it (sibling ../lib) — copy it too,
+# else the deterministic-BLOCK gate fires "IR library not found" for every candidate.
+cp "$ROOT/lib/shell-structure.sh" "$ROOT/lib/shell-structure-lexer.awk" "$(dirname "$HK")/lib/" 2>/dev/null || true
 EVIDENCE_MARKER="$TRIP/.evidence_called"
 cat > "$HK/pre-push-gate" <<EOF
 #!/usr/bin/env bash

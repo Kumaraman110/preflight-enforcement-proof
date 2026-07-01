@@ -44,6 +44,8 @@ mk_ws() {
   mkdir -p "$ws/hooks" "$ws/lib"
   cp "$ROUTER" "$ENGINE" "$ROOT/hooks/pre-push-gate" "$ws/hooks/" 2>/dev/null
   cp "$ROOT/lib/config-overlay.sh" "$ROOT/lib/heartbeat.sh" "$ws/lib/" 2>/dev/null
+  # Stage-2B: the authoritative IR parser lib must sit beside the copied engine (sibling ../lib).
+  cp "$ROOT/lib/shell-structure.sh" "$ROOT/lib/shell-structure-lexer.awk" "$ws/lib/" 2>/dev/null
   echo "$ws"
 }
 WS="$(mk_ws optedin)"

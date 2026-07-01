@@ -63,6 +63,7 @@ done
 WS="$T/ws"; mkdir -p "$WS/hooks" "$WS/lib" "$WS/.preflight/gate"
 cp "$ROUTER" "$ENGINE" "$ROOT/hooks/pre-push-gate" "$WS/hooks/" 2>/dev/null
 cp "$ROOT/lib/config-overlay.sh" "$ROOT/lib/heartbeat.sh" "$WS/lib/" 2>/dev/null
+cp "$ROOT/lib/shell-structure.sh" "$ROOT/lib/shell-structure-lexer.awk" "$WS/lib/" 2>/dev/null   # Stage-2B: IR parser lib beside engine
 # wrap the engine copy with an invocation witness (delegates to the real engine body)
 mv "$WS/hooks/pre-push-gate-engine" "$WS/hooks/.engine-real"
 {
@@ -131,6 +132,7 @@ eng=$(nlines "$ENGINE_WITNESS")
 # live in a DEDICATED throwaway workspace so the shared WS and the other items are untouched.
 WS4="$T/ws4"; mkdir -p "$WS4/.preflight/gate" "$WS4/hooks" "$WS4/lib"
 cp "$ROUTER" "$ENGINE" "$ROOT/hooks/pre-push-gate" "$WS4/hooks/" 2>/dev/null
+cp "$ROOT/lib/shell-structure.sh" "$ROOT/lib/shell-structure-lexer.awk" "$WS4/lib/" 2>/dev/null   # Stage-2B: IR parser lib beside engine
 # wrap the engine copy with the same invocation witness used by the main WS
 { echo '#!/usr/bin/env bash'; printf 'printf "engine\\n" >> "%s"\n' "$ENGINE_WITNESS"; printf 'exec bash "%s" "$@"\n' "$WS4/hooks/.engine-real"; } > "$WS4/hooks/pre-push-gate-engine"
 cp "$ENGINE" "$WS4/hooks/.engine-real"; chmod +x "$WS4/hooks/pre-push-gate-engine"

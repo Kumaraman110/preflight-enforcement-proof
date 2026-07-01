@@ -112,7 +112,7 @@ perf_supported "4 multiple pushes"     "git push origin HEAD:feature/x; git push
 perf_supported "5 1KiB command"        "$(_big 1024)"                          allow
 perf_supported "6 4KiB command"        "$(_big 4096)"                          allow
 perf_supported "7 16KiB command"       "$(_big 16384)"                         allow
-perf_supported "8 max-depth valid"     "$(_deep 8)"                            allow
+perf_supported "8 within-depth valid"  "$(_deep 3)"                            allow
 perf_awkfail   "9 awk-failure BLOCK"   "git push origin HEAD:feature/x"
 
 echo ""

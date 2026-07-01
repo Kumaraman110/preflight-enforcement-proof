@@ -60,8 +60,11 @@ make_repo() {
 # $2 = the push command. Returns the hook's exit code in RC.
 run_with_stub_evidence() {  # $1 = stub exit code ; $2 = repo dir
   local code="$1" repo="$2" hd
-  hd="$(mktemp -d)/hookdir"; mkdir -p "$hd"
+  hd="$(mktemp -d)/hookdir"; mkdir -p "$hd" "$(dirname "$hd")/lib"
   cp "$REAL_HOOK" "$hd/pre-push-gate-engine"
+  # Stage-2B: the authoritative IR parser lib must sit beside the copied engine (sibling ../lib), else the
+  # deterministic-BLOCK gate reports "IR library not found" and blocks before the evidence-rc path is reached.
+  cp "$(dirname "$REAL_HOOK")/../lib/shell-structure.sh" "$(dirname "$REAL_HOOK")/../lib/shell-structure-lexer.awk" "$(dirname "$hd")/lib/" 2>/dev/null || true
   printf '#!/usr/bin/env bash\nexit %s\n' "$code" > "$hd/pre-push-gate"
   chmod +x "$hd/pre-push-gate" 2>/dev/null || true
   local json="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"git push origin HEAD:topic-work\"}}"

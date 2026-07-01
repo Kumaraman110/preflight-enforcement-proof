@@ -356,6 +356,32 @@ _pfg_ir_identify() {
   esac
   return 0
 }
+# ── (STAGE 2B) SHELL LINE-CONTINUATION JOIN (before IR authority) ───────────────────────────────────────
+# A backslash immediately before a newline (`\`+LF, or `\`+CRLF) is a shell line-continuation: the shell
+# joins the two physical lines into ONE logical command. The IR parser and the per-node span-slice both
+# operate on COMMAND, so COMMAND must be the JOINED (logical) form — otherwise `git \<LF> push evil` parses
+# as `git` + a stray `\n`+`push` token and the git-push node/args are garbled (the push slips or errors).
+# The legacy _pfg_parse_push already re-joins idempotently downstream, so joining here is consistent. NARROW
+# by construction (pure parameter expansion, no spawn): only a backslash directly followed by an optional CR
+# then LF is collapsed to a single space; any other backslash (Windows path, escaped char) is untouched.
+# This runs on the CANDIDATE path only (the engine is candidate-scoped); ordinary Bash never reaches here.
+_pfg_join_continuations() {  # collapses `\`+ (one-or-more CR)* + LF → single space, in COMMAND
+  # A shell line-continuation is `\`+LF (or `\`+CRLF on Windows). On this Git-Bash/MSYS host, stdin CRLF
+  # translation can DOUBLE the CR, so the byte sequence reaching the engine is `\`+CR+CR+LF (observed:
+  # 5c 0d 0d 0a) — a single `\`+CR+LF pattern then silently no-ops and the push slips (the C2 CRLF miss).
+  # So: FIRST squeeze any run of CRs that immediately precedes an LF to nothing (CR-before-LF is never
+  # semantically meaningful in a shell command — it is only ever a line-ending artifact), THEN collapse the
+  # normalized `\`+LF to a single space. Both use variables + DOUBLE-QUOTED patterns so the backslash and CR
+  # are matched literally (an unquoted `${var//\\$lf/ }` pattern does NOT match a literal backslash).
+  local _cr=$'\r' _lf=$'\n'
+  local _crlf="$_cr$_lf" _bs_lf=$'\\'"$_lf"
+  # squeeze CR* immediately before LF → just LF (idempotent; loops until no CR-before-LF remains).
+  while case "$COMMAND" in *"$_crlf"*) true ;; *) false ;; esac; do
+    COMMAND="${COMMAND//"$_crlf"/$_lf}"
+  done
+  COMMAND="${COMMAND//"$_bs_lf"/ }"
+}
+_pfg_join_continuations
 _pfg_ir_identify
 _pfg_stage "ir-identify(status=$_PFG_IR_STATUS push=$_PFG_IR_PUSH_COUNT opq=$_PFG_IR_HAS_OPAQUE cmp=$_PFG_IR_HAS_COMPUTED)"
 
@@ -2030,9 +2056,21 @@ if [ "$_PFG_IR_STATUS" != "SKIP_RECURSE" ]; then
       local s="${1%%:*}" e="${1##*:}" seg; seg="${COMMAND:s:e-s}"
       local _oldifs="$IFS"; set -f; set -- $seg; set +f; IFS="$_oldifs"
       _pfg_seg_push_out=""; _pfg_seg_push_args "$@" >/dev/null 2>&1 && printf '%s' "$_pfg_seg_push_out"
+      return 0   # ALWAYS 0: a non-push segment returns 1, which under `set -e` in the caller's `$(...)`
+                 # assignment would abort the whole engine (the continuation RC=1 bug).
     }
     _PFG_PUSH_ARGS="$(_pfg_ir_seg_args "${_PFG_IR_PUSH_SPANS[0]}")"
     _PFG_PUSH_UNRESOLVED=0
+  elif [ "${_PFG_IS_PUSH:-0}" = 1 ] && [ "${_PFG_PUSH_UNRESOLVED:-0}" = 1 ]; then
+    # INDIRECTION COMPOSITION: the IR found no STATIC git-push node, but the legacy oracle detected an
+    # indirection wrapper (eval / bash -c / sh -c / xargs) with ordered git…push tokens — a push that may be
+    # ASSEMBLED AT RUNTIME, which the structural parser deliberately cannot see into (xargs/eval are opaque
+    # to static analysis in a way the IR reports as an ordinary program, not an opaque executable). This is a
+    # DISTINCT hazard class the IR does not own; preserve the legacy UNRESOLVED signal so it reaches the
+    # existing B-unresolved CONFIRM (never a silent allow — the pre-2B behavior). SAFE: this branch runs ONLY
+    # when the IR is OK with NO static push and NO opaque/computed node (those already hard-blocked above), so
+    # it can only ADD a CONFIRM, never downgrade an IR BLOCK. Keep _PFG_IS_PUSH=1, _PFG_PUSH_UNRESOLVED=1.
+    _PFG_PUSH_ARGS=""
   else
     _PFG_IS_PUSH=0
   fi
@@ -2411,6 +2449,11 @@ if [ "$_PFG_IR_STATUS" = "OK" ] && [ "$_PFG_IR_PUSH_COUNT" -gt 0 ]; then
     if _pfg_seg_push_args "$@" >/dev/null 2>&1; then _PFG_PUSH_NODE_ARGS+=("$_pfg_seg_push_out")
     else _PFG_PUSH_NODE_ARGS+=($'\x01UNRESOLVED'); fi   # sentinel → per-node unresolved CONFIRM
   done
+elif [ "${_PFG_PUSH_UNRESOLVED:-0}" = 1 ]; then
+  # INDIRECTION (IR found no static push, but the legacy oracle flagged eval/bash -c/sh -c/xargs + ordered
+  # git…push). One UNRESOLVED node → the B-unresolved CONFIRM fires (never a silent allow). This is the
+  # composition that preserves the pre-2B CONFIRM for indirection wrappers the structural parser can't see into.
+  _PFG_PUSH_NODE_ARGS+=($'\x01UNRESOLVED')
 else
   # SKIP_RECURSE / legacy-only: one node from the legacy-derived args (byte-identical to pre-2B behavior).
   _PFG_PUSH_NODE_ARGS+=("$_PFG_PUSH_ARGS")

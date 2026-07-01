@@ -75,6 +75,8 @@ chmod +x "$SHIM/git"
 HK="$(mktemp -d)/hooks"; mkdir -p "$HK"
 cp "$ENGINE" "$HK/pre-push-gate-engine"
 cp "$ROOT/lib/config-overlay.sh" "$ROOT/lib/heartbeat.sh" "$(dirname "$HK")/" 2>/dev/null; mkdir -p "$(dirname "$HK")/lib"; cp "$ROOT/lib/config-overlay.sh" "$ROOT/lib/heartbeat.sh" "$(dirname "$HK")/lib/" 2>/dev/null
+# Stage-2B: the authoritative IR parser lib must sit beside the copied engine (sibling ../lib).
+cp "$ROOT/lib/shell-structure.sh" "$ROOT/lib/shell-structure-lexer.awk" "$(dirname "$HK")/lib/" 2>/dev/null || true
 cat > "$HK/pre-push-gate" <<EOF
 #!/usr/bin/env bash
 echo evidence >> "$EVIDENCE_MARKER"
@@ -114,31 +116,27 @@ printf '%s' "$OUT" | grep -qi 'did not reach a decision\|deadline\|timed out' &&
 # together guarantee margin on ANY host:
 #   (1) the early decision performs NO `git remote get-url` and does NOT reach the evidence gate (asserted
 #       above) — it skips the two most expensive downstream stages entirely; and
-#   (2) from the engine's PFG_STAGE timing, the FORBIDDEN decision now fires at the BUILTINS-ONLY `fast0`
-#       fast path (stage `fast0:FORBIDDEN-decision`), which runs IMMEDIATELY after command extraction and
-#       BEFORE the structural parser (`structural-parse-done`) ever runs — i.e. the decision moved STRICTLY
-#       EARLIER than the prior B-EARLY block (which fired only after the parse greps/seds). We assert the
-#       fast0 decision stage is present AND that the structural-parse-done stage did NOT fire (the engine
-#       exited at fast0, skipping the parser's spawns entirely — maximal margin by construction).
-#       (If a forbidden push is so exotic that fast0 conservatively declines, the B-EARLY block below still
-#       catches it post-parse — proven by the NFP/variant cases — so the decision is never lost.)
+#   (2) from the engine's PFG_STAGE timing, the FORBIDDEN decision fires at the BUILTINS-ONLY `fast0`
+#       fast path (stage `fast0:FORBIDDEN-decision`) and the HEAVY legacy structural parser
+#       (`structural-parse-done`) does NOT run — fast0 short-circuits the ~45-spawn heavy pipeline
+#       (parse greps/seds + evidence-gate + remote-url) entirely.
+#       STAGE 2B NOTE: the authoritative IR identify step (`ir-identify`, one bounded awk spawn) now runs
+#       BEFORE fast0 — that is the deliberate ordering that closes the multi-push fail-open (a forbidden 2nd
+#       push after `;`/`&&` the fast path alone never saw). So the forbidden decision is NO LONGER "before
+#       ANY parser": it is IR-identify → fast0-forbidden → exit. We therefore assert (a) fast0 fired, and
+#       (b) the HEAVY structural-parse-done did NOT run (fast0 still short-circuits the heavy path — the real
+#       margin win), rather than the obsolete "no parser ran at all". The IR spawn is bounded and, on a
+#       normal host, a small fraction of the deadline (the ir-push-perf suite asserts the margin numerically).
+#       (If a forbidden push is so exotic that fast0 declines, the B-EARLY block still catches it post-parse.)
 TF="$(mktemp)"
 ( cd "$REPO" && printf '%s' "$(jq -n --arg c "git \\${LF}push origin HEAD:refs/heads/x" '{tool_name:"Bash",tool_input:{command:$c}}')" \
     | PATH="$SHIM:$PATH" _PFG_WATCHDOG_CHILD=1 PREFLIGHT_ENGINE_TIMING=1 PREFLIGHT_ENGINE_TIMING_FILE="$TF" CLAUDE_PROJECT_DIR="$REPO" timeout 90 bash "$WENGINE" >/dev/null 2>&1 )
-_t_fast0="$(awk '/fast0:FORBIDDEN-decision/{print $2+0}' "$TF" | tail -1)"
-_t_cmd="$(awk '/command-extracted/{print $2+0}' "$TF" | tail -1)"
+_has_fast0="$(awk '/fast0:FORBIDDEN-decision/{c++} END{print c+0}' "$TF")"
 _has_parse="$(awk '/structural-parse-done/{c++} END{print c+0}' "$TF")"
-if [ -n "$_t_fast0" ] && [ -n "$_t_cmd" ]; then
-  # fast0 own cost = decision - command-extracted; it is pure-builtins so it must be a small fraction of the
-  # command-extraction time, AND the structural parser must NOT have run (decision fired before it).
-  _added="$(awk -v d="$_t_fast0" -v c="$_t_cmd" 'BEGIN{printf "%.0f", d-c}')"
-  if [ "$_has_parse" -eq 0 ] && awk -v d="$_t_fast0" -v c="$_t_cmd" 'BEGIN{exit !(d-c < c && c>0)}'; then
-    ok "latency: forbidden decision fires at the builtins fast0 path (+${_added}ms after command-extract, < the ${_t_cmd%.*}ms extract cost) — BEFORE the structural parser ran at all (skips parse greps/seds + evidence-gate + remote-url; maximal margin)"
-  else
-    bad "latency: fast0 decision +${_added}ms vs extract ${_t_cmd%.*}ms, structural-parse-ran=${_has_parse} — the fast path is not short-circuiting before the parser"
-  fi
+if [ "$_has_fast0" -ge 1 ] && [ "$_has_parse" -eq 0 ]; then
+  ok "latency: forbidden decision fires at the builtins fast0 path AND the HEAVY structural parser did NOT run (fast0 short-circuits the ~45-spawn heavy pipeline: parse greps/seds + evidence-gate + remote-url — the margin win preserved under Stage-2B IR-first ordering)"
 else
-  bad "latency: could not read PFG_STAGE fast0 timing (fast0=$_t_fast0 cmd=$_t_cmd parse_ran=$_has_parse)"
+  bad "latency: fast0-forbidden-fired=${_has_fast0} heavy-structural-parse-ran=${_has_parse} — expected fast0 fired (>=1) and heavy parse NOT run (0); the fast path is not short-circuiting the heavy pipeline"
 fi
 rm -f "$TF"
 
