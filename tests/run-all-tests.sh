@@ -1400,6 +1400,23 @@ run_behavioral_tests() {
     yellow "SKIP: ir-authoritative-push-test.sh not found"
   fi
 
+  # (8) Stage-2B PHASE-7 authoritative performance: the IR parser may no longer skip, so the complete
+  # candidate path (awk spawn + scan + validation + IR + extraction + policy + diagnostics) must retain SAFE
+  # MARGIN under the 23s router deadline for every supported AUTO/CONFIRM case; a timeout / no-margin race is
+  # a FAIL (AUTHORITATIVE PERFORMANCE INSUFFICIENT), and an awk-failure must BLOCK cleanly. Emits per-case
+  # EVIDENCE (wall/parser/decision/margin) into the CI log. ──
+  local ir_perf_test="$SCRIPT_DIR/behavioral/ir-push-perf-test.sh"
+  if [ -f "$ir_perf_test" ]; then
+    if bash "$ir_perf_test"; then
+      PASSES=$((PASSES + 9))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: ir-push-perf tests failed (STAGE 2B — AUTHORITATIVE PERFORMANCE INSUFFICIENT: a supported AUTO/CONFIRM push candidate timed out, hit engine-failure, or ran without safe margin below the 23s router deadline; a timeout that merely fails-closed is NOT an acceptable pass. See the per-case EVIDENCE lines for wall/parser/margin numbers)"
+    fi
+  else
+    yellow "SKIP: ir-push-perf-test.sh not found"
+  fi
+
   local gapa_test="$SCRIPT_DIR/behavioral/pre-push-gapa-prod-pattern-test.sh"
   if [ -f "$gapa_test" ]; then
     if bash "$gapa_test"; then
