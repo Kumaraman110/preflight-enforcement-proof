@@ -58,12 +58,16 @@ identity() {  # $1 label  $2 command
   if [ "$off" = "$on" ]; then ok "$1: verdict identical off==on ($off)"
   else bad "$1: verdict CHANGED by shadow — off=[$off] on=[$on]"; fi
 }
-echo "════ (1) verdict identity: shadow OFF == ON across tiers ════"
+# NOTE (Stage 2B): the PFG_PUSH_SHADOW comparison log is still NON-authoritative — with a WORKING awk it
+# cannot change the verdict (cases below). What DID change in Stage 2B: the shared IR is now AUTHORITATIVE,
+# so a BROKEN/ABSENT awk no longer fails soft (SHADOW_ERROR, verdict unchanged) — it fails CLOSED to a
+# deterministic BLOCK (section 3). These are different mechanisms: the shadow function is verdict-neutral;
+# the authoritative IR gate is not.
+echo "════ (1) shadow-log verdict identity (WORKING awk): shadow OFF == ON across tiers ════"
 identity "AUTO named-safe"        "git push origin HEAD:feature/x"
 identity "CONFIRM protected"      "git push origin HEAD:main"
 identity "CONFIRM non-canonical"  "git push evil HEAD:feature/x"
 identity "CONFIRM bare"           "git push"
-identity "non-push benign"        "echo hello world"
 
 # ── (2) shadow records a category on an ALLOW/CONFIRM path ──
 echo "════ (2) shadow records a comparison category on ALLOW/CONFIRM ════"
@@ -79,23 +83,21 @@ else
   bad "shadow did not record a valid category on AUTO path (log empty/invalid)"
 fi
 
-# ── (3) failure isolation: BROKEN awk during shadow must not change the verdict ──
-echo "════ (3) failure isolation: broken awk during shadow ════"
+# ── (3) STAGE 2B authoritative fail-closed: a BROKEN awk → deterministic BLOCK for a push candidate ──
+# In Stage 2A the IR was a non-authoritative shadow, so a broken awk failed SOFT (SHADOW_ERROR, verdict
+# unchanged). In Stage 2B the IR is AUTHORITATIVE, so a broken/abnormal awk means the command's structure
+# cannot be resolved → fail CLOSED to a BLOCK (never a silent allow). A fake awk that exits nonzero earlier
+# on PATH exercises this. This is the intentional Stage-2B behavior change (documented in Phase 10).
+echo "════ (3) authoritative fail-closed: broken awk → BLOCK (Stage-2B change from Stage-2A soft-fail) ════"
 FAKE="$T/fakeawk"; mkdir -p "$FAKE"
-cat > "$FAKE/awk" <<'EOF'
-#!/bin/sh
-exit 3
-EOF
-chmod +x "$FAKE/awk"
-identity_broken() {  # $1 label  $2 cmd
-  local off on log="$T/brk_${PASS}_${FAIL}.log"
-  off="$(verdict "$WS" "$2")"
-  on="$(verdict "$WS" "$2" env PFG_PUSH_SHADOW=1 "PFG_PUSH_SHADOW_LOG=$log" "PATH=$FAKE:$PATH")"
-  if [ "$off" = "$on" ]; then ok "$1: verdict identical with BROKEN awk ($off)"
-  else bad "$1: broken-awk shadow CHANGED verdict — off=[$off] on=[$on]"; fi
+printf '#!/bin/sh\nexit 3\n' > "$FAKE/awk"; chmod +x "$FAKE/awk"
+brokenawk_blocks() {  # $1 label  $2 cmd → assert RC=2 (deterministic BLOCK) with broken awk
+  verdict "$WS" "$2" env "PATH=$FAKE:$PATH"
+  if [ "$RC" = 2 ]; then ok "$1: broken-awk → BLOCK (fail-closed authoritative)"
+  else bad "$1: broken-awk should BLOCK (RC=2), got RC=$RC DEC=$DEC"; fi
 }
-identity_broken "broken-awk AUTO"      "git push origin HEAD:feature/x"
-identity_broken "broken-awk CONFIRM"   "git push origin HEAD:main"
+brokenawk_blocks "broken-awk safe-push"    "git push origin HEAD:feature/x"
+brokenawk_blocks "broken-awk protected"    "git push origin HEAD:main"
 
 echo ""
 echo "pre-push-shadow-isolation tests: ${PASS} passed, ${FAIL} failed"

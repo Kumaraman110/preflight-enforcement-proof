@@ -1375,13 +1375,29 @@ run_behavioral_tests() {
   local ss_shadow_test="$SCRIPT_DIR/behavioral/pre-push-shadow-isolation-test.sh"
   if [ -f "$ss_shadow_test" ]; then
     if bash "$ss_shadow_test"; then
-      PASSES=$((PASSES + 8))
+      PASSES=$((PASSES + 7))
     else
       FAILURES=$((FAILURES + 1))
       red "FAIL: pre-push-shadow-isolation tests failed (the non-authoritative push shadow MUST NOT change the user-facing verdict — exit code + stdout byte-identical with PFG_PUSH_SHADOW off vs on — must not run on a completed BLOCK, and must isolate a broken/absent awk as SHADOW_ERROR with the legacy verdict unchanged)"
     fi
   else
     yellow "SKIP: pre-push-shadow-isolation-test.sh not found"
+  fi
+
+  # (7) Stage-2B IR-AUTHORITATIVE git-push: the shared IR is now authoritative for identifying push command
+  # positions. Every static push (any position) is governed; multiple pushes are worst-wins; computed/opaque/
+  # parser-failure → deterministic BLOCK; false-positive controls stay unblocked; policy regressions preserved;
+  # every BLOCK/CONFIRM proves the git shim did not execute. ──
+  local ir_push_test="$SCRIPT_DIR/behavioral/ir-authoritative-push-test.sh"
+  if [ -f "$ir_push_test" ]; then
+    if bash "$ir_push_test"; then
+      PASSES=$((PASSES + 33))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: ir-authoritative-push tests failed (the shared IR must be authoritative for git-push identification — a forbidden push in ANY position [list/&&/pipe/subshell/brace/control] BLOCKs incl. a safe-then-forbidden multi-push worst-wins; computed program/subcommand + opaque + parser/awk failure → deterministic BLOCK, never a legacy allow; quoted/comment/arith stay unblocked; stale/fresh/forbidden/protected/safe policy verdicts preserved; BLOCK/CONFIRM never executes the git shim)"
+    fi
+  else
+    yellow "SKIP: ir-authoritative-push-test.sh not found"
   fi
 
   local gapa_test="$SCRIPT_DIR/behavioral/pre-push-gapa-prod-pattern-test.sh"
