@@ -294,12 +294,26 @@ mv "$tmp" "$LOCAL_SETTINGS"
 printf '%s' "$RESOLVED_SHA" > "$ACTIVE_MARKER"
 echo "Registered the Bash PreToolUse gate in $LOCAL_SETTINGS → $RUNHOOK"
 
-# Ensure settings.local.json is gitignored (it is machine-local; Claude Code auto-ignores when IT creates the
-# file, but we created it, so we add the rule ourselves — the research caveat).
-GI="$CONSUMER_DIR/.gitignore"
-if ! { [ -f "$GI" ] && grep -qE '^\.claude/settings\.local\.json[[:space:]]*$' <(tr -d '\r' < "$GI"); }; then
-  printf '%s\n' '.claude/settings.local.json' >> "$GI"
-  echo "Added .claude/settings.local.json to $GI (machine-local; never commit)."
+# Ensure settings.local.json is excluded from git (it is machine-local; Claude Code auto-ignores when IT
+# creates the file, but WE created it, so we add the rule ourselves — the research caveat).
+#
+# STAGE 2C.1 (Phase 3): exclude via .git/info/exclude — the repository-LOCAL, UNTRACKED exclusion mechanism —
+# NOT the tracked .gitignore. Appending to a consumer's tracked .gitignore was an install-time mutation of a
+# TRACKED application file: it shows as ` M .gitignore` in the consumer's porcelain forever, and (worse) could
+# be committed by the owner unawares, leaking a machine-local rule into shared history. .git/info/exclude lives
+# under the git common dir, is never tracked, never appears in `git status`, and is honored exactly like
+# .gitignore for `git status`/`git add`. It is per-clone (each clone/worktree runs this installer anyway), so
+# the machine-local scope is correct. Idempotent: only append when the exact rule is absent. We anchor the
+# exclude at the git COMMON dir (worktree-safe; the same dir the runtime store lives under), so linked
+# worktrees share one exclude — consistent with the single shared runtime store.
+EXCLUDE="$COMMON_DIR/info/exclude"
+EXCLUDE_RULE='.claude/settings.local.json'
+mkdir -p "$COMMON_DIR/info" 2>/dev/null || true
+if ! { [ -f "$EXCLUDE" ] && grep -qxE "$(printf '%s' "$EXCLUDE_RULE" | sed 's/[.]/\\./g')" <(tr -d '\r' < "$EXCLUDE" 2>/dev/null); }; then
+  printf '%s\n' "$EXCLUDE_RULE" >> "$EXCLUDE"
+  echo "Excluded .claude/settings.local.json via $EXCLUDE (machine-local, untracked; tracked .gitignore is NOT modified)."
+else
+  echo "Exclusion for .claude/settings.local.json already present in $EXCLUDE (no change)."
 fi
 
 # ── OWNERSHIP-AWARE tracked-layer migration (authorized scoped contract change) ──────────────────────────
