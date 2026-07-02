@@ -267,6 +267,32 @@ done
 # Record provenance inside the runtime (for verify + audit).
 printf '%s\n' "$RESOLVED_SHA" > "$STAGING/RUNTIME_SHA"
 
+# ── STAGE 2C.1 (Phase 2, Option A): immutable RUNTIME MANIFEST ─────────────────────────────────────────────
+# Write a per-generation manifest recording, for every artifact in the runtime closure, the git BLOB SHA of
+# the SOURCE object it was materialized from (`git rev-parse <RESOLVED_SHA>:<path>`, the authoritative content
+# hash — identical to what `git hash-object` on the materialized file yields, since we `git show` the same
+# object and store it verbatim). preflight-verify.sh validates the installed runtime against THIS manifest, so
+# the branch-stable runtime-install model has a first-class integrity oracle (parallel to the artifact-install
+# `.preflight/installed.lock`) — the absence of installed.lock is NO LONGER treated as "not installed". The
+# manifest is written into STAGING (before the atomic promote), so it is part of the immutable generation and
+# a half-written manifest can never be promoted. Schema: {framework, model, resolvedSha, closure:{hooks:{},
+# libs:{}}} where each value is the source blob sha. jq builds it so the shape is always valid JSON.
+_rm_hooks="{}"; _rm_libs="{}"
+for h in $RUNTIME_HOOKS; do
+  _b="$(git -C "$CODE_FORGE_DIR" rev-parse --verify --quiet "${RESOLVED_SHA}:hooks/${h}" 2>/dev/null || true)"
+  [ -n "$_b" ] || { echo "ABORT: cannot resolve source blob sha for hooks/${h} at ${RESOLVED_SHA} — staging discarded."; rm -rf "$STAGING"; exit 1; }
+  _rm_hooks="$(printf '%s' "$_rm_hooks" | jq --arg k "$h" --arg v "$_b" '. + {($k):$v}')"
+done
+for l in $RUNTIME_LIBS; do
+  _b="$(git -C "$CODE_FORGE_DIR" rev-parse --verify --quiet "${RESOLVED_SHA}:lib/${l}" 2>/dev/null || true)"
+  [ -n "$_b" ] || { echo "ABORT: cannot resolve source blob sha for lib/${l} at ${RESOLVED_SHA} — staging discarded."; rm -rf "$STAGING"; exit 1; }
+  _rm_libs="$(printf '%s' "$_rm_libs" | jq --arg k "$l" --arg v "$_b" '. + {($k):$v}')"
+done
+jq -n --arg sha "$RESOLVED_SHA" --argjson hooks "$_rm_hooks" --argjson libs "$_rm_libs" \
+  '{framework:"preflight", model:"branch-stable-runtime", schema:1, resolvedSha:$sha, closure:{hooks:$hooks, libs:$libs}}' \
+  > "$STAGING/RUNTIME_MANIFEST.json" \
+  || { echo "ABORT: could not write runtime manifest — staging discarded."; rm -rf "$STAGING"; exit 1; }
+
 # ATOMIC promote: rename staging → SHA dir. If a dir for this SHA already exists (re-install), replace it
 # atomically by renaming the old one aside first, then removing it AFTER the new one is in place.
 if [ -d "$TARGET_DIR" ]; then
