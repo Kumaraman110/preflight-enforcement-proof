@@ -1126,6 +1126,22 @@ run_behavioral_tests() {
     yellow "SKIP: branch-stable-runtime-test.sh not found"
   fi
 
+  # ── Stage 2C.1: runtime-install FULL VERIFICATION + repository-local exclusion. The verifier must PASS a
+  # valid runtime-only install (no installed.lock required) and FAIL each corruption class (hash mismatch,
+  # missing parser lib, malformed/mismatched manifest, invalid PREVIOUS, duplicate registration, not-installed);
+  # the installer must NOT mutate the consumer's tracked .gitignore (it excludes via .git/info/exclude). ──
+  local rt_verify_test="$SCRIPT_DIR/behavioral/runtime-verify-and-exclude-test.sh"
+  if [ -f "$rt_verify_test" ]; then
+    if bash "$rt_verify_test"; then
+      PASSES=$((PASSES + 14))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: runtime-verify-and-exclude tests failed (full preflight-verify.sh must PASS a valid branch-stable runtime install via its immutable RUNTIME_MANIFEST and FAIL every corruption class; the absence of .preflight/installed.lock is NEVER a PASS; the runtime installer must exclude settings.local.json via .git/info/exclude and NEVER mutate the tracked .gitignore)"
+    fi
+  else
+    yellow "SKIP: runtime-verify-and-exclude-test.sh not found"
+  fi
+
   # ── P0 router/engine split — spawn-delay deterministic regression harness (the incident recreation) ──
   # NOTE: this harness injects a +1s/spawn tax and runs the REAL engine on candidate pushes, so on a
   # slow-spawn host it can take several minutes. It is registered but gated behind PREFLIGHT_RUN_SPAWN_DELAY
