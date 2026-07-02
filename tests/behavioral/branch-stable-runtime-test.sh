@@ -99,8 +99,17 @@ OUT="$(bash "$INSTALL" "$C3" HEAD 2>&1)"
   && ok "7: ambiguous tracked Bash block → migration ABORTED, tracked entry left intact (no positional delete)" \
   || bad "7: ambiguous case did not abort-and-preserve (tracked preflight bash count=$(bashcount "$C3/.claude/settings.json"))"
 
-# 8. settings.local.json is gitignored.
-grep -qF '.claude/settings.local.json' "$C/.gitignore" && ok "8: settings.local.json is gitignored (machine-local, unstaged)" || bad "8: settings.local.json not in .gitignore"
+# 8. settings.local.json is excluded from git via the REPOSITORY-LOCAL, UNTRACKED .git/info/exclude — NOT the
+# tracked .gitignore (Stage 2C.1: the installer must never mutate a consumer's tracked application files).
+# Assert BOTH: (a) the exclude carries the rule, and (b) no tracked .gitignore was created/modified by install.
+_c8_common="$(git -C "$C" rev-parse --git-common-dir 2>/dev/null)"
+case "$_c8_common" in /*|[A-Za-z]:*) : ;; *) _c8_common="$C/$_c8_common" ;; esac
+_c8_exclude="$_c8_common/info/exclude"
+if grep -qxF '.claude/settings.local.json' "$_c8_exclude" 2>/dev/null && [ ! -f "$C/.gitignore" ]; then
+  ok "8: settings.local.json excluded via .git/info/exclude (machine-local, untracked); no tracked .gitignore created"
+else
+  bad "8: expected the exclusion in .git/info/exclude AND no tracked .gitignore — exclude has it: $(grep -qxF '.claude/settings.local.json' "$_c8_exclude" 2>/dev/null && echo yes || echo no); .gitignore exists: $([ -f "$C/.gitignore" ] && echo yes || echo no)"
+fi
 
 # 9/10. Branch switch between two MIGRATED branches cannot change the active runtime SHA (Part D #13).
 ACTIVE_BEFORE="$(cat "$C/.git/preflight/runtime/ACTIVE")"
