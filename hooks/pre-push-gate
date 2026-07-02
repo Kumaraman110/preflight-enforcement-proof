@@ -32,10 +32,34 @@ set -euo pipefail
 # from a subdir cwd missed root-level evidence (false block) and the find-based
 # dependency-map/behavior-spec discovery silently scanned the wrong tree.
 # Outside a git repo, fall back to pwd (previous behavior, unchanged).
-REPO_TOP="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+#
+# PERF (Stage 2C — candidate-path latency): resolve the toplevel + HEAD + HEAD^ in ONE `git rev-parse`
+# spawn on the COMMON path (a repo with at least a parent commit — the dominant push scenario, where the
+# stamp→commit→push window leaves evidence at HEAD^). `git rev-parse --show-toplevel HEAD HEAD^` prints one
+# line per argument IN ORDER and returns 0 ONLY when ALL THREE resolve; on this slow-spawn Windows host each
+# separate `git` spawn cost ~3s, so collapsing three into one removes ~two taxed spawns from every push.
+# SEMANTICS ARE BYTE-IDENTICAL: on ANY non-zero (root commit with no parent → prints literal "HEAD^";
+# empty repo → prints literal "HEAD"; outside a repo → empty) we fall back to the EXACT original per-field
+# idiom, so every edge case yields precisely the value the three separate calls produced. The evidence
+# checks below are unchanged and still fail CLOSED on a missing/stale/unreadable stamp.
+REPO_TOP=""; CURRENT_HEAD=""; PARENT_HEAD=""; _rp_ok=0
+if _rp="$(git rev-parse --show-toplevel HEAD HEAD^ 2>/dev/null)"; then
+  # rc=0 ⇒ all three arguments resolved cleanly. Split the three lines in emitted order (toplevel, HEAD,
+  # HEAD^). `IFS= read -r` preserves each line verbatim (no word-splitting, no backslash processing).
+  { IFS= read -r REPO_TOP; IFS= read -r CURRENT_HEAD; IFS= read -r PARENT_HEAD; } <<EOF
+$_rp
+EOF
+  _rp_ok=1
+fi
+if [ "$_rp_ok" -ne 1 ]; then
+  # Rare edge cases (root commit / empty repo / outside a repo) → the EXACT original per-field resolution,
+  # so the value in each variable is identical to the pre-2C three-spawn form (correctness over the ~2 saved
+  # spawns, which do not matter on these cold paths).
+  REPO_TOP="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+  CURRENT_HEAD=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
+  PARENT_HEAD=$(git rev-parse HEAD^ 2>/dev/null || echo "")
+fi
 GATE_DIR="$REPO_TOP/.preflight/gate"
-CURRENT_HEAD=$(git rev-parse HEAD 2>/dev/null || echo "unknown")
-PARENT_HEAD=$(git rev-parse HEAD^ 2>/dev/null || echo "")
 
 check_evidence() {
   local file="$1"
@@ -108,16 +132,41 @@ check_evidence "tests-pass" "Test suite"
 # Gate 2: Stage 1 must be clean
 check_evidence "stage1-clean" "Stage 1 review"
 
+# ── Gate 3 + Gate 4 discovery — ONE combined traversal (Stage 2C candidate-path latency) ──────────────────
+# Gate 3 (dependency-map) and Gate 4 (behavior-spec baseline) each historically ran their OWN
+# `find "$REPO_TOP" -maxdepth 3 …` spawn plus a `grep -q`. On this slow-spawn Windows host each find cost
+# ~2.3s. Union the TWO predicates into a SINGLE find traversal with `-o` — SAME -maxdepth, SAME per-branch
+# predicates (`-name "dependency-map.json"` and `-path "*/.preflight/*/behavior-spec.json"`) — so the set of
+# printed paths is byte-for-byte the union of the two original finds (find's implicit `-print` fires iff the
+# depth-bound AND the OR-group are satisfied). Then test WHICH pattern matched with ANCHORED bash `case`
+# matches over the captured lines (zero extra spawn, replacing both `grep -q`). Anchoring — `*/dependency-map.json`
+# for the name branch, `*/.preflight/*/behavior-spec.json` for the path branch — reproduces find's
+# basename/path semantics EXACTLY (a path that merely *contains* one filename as a directory component does
+# not falsely satisfy the other gate). Net effect: one directory walk instead of two, two greps removed;
+# the gate coverage, depth, and match set are UNCHANGED, and both gates still fail CLOSED below.
+_PFG_DISCOVERY="$(find "$REPO_TOP" -maxdepth 3 \
+  \( -name "dependency-map.json" -o -path "*/.preflight/*/behavior-spec.json" \) 2>/dev/null || true)"
+_HAVE_MAP=0; _HAVE_BSPEC=0
+while IFS= read -r _dline; do
+  [ -n "$_dline" ] || continue
+  case "$_dline" in */dependency-map.json|dependency-map.json) _HAVE_MAP=1 ;; esac
+  case "$_dline" in */.preflight/*/behavior-spec.json) _HAVE_BSPEC=1 ;; esac
+done <<EOF
+$_PFG_DISCOVERY
+EOF
+
 # Gate 3: Dependency map validation (if a map exists)
 # Depth note: -maxdepth 3 matches the layout .preflight/<Service>/dependency-map.json (depth 3).
 # A map nested deeper would be silently skipped — keep this depth in sync with that layout.
-if [ -f "$REPO_TOP/dependency-map.json" ] || find "$REPO_TOP" -maxdepth 3 -name "dependency-map.json" 2>/dev/null | grep -q .; then
+# (The `-f "$REPO_TOP/dependency-map.json"` pre-check is retained as a zero-spawn builtin; a root-level map is
+# also caught by the depth-1 name match above, so this is belt-and-braces and preserves the original OR.)
+if [ -f "$REPO_TOP/dependency-map.json" ] || [ "$_HAVE_MAP" -eq 1 ]; then
   check_evidence "map-validated" "Dependency map validation"
 fi
 
 # Gate 4: Parity check (if a behavior-spec baseline exists for the service)
 BASELINE_FOUND=""
-if find "$REPO_TOP" -maxdepth 3 -path "*/.preflight/*/behavior-spec.json" 2>/dev/null | grep -q .; then
+if [ "$_HAVE_BSPEC" -eq 1 ]; then
   BASELINE_FOUND="true"
 fi
 if [ -n "$BASELINE_FOUND" ]; then
