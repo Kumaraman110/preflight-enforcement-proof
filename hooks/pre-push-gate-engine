@@ -196,7 +196,15 @@ fi
 # would otherwise abort the WHOLE engine via `set -e` before any policy runs. Fail SOFT here — an unresolved
 # lib just makes the (opt-in, non-authoritative) shadow a no-op via its own `[ -f ]` guard; it must never
 # take down the authoritative gate.
-_PFG_SS_LIB="$( { cd "$(dirname "${BASH_SOURCE[0]}")/../lib" 2>/dev/null && pwd; } || true )/shell-structure.sh"
+# PERF (Stage 2C): derive the parser-lib path from the ALREADY-resolved _PFG_SELF_DIR (computed once above)
+# instead of a SECOND `cd .../../lib && pwd` subshell (~0.7s on this slow-spawn host). This is pure string
+# concatenation — no spawn, and it CANNOT fail (so it also cannot abort the engine under set -e; the prior
+# `|| true` fail-soft is subsumed). The `/../lib/` form is non-canonical but resolves identically for the
+# `-f` existence check below AND for sourcing: when the lib is sourced in the IR child, it self-resolves its
+# lexer via its OWN ${BASH_SOURCE[0]} (lib/shell-structure.sh:79), independent of this path's shape. If
+# _PFG_SELF_DIR is empty (its own cd failed), this yields a non-existent path → the `-f` guard → UNAVAIL →
+# deterministic fail-closed BLOCK, exactly the prior fail-direction.
+_PFG_SS_LIB="$_PFG_SELF_DIR/../lib/shell-structure.sh"
 _pfg_push_shadow() {  # $1 = legacy classification tag (ALLOW|CONFIRM). Never affects the caller. Always returns 0.
   [ "${PFG_PUSH_SHADOW:-0}" = "1" ] || return 0
   local _legacy="$1"
@@ -884,12 +892,15 @@ _fast_slug_on_safelist() {  # $1 = slug ; $2 = safeRemotes newline list. 0 = on 
 # exit is normalized to a fail-CLOSED block (same discipline as the heavy path's evidence handling).
 # This is the ONE place the fast path spawns the (bounded) evidence gate — the heavy path runs it too.
 _fast_run_evidence_then_allow() {
-  local _ppg_dir _rc
-  _ppg_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  local _rc
+  # PERF (Stage 2C): the sibling evidence gate lives beside THIS engine, whose dir was already resolved once
+  # into _PFG_SELF_DIR at engine start — reuse it instead of a redundant `$(cd "$(dirname …)" && pwd)` subshell
+  # (~0.7s on this slow-spawn host). _PFG_SELF_DIR == $(dirname "${BASH_SOURCE[0]}") resolved, so the sibling
+  # path is byte-identical to the prior _ppg_dir.
   # The evidence gate resolves HEAD/diff itself; it is bounded by the router's candidate deadline (this
   # whole engine runs inside it). stdin from /dev/null (parent already consumed stdin).
   set +e
-  bash "$_ppg_dir/pre-push-gate" </dev/null
+  bash "$_PFG_SELF_DIR/pre-push-gate" </dev/null
   _rc=$?
   set -e
   if [ "$_rc" -eq 0 ]; then
@@ -2685,7 +2696,9 @@ done   # ── (STAGE 2B) end authoritative per-node push-policy loop. A node's
 # classification was computed on an unresolved target — block before even running the evidence gate.
 _pfg_wedge_block_if_flagged
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# PERF (Stage 2C): reuse the engine dir resolved once at start (_PFG_SELF_DIR) rather than a third
+# `$(cd "$(dirname …)" && pwd)` subshell for the heavy-path evidence-gate spawn (~0.7s saved). Identical value.
+SCRIPT_DIR="$_PFG_SELF_DIR"
 set +e
 # Redirect stdin from /dev/null: the parent already consumed its stdin (STDIN_JSON="$(cat)" at the top),
 # so the inherited fd is an exhausted pipe. Detaching the child's stdin avoids any downstream git/jq op
