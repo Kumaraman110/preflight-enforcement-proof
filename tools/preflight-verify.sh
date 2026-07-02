@@ -67,14 +67,198 @@ recompute_skill_tree() {  # $1 = installed skill dir ; echoes the tree sha or "u
     return 0
 }
 
+# ── STAGE 2C.1 (Phase 2): BRANCH-STABLE RUNTIME-INSTALL VERIFICATION ────────────────────────────────────────
+# Full integrity verification for the runtime-install model (tools/preflight-runtime-install.sh), which has NO
+# .preflight/installed.lock. Validates the ACTIVE generation against its own immutable RUNTIME_MANIFEST.json
+# (source blob shas) + the registration + rollback metadata. PASSES a valid runtime install (exit 0), FAILS a
+# broken one (exit 1); the release relation (when a code-forge path is given) can still yield 2/3, exactly like
+# the artifact path. The absence of installed.lock is NEVER treated as a PASS — a missing/invalid runtime here
+# FAILS loudly. $1 = consumer dir ; $2 = absolute git common dir ; $3 = code-forge dir (may be empty).
+verify_runtime_install() {
+    local cons="$1" common="$2" forge="$3"
+    local RT_ROOT="$common/preflight/runtime"
+    local ACTIVE_MARK="$RT_ROOT/ACTIVE" PREVIOUS_MARK="$RT_ROOT/PREVIOUS"
+    local FAIL=0
+    local RE='run-hook\.cmd.*(pre-push-gate-check|pre-bash-risk-router)'
+    echo "=== Preflight Framework Verify (branch-stable RUNTIME-INSTALL model) ==="
+    echo "Consumer:   ${cons}"
+    echo "Runtime store: ${RT_ROOT}"
+    echo ""
+
+    # (1) ACTIVE exists and is a well-formed 40-hex sha.
+    if [ ! -f "$ACTIVE_MARK" ]; then echo "FAIL: no ACTIVE marker at $ACTIVE_MARK."; return 1; fi
+    local ACTIVE_SHA; ACTIVE_SHA="$(tr -d ' \r\n' < "$ACTIVE_MARK")"
+    case "$ACTIVE_SHA" in
+        *[!0-9a-f]*|"") echo "FAIL: ACTIVE marker is not a valid sha ('${ACTIVE_SHA}')."; return 1 ;;
+    esac
+    [ "${#ACTIVE_SHA}" -eq 40 ] || { echo "FAIL: ACTIVE sha is not 40 hex chars ('${ACTIVE_SHA}')."; return 1; }
+    local RT_DIR="$RT_ROOT/$ACTIVE_SHA"
+    echo "ACTIVE runtime: ${ACTIVE_SHA:0:12} → $RT_DIR"
+    [ -d "$RT_DIR" ] || { echo "FAIL: ACTIVE runtime dir is missing ($RT_DIR)."; return 1; }
+
+    # (2) The immutable RUNTIME_MANIFEST.json exists, is valid JSON, and its resolvedSha matches ACTIVE.
+    local MAN="$RT_DIR/RUNTIME_MANIFEST.json"
+    if [ ! -f "$MAN" ] || ! jq empty "$MAN" 2>/dev/null; then
+        echo "FAIL: ACTIVE runtime has no valid RUNTIME_MANIFEST.json ($MAN) — cannot attest integrity."
+        echo "  Re-run tools/preflight-runtime-install.sh (this generation predates the runtime manifest or is corrupt)."
+        return 1
+    fi
+    local MAN_SHA; MAN_SHA="$(jq -r '.resolvedSha // ""' "$MAN")"
+    if [ "$MAN_SHA" != "$ACTIVE_SHA" ]; then
+        echo "FAIL: RUNTIME_MANIFEST.resolvedSha (${MAN_SHA:0:12}) != ACTIVE (${ACTIVE_SHA:0:12}) — metadata mismatch."; FAIL=1
+    fi
+    # RUNTIME_SHA provenance file must also agree (belt-and-braces; catches a hand-edited marker).
+    local PROV; PROV="$( [ -f "$RT_DIR/RUNTIME_SHA" ] && tr -d ' \r\n' < "$RT_DIR/RUNTIME_SHA" || echo '' )"
+    [ "$PROV" = "$ACTIVE_SHA" ] || { echo "FAIL: RUNTIME_SHA provenance ('${PROV:0:12}') != ACTIVE (${ACTIVE_SHA:0:12})."; FAIL=1; }
+
+    # (3) Every artifact in the manifest closure exists AND its on-disk git blob sha matches the manifest.
+    # This is the core integrity oracle: a tampered/replaced runtime file changes its blob sha → DRIFT → FAIL.
+    echo "Checking runtime closure integrity (manifest blob-sha match)…"
+    local checked=0 drift=0 kind rel dir
+    for kind in hooks libs; do
+        [ "$kind" = hooks ] && dir="$RT_DIR/hooks" || dir="$RT_DIR/lib"
+        while IFS=$'\t' read -r rel expected; do
+            rel="${rel%$'\r'}"; expected="${expected%$'\r'}"
+            [ -z "$rel" ] && continue
+            checked=$((checked+1))
+            local f="$dir/$rel"
+            if [ ! -f "$f" ]; then
+                echo "  DRIFT: ${kind}/${rel} — MISSING (expected blob ${expected:0:7})"; drift=$((drift+1)); continue
+            fi
+            local actual; actual="$(git hash-object "$f" 2>/dev/null || echo unknown)"
+            if [ "$actual" != "$expected" ]; then
+                echo "  DRIFT: ${kind}/${rel} — blob ${actual:0:7} != manifest ${expected:0:7}"; drift=$((drift+1))
+            else
+                echo "  OK: ${kind}/${rel}"
+            fi
+        done < <(jq -r --arg k "$kind" '.closure[$k] | to_entries[] | [.key, .value] | @tsv' "$MAN")
+    done
+    [ "$checked" -eq 0 ] && { echo "FAIL: runtime manifest closure is empty — nothing verified."; FAIL=1; }
+    [ "$drift" -gt 0 ] && { echo "FAIL: ${drift} runtime artifact(s) drifted from the manifest."; FAIL=1; }
+
+    # (4) The AUTHORITATIVE parser closure MUST be present (Stage-2B: the engine fails closed without it,
+    # blocking every push). Assert both files explicitly, independent of the manifest loop.
+    for req in "lib/shell-structure.sh" "lib/shell-structure-lexer.awk"; do
+        [ -f "$RT_DIR/$req" ] || { echo "FAIL: required authoritative-parser file missing from runtime ($req)."; FAIL=1; }
+    done
+    # The engine + router + evidence gate must exist too (the Bash candidate path).
+    for req in "hooks/pre-bash-risk-router" "hooks/pre-push-gate-engine" "hooks/pre-push-gate" "hooks/run-hook.cmd"; do
+        [ -f "$RT_DIR/$req" ] || { echo "FAIL: required runtime hook missing ($req)."; FAIL=1; }
+    done
+
+    # (5) PREVIOUS, when present, must resolve to a materialized generation (rollback must be possible).
+    if [ -f "$PREVIOUS_MARK" ]; then
+        local PREV_SHA; PREV_SHA="$(tr -d ' \r\n' < "$PREVIOUS_MARK")"
+        if [ -n "$PREV_SHA" ]; then
+            case "$PREV_SHA" in *[!0-9a-f]*) echo "FAIL: PREVIOUS marker is not a valid sha ('${PREV_SHA}')."; FAIL=1 ;; esac
+            if [ ! -d "$RT_ROOT/$PREV_SHA" ]; then
+                echo "FAIL: PREVIOUS runtime ${PREV_SHA:0:12} is recorded but its generation dir is missing — rollback impossible."; FAIL=1
+            else
+                echo "  OK: PREVIOUS rollback target ${PREV_SHA:0:12} is materialized."
+            fi
+        fi
+    fi
+
+    # (6) Registration: settings.local.json must carry a preflight Bash gate pointing at the ACTIVE runtime,
+    # and there must be NO duplicate (tracked settings.json must NOT also register a preflight Bash gate).
+    local TRACKED="$cons/.claude/settings.json" LOCAL="$cons/.claude/settings.local.json"
+    local tracked_bash=0 local_bash=0
+    if [ -f "$LOCAL" ] && jq empty "$LOCAL" 2>/dev/null; then
+        local_bash="$(jq -r --arg re "$RE" '[ (.hooks.PreToolUse // [])[] | select(.matcher=="Bash") | (.hooks // [])[] | select((.command // "") | test($re)) ] | length' "$LOCAL" 2>/dev/null || echo 0)"
+    fi
+    if [ -f "$TRACKED" ] && jq empty "$TRACKED" 2>/dev/null; then
+        tracked_bash="$(jq -r --arg re "$RE" '[ (.hooks.PreToolUse // [])[] | select(.matcher=="Bash") | (.hooks // [])[] | select((.command // "") | test($re)) ] | length' "$TRACKED" 2>/dev/null || echo 0)"
+    fi
+    if [ "$local_bash" -lt 1 ]; then
+        echo "FAIL: no preflight Bash PreToolUse registration in settings.local.json — the runtime gate is not active."; FAIL=1
+    fi
+    if [ "$tracked_bash" -ge 1 ]; then
+        echo "FAIL: DUPLICATE registration — tracked settings.json ALSO registers a preflight Bash gate (branch-swappable). Re-run the runtime installer to scrub the tracked layer."; FAIL=1
+    fi
+    # The local command must point at the ACTIVE sha dir (a stale pin is a hazard).
+    if [ "$local_bash" -ge 1 ]; then
+        local LOCAL_CMD; LOCAL_CMD="$(jq -r --arg re "$RE" 'first((.hooks.PreToolUse // [])[] | select(.matcher=="Bash") | (.hooks // [])[] | select((.command // "") | test($re)) | .command) // ""' "$LOCAL" 2>/dev/null || echo '')"
+        if printf '%s' "$LOCAL_CMD" | grep -qF "$ACTIVE_SHA"; then
+            echo "  OK: settings.local.json Bash gate points at ACTIVE runtime ${ACTIVE_SHA:0:12}; tracked layer is clean."
+        else
+            echo "FAIL: settings.local.json Bash gate does NOT point at ACTIVE ${ACTIVE_SHA:0:12} (stale/unpinned registration)."; FAIL=1
+        fi
+    fi
+
+    echo ""
+    if [ "$FAIL" -ne 0 ]; then
+        echo "=== FAIL (INTEGRITY_FAILURE): branch-stable runtime @ ${ACTIVE_SHA:0:12} — one or more runtime"
+        echo "    integrity/registration checks failed (see above). ==="
+        return 1
+    fi
+    echo "Runtime integrity: PASS — ACTIVE ${ACTIVE_SHA:0:12} closure matches its immutable manifest; registration clean."
+    echo ""
+
+    # (7) Release relation (optional; requires a code-forge path) — identical ancestry classification as the
+    # artifact path, keyed on ACTIVE_SHA. Never overrides the integrity FAIL above (we already returned on it).
+    if [ -n "$forge" ] && [ -d "$forge/.git" ]; then
+        local LT; LT="$(git -C "$forge" tag --list 'v*' --sort=-version:refname 2>/dev/null | head -1)"
+        if [ -z "$LT" ]; then
+            echo "=== ADVISORY (DIVERGED_OR_UNKNOWN): runtime @ ${ACTIVE_SHA:0:12} intact; no release tags to relate. ==="
+            return 3
+        fi
+        local LC IC; LC="$(git -C "$forge" rev-parse --verify --quiet "${LT}^{commit}" 2>/dev/null || echo '')"
+        IC="$(git -C "$forge" rev-parse --verify --quiet "${ACTIVE_SHA}^{commit}" 2>/dev/null || echo '')"
+        if [ -z "$LC" ] || [ -z "$IC" ]; then
+            echo "=== ADVISORY (DIVERGED_OR_UNKNOWN): runtime @ ${ACTIVE_SHA:0:12} intact; ancestry vs ${LT} undeterminable. ==="
+            return 3
+        elif [ "$LC" = "$IC" ]; then
+            echo "=== PASS (CURRENT_RELEASE): branch-stable runtime @ ${ACTIVE_SHA:0:12} == latest tag ${LT}. ==="; return 0
+        elif git -C "$forge" merge-base --is-ancestor "$LC" "$IC" 2>/dev/null; then
+            echo "=== PASS (PINNED_AHEAD): branch-stable runtime @ ${ACTIVE_SHA:0:12} intact, newer than ${LT}. ==="; return 0
+        elif git -C "$forge" merge-base --is-ancestor "$IC" "$LC" 2>/dev/null; then
+            echo "=== STALE: branch-stable runtime @ ${ACTIVE_SHA:0:12} is behind the latest release ${LT}. ==="; return 2
+        else
+            echo "=== ADVISORY (DIVERGED_OR_UNKNOWN): runtime @ ${ACTIVE_SHA:0:12} and ${LT} on unrelated histories. ==="; return 3
+        fi
+    fi
+    echo "=== PASS: branch-stable runtime @ ${ACTIVE_SHA:0:12} — installed and intact (release relation not evaluated; no code-forge path). ==="
+    return 0
+}
+
 echo "=== Preflight Framework Verify ==="
 echo "Consumer: ${CONSUMER_DIR}"
 echo ""
 
-# ── Step 1: Manifest exists ──────────────────────────────────────────────────
+# ── Step 0 (STAGE 2C.1): resolve the git common dir (worktree-safe) — used by BOTH the runtime-install
+# verification mode below AND the Step-2.5 hazard check. Absolutize a relative ".git". Empty on failure. ─────
+resolve_common_dir() {  # $1 = consumer dir ; echoes absolute git-common-dir or empty
+    local cons="$1" top common
+    top="$(git -C "$cons" rev-parse --show-toplevel 2>/dev/null)" || return 0
+    common="$(git -C "$top" rev-parse --git-common-dir 2>/dev/null)" || return 0
+    case "$common" in /*|[A-Za-z]:*) : ;; *) common="$top/$common" ;; esac
+    ( cd "$common" 2>/dev/null && pwd ) || return 0
+}
+
+# ── Step 1: Installed via the ARTIFACT model (manifest) OR the BRANCH-STABLE RUNTIME model? ──────────────
+# The framework ships two install models:
+#   • ARTIFACT install (tools/preflight-install.sh): writes .preflight/installed.lock + copies surfaces into
+#     .claude/. Verified by the manifest-drift path below (Steps 1b–3).
+#   • BRANCH-STABLE RUNTIME install (tools/preflight-runtime-install.sh): materializes an immutable runtime
+#     under <git-common-dir>/preflight/runtime/<sha>/ (engine+router+gates+libs + RUNTIME_MANIFEST.json) and
+#     registers the Bash gate in .claude/settings.local.json. There is NO .preflight/installed.lock.
+# STAGE 2C.1 DEFECT FIXED: previously an ABSENT installed.lock => "FAIL: not installed" EVEN WHEN a valid
+# runtime install was present — the verifier had NO runtime-install mode, so it could neither PASS a good
+# runtime install nor properly FAIL a broken one; it just rejected the whole model. Now: if the artifact
+# manifest is absent, DETECT a runtime install (an ACTIVE marker under the common dir) and hand off to the
+# dedicated runtime verifier (verify_runtime_install), which PASSES a valid runtime install and FAILS a
+# broken one on its own merits. The absence of installed.lock is NEVER by itself a PASS.
 if [ ! -f "$MANIFEST" ]; then
-    echo "FAIL: no manifest at ${MANIFEST}"
-    echo "Framework not installed via pinned model. Run preflight-install."
+    _COMMON="$(resolve_common_dir "$CONSUMER_DIR")"
+    _ACTIVE_MARK="${_COMMON:+$_COMMON/preflight/runtime/ACTIVE}"
+    if [ -n "$_COMMON" ] && [ -f "$_ACTIVE_MARK" ]; then
+        # A branch-stable runtime install is present → verify it fully (own PASS/FAIL, own exit).
+        verify_runtime_install "$CONSUMER_DIR" "$_COMMON" "$CODE_FORGE_DIR"
+        exit $?
+    fi
+    echo "FAIL: no artifact manifest at ${MANIFEST} AND no branch-stable runtime install"
+    echo "  (no ACTIVE marker under the git common dir). Framework not installed by either model."
+    echo "  Run tools/preflight-install.sh (artifact model) or tools/preflight-runtime-install.sh (runtime model)."
     exit 1
 fi
 
