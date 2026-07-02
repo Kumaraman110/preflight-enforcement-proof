@@ -1417,6 +1417,23 @@ run_behavioral_tests() {
     yellow "SKIP: ir-push-perf-test.sh not found"
   fi
 
+  # ── Stage 2C: CANDIDATE-PATH SUBPROCESS BUDGET — the host-independent latency-regression gate. Wall-clock
+  # is unmeasurable on the Windows/CrowdStrike host (it thrashes 5×), so this pins a CEILING on the number of
+  # external spawns each candidate class makes. The Stage-2B 23–25s latency was spawns × per-spawn tax; a
+  # re-added git/find/jq spawn on the hot path blows the budget HERE (deterministically) before it can ever
+  # cost seconds on a slow host. Complements ir-push-perf (which needs a calibrated host for wall-time). ──
+  local ir_spawn_test="$SCRIPT_DIR/behavioral/ir-push-spawn-budget-test.sh"
+  if [ -f "$ir_spawn_test" ]; then
+    if bash "$ir_spawn_test"; then
+      PASSES=$((PASSES + 5))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: ir-push-spawn-budget tests failed (a candidate-path SUBPROCESS REGRESSION: a git/find/jq/grep/awk spawn was re-added to the hot path. Each re-added spawn is ~0.4–3s on the Windows/CrowdStrike host — this is the mechanism of the Stage-2B AUTHORITATIVE PERFORMANCE INSUFFICIENT incident. See the per-case EVIDENCE lines for spawns vs ceiling)"
+    fi
+  else
+    yellow "SKIP: ir-push-spawn-budget-test.sh not found"
+  fi
+
   local gapa_test="$SCRIPT_DIR/behavioral/pre-push-gapa-prod-pattern-test.sh"
   if [ -f "$gapa_test" ]; then
     if bash "$gapa_test"; then
