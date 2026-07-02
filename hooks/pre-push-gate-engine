@@ -156,7 +156,15 @@ if [ "${PREFLIGHT_INLINE_DEPTH:-0}" -gt 0 ] && [ -n "${PREFLIGHT_RECURSE_CMD:-}"
   STDIN_JSON=""   # not read on the recursion fast-path
   _pfg_stage "command-extracted(recurse-fastpath)"
 else
-  STDIN_JSON="$(cat)"
+  # PERF (Stage 2C): read the whole stdin with the `read` BUILTIN (the router's own idiom) instead of a
+  # `$(cat)` command-substitution, which forks a `cat` process AND a subshell (~0.6s on this slow-spawn host).
+  # `-d ''` reads to the NUL delimiter (never present in tool JSON) so it consumes the ENTIRE blob into
+  # STDIN_JSON verbatim; EOF-without-delimiter makes `read` return non-zero, so `|| true` keeps set -e from
+  # aborting (the content is still captured — exactly how the router reads its BLOB). vs `$(cat)` the only
+  # difference is trailing newlines are preserved, which is inert: STDIN_JSON is fed to `jq -r` (whitespace-
+  # tolerant) and, on the fail-safe raw-blob fallback, to the structural parser (a trailing newline cannot
+  # fabricate a git-push token). Fail-closed direction unchanged.
+  IFS= read -r -d '' STDIN_JSON || true
   _pfg_stage "stdin-read"
   # Primary: extract the command field via jq (bounded — a wedge here falls to the raw-blob
   # fallback below, which fail-safely greps for 'git push'; no flag needed on this path).
@@ -1880,7 +1888,20 @@ fi
 # A repo with no .preflight/config.json → fail-open (unchanged additive posture).
 _pfg_target_cwd() {  # $1 = command string; echo the cwd the git command runs in. Always returns 0.
   local cmd="$1" cwd cd_dir
-  cwd="$(pwd)"
+  # PERF (Stage 2C): `$PWD` (a bash-maintained variable) instead of `$(pwd)` avoids a subshell fork; the
+  # engine never `cd`s, so $PWD is the invocation cwd — identical to `pwd`'s default logical output.
+  cwd="$PWD"
+  # PERF (Stage 2C): zero-spawn pre-gate. The grep pipeline below only ever matters when a `cd` token is
+  # present; skip BOTH greps (each a taxed spawn) when the command contains no `cd`+whitespace substring at
+  # all. This `case` net is a strict SUPERSET of the `grep -qE '(^|;|&&|\|)[[:space:]]*cd[[:space:]]'`
+  # anchored pattern (it matches `cd ` / `cd\t` ANYWHERE, incl. mid-token like "abcd "), so whenever the
+  # anchored regex WOULD match, the case matches too — the grep still runs and decides authoritatively. It
+  # only short-circuits when there is provably no `cd` token, where the regex could not have matched either.
+  # Behaviour is therefore byte-identical; we merely avoid two spawns on the common no-`cd` push.
+  case "$cmd" in
+    *"cd "*|*"cd"$'\t'*) : ;;   # a `cd`+whitespace substring exists → run the authoritative grep below
+    *) printf '%s' "$cwd"; return 0 ;;   # no `cd` token possible → the anchored regex cannot match; done
+  esac
   if printf '%s' "$cmd" | grep -qE '(^|;|&&|\|)[[:space:]]*cd[[:space:]]'; then
     cd_dir="$(printf '%s' "$cmd" | grep -oE '(^|;|&&|\|)[[:space:]]*cd[[:space:]]+[^&|;]+' | head -1 | sed -E 's/.*cd[[:space:]]+//; s/[[:space:]]+$//')"
     # strip one layer of surrounding quotes
