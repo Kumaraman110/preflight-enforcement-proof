@@ -1554,7 +1554,8 @@ run_protocol_tests() {
   # (a test can pass some assertions and still fail — count both, never swallow either).
   local t
   for t in verifier-decision schema-contract adapter-and-failmode \
-           identity-reresolution attestation approval remote-gate-e2e; do
+           identity-reresolution attestation approval remote-gate-e2e \
+           learning-loop-demo; do
     local test_script="$SCRIPT_DIR/protocol/${t}-test.sh"
     if [ -f "$test_script" ]; then
       local result sub_passes sub_failures
