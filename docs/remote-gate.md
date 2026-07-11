@@ -122,6 +122,20 @@ case 9: a bundle that ALLOWs locally with a forged head BLOCKs remotely.)
   mitigated by `--expected-repo` (fed from `$GITHUB_REPOSITORY`, which the workflow controls),
   cross-checked against the re-resolved origin. Without `--expected-repo`, only the claim-vs-
   origin equality is checked.
+- **Repo identity is host-insensitive by design.** The repo check compares the trailing
+  `owner/repo` slug (not `host/owner/repo`) so it interoperates with `$GITHUB_REPOSITORY`,
+  which carries no host. Consequence: the same `owner/repo` on a *different host* (e.g. a
+  mirror) compares equal. This is NOT exploitable for repo substitution — the commit SHA and
+  tree are still independently re-resolved from the actual checkout, and both
+  `$GITHUB_REPOSITORY` and the checkout are workflow-controlled and cannot diverge. If
+  host-exact identity is required, pass a fully host-qualified `--expected-repo` and extend
+  the comparison to the full canonical slug (future option).
+- **Evidence content is not re-executed.** In remote mode the verifier binds repo/commit/tree
+  and recomputes artifact *hashes*, but does not re-run tests or re-derive an evidence claim's
+  truth. Without a separate bundle-signing key (`--bundle-key-file` / `PREFLIGHT_BUNDLE_KEY`),
+  a producer can fabricate a hash-consistent evidence artifact for the real commit. Requiring
+  a bundle-signing key closes this; binding evidence to a reproducible attestation is future
+  work (see B3 in `../protocol/threat-model.md`).
 - **Branch protection is NOT applied by this project.** Configuring the workflow as a
   *required status check* is an operator step (below), performed by a human with admin
   rights. Nothing here mutates real branch-protection settings.
