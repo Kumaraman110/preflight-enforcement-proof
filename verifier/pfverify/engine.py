@@ -24,8 +24,10 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import canonical, schema as schema_mod
+from . import identity as identity_mod
 
 DECISION_SCHEMA_VERSION = "1.0.0"
+VERIFIER_VERSION = "0.1.0-remote-gate"
 
 # Machine violation codes (stable identifiers for tests + callers).
 V_SCHEMA_INTENT = "schema.intent.invalid"
@@ -45,6 +47,13 @@ V_EVIDENCE_CLAIM = "evidence.claim-unsatisfied"
 V_TIER_UNRESOLVED = "policy.tier-unresolved"
 V_DEPENDENCY = "dependency.unavailable"
 V_INTERNAL = "internal.error"
+# Remote-authoritative identity re-resolution (fire only in remote mode).
+V_IDENTITY_UNRESOLVABLE = identity_mod.V_IDENTITY_UNRESOLVABLE
+V_IDENTITY_REPO = identity_mod.V_IDENTITY_REPO
+V_IDENTITY_COMMIT = identity_mod.V_IDENTITY_COMMIT
+V_IDENTITY_DIRTY = identity_mod.V_IDENTITY_DIRTY
+V_IDENTITY_TREE = identity_mod.V_IDENTITY_TREE
+V_IDENTITY_MODE = "identity.mode-misconfigured"
 
 # Known/trusted issuer adapters for the MVP. Provenance is an allow-list: an unknown
 # producer is not automatically trusted. (A real deployment keys this to registered
@@ -92,6 +101,11 @@ class Verifier:
         evidence_root: str,
         now: datetime,
         attestation_key: Optional[bytes] = None,
+        mode: str = "local-advisory",
+        repo_root: Optional[str] = None,
+        git_runner=None,
+        expected_repo: Optional[str] = None,
+        untracked_mode: str = "no",
     ):
         self.intent_schema = intent_schema
         self.bundle_schema = bundle_schema
@@ -99,6 +113,16 @@ class Verifier:
         self.evidence_root = evidence_root
         self.now = now
         self.attestation_key = attestation_key
+        # Remote-authoritative identity re-resolution. Defaults preserve the exact
+        # local-advisory behavior every existing test relies on (identity stage OFF).
+        self.mode = mode
+        self.repo_root = repo_root
+        self.git_runner = git_runner
+        self.expected_repo = expected_repo
+        self.untracked_mode = untracked_mode
+        # Populated by the identity stage in remote mode; consumed by callers (CLI/CI)
+        # that build an attestation from the independently re-resolved facts.
+        self.resolved = None
 
     # ---- the pipeline -------------------------------------------------------
     def verify(self, intent: Any, bundle: Any) -> Dict[str, Any]:
@@ -147,6 +171,21 @@ class Verifier:
         if violations:
             return fail_closed("schema-invalid")
         checks.append(Check("schema.bundle", True))
+
+        # IDENTITY RE-RESOLUTION (remote-authoritative mode only). Appends NOTHING in
+        # local-advisory mode, so the emitted decision is byte-identical to the local
+        # verifier for every existing test. In remote mode this re-derives repo + commit
+        # FROM THE CHECKOUT and blocks when the producer's claim disagrees — the core of
+        # the enforceable gate.
+        identity_ok = True
+        if self.mode == "remote-authoritative":
+            identity_ok = self._reresolve_identity(intent, checks, violations, reasons)
+            if not identity_ok:
+                # A failed identity re-resolution is decisive: report it and fail closed
+                # without letting downstream checks misattribute the cause.
+                checks.append(Check("policy.decision", False, "identity re-resolution failed -> BLOCK"))
+                reasons.append("decision:fail-closed")
+                return self._decision("BLOCK", policy_id, intent_id, reasons, violations, checks)
 
         # 3: provenance — known issuer/adapter.
         issuer = bundle["issuer"]["adapter"]
@@ -199,11 +238,21 @@ class Verifier:
         # beyond the B2 boundary — an escape is a violation even under an unauthenticated run).
         hashes_ok = True
         root_real = os.path.realpath(self.evidence_root)
+        # Artifacts must resolve inside the evidence root ALWAYS. In remote-authoritative
+        # mode they must ADDITIONALLY resolve inside the actual git checkout — a bundle
+        # cannot point the verifier at files outside the tree under decision. `realpath`
+        # collapses symlinks, so a symlink whose target escapes a confinement is caught
+        # here too (symlink-escape defense).
+        def _within(p, base):
+            return p == base or p.startswith(base + os.sep)
+        repo_real = (os.path.realpath(self.repo_root)
+                     if self.mode == "remote-authoritative" and self.repo_root else None)
         for i, ev in enumerate(bundle["evidence"]):
             art = ev["artifact"]
             apath = os.path.join(self.evidence_root, art["path"])
             art_real = os.path.realpath(apath)
-            if art_real != root_real and not art_real.startswith(root_real + os.sep):
+            contained = _within(art_real, root_real) and (repo_real is None or _within(art_real, repo_real))
+            if not contained:
                 hashes_ok = False
                 violations.append(V_PATH_ESCAPE)
                 reasons.append(f"integrity:path-escape:evidence[{i}]:{art['path']}")
@@ -305,6 +354,7 @@ class Verifier:
             not violations  # every prior check clean
             and ref_ok and boundhead_ok and future_ok and hashes_ok
             and digest_ok and fresh_ok and evidence_ok
+            and identity_ok  # remote-mode identity re-resolution (True in local-advisory)
         )
 
         if not gate_passed:
@@ -340,6 +390,89 @@ class Verifier:
             "violations": sorted(set(violations)),
             "checks": [c.as_dict() for c in checks],
         }
+
+    def _reresolve_identity(self, intent, checks, violations, reasons) -> bool:
+        """Independently re-resolve repo + commit from the checkout and compare to the
+        intent's CLAIMED subject. Returns False (→ BLOCK) on any disagreement or when the
+        checkout cannot be resolved. Appends checks/violations/reasons. Remote mode only.
+        """
+        # A repo_root is mandatory in remote mode (the CLI enforces this too).
+        if not self.repo_root:
+            checks.append(Check("identity.resolve", False, "no --repo-root in remote-authoritative mode"))
+            violations.append(V_IDENTITY_UNRESOLVABLE)
+            reasons.append("identity:unresolvable:no-repo-root")
+            return False
+
+        git = self.git_runner or identity_mod.default_git_runner(self.repo_root)
+        resolved, errs = identity_mod.resolve_identity(git, self.untracked_mode)
+        if resolved is None:
+            checks.append(Check("identity.resolve", False, "; ".join(errs) or "unresolvable"))
+            violations.append(V_IDENTITY_UNRESOLVABLE)
+            reasons.append("identity:unresolvable:" + (errs[0] if errs else "unknown"))
+            return False
+        self.resolved = resolved
+        checks.append(Check("identity.resolve", True, resolved.commit[:12]))
+
+        ok = True
+        subject = intent.get("subject", {})
+
+        # repo identity: compare on the host-insensitive `owner/repo` slug so a claim or a
+        # CI-provided $GITHUB_REPOSITORY ("owner/repo", no host) interoperates with a
+        # host-qualified origin ("host/owner/repo"). The re-resolved origin is authoritative;
+        # the claim and --expected-repo are checked against it. An attacker-written
+        # .git/config is defended by --expected-repo (fed from the CI env, not the checkout).
+        resolved_slug = identity_mod.repo_owner_slug(resolved.repo_canonical)
+        claimed_slug = identity_mod.repo_owner_slug(
+            identity_mod.canonicalize_repo(subject.get("repo", "")))
+        repo_match = bool(resolved_slug) and resolved_slug == claimed_slug
+        if self.expected_repo is not None:
+            expected_slug = identity_mod.repo_owner_slug(
+                identity_mod.canonicalize_repo(self.expected_repo))
+            if resolved_slug != expected_slug:
+                repo_match = False
+        if repo_match:
+            checks.append(Check("identity.repo", True, resolved.repo_canonical))
+        else:
+            ok = False
+            checks.append(Check("identity.repo", False,
+                                f"claimed={claimed_slug!r} resolved={resolved_slug!r}"))
+            violations.append(V_IDENTITY_REPO)
+            reasons.append("identity:repo-mismatch")
+
+        # commit identity: claimed head (7-64 hex) must expand to the re-resolved HEAD.
+        if identity_mod.commit_matches(git, subject.get("head", ""), resolved.commit):
+            checks.append(Check("identity.commit", True, resolved.commit[:12]))
+        else:
+            ok = False
+            checks.append(Check("identity.commit", False,
+                                f"claimed={subject.get('head','')!r} resolvedHEAD={resolved.commit[:12]}"))
+            violations.append(V_IDENTITY_COMMIT)
+            reasons.append("identity:commit-mismatch")
+
+        # worktree cleanliness: on-disk tracked bytes must equal committed HEAD, else the
+        # evidence no longer describes the commit under decision.
+        if resolved.worktree_dirty:
+            ok = False
+            checks.append(Check("identity.worktree", False, "tracked worktree dirty"))
+            violations.append(V_IDENTITY_DIRTY)
+            reasons.append("identity:worktree-dirty")
+        else:
+            checks.append(Check("identity.worktree", True))
+
+        # optional tree binding: if the intent recorded subject.tree, it must equal the
+        # re-derived HEAD tree object.
+        claimed_tree = subject.get("tree")
+        if claimed_tree:
+            if resolved.tree and claimed_tree.lower() == resolved.tree.lower():
+                checks.append(Check("identity.tree", True, resolved.tree[:12]))
+            else:
+                ok = False
+                checks.append(Check("identity.tree", False,
+                                    f"claimed={claimed_tree!r} resolved={resolved.tree!r}"))
+                violations.append(V_IDENTITY_TREE)
+                reasons.append("identity:tree-mismatch")
+
+        return ok
 
 
 def _find_evidence(bundle: dict, etype: str) -> Optional[dict]:

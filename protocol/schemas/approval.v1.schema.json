@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://preflight.dev/protocol/schemas/approval.v1.schema.json",
+  "title": "Preflight Approval Artifact",
+  "description": "A separate, attributable artifact that upgrades a REQUIRE_APPROVAL decision to ALLOW. Signed with a DISTINCT approver key the producer/authoring agent does not hold, so it cannot be self-minted. Bound to the exact intentId + commitSha it approves and to a REQUIRE_APPROVAL->ALLOW grant, so it cannot be reused for a different intent, commit, or decision. Missing/invalid/expired/mismatched fails closed (the REQUIRE_APPROVAL stands).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "approves", "approver", "issuedAt", "expiresAt", "attestation"],
+  "properties": {
+    "schemaVersion": { "type": "string", "pattern": "^1\\.[0-9]+\\.[0-9]+$" },
+    "approves": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["intentId", "commitSha", "grants", "forDecision"],
+      "properties": {
+        "intentId": { "description": "The Action Intent id this approval is bound to.", "type": "string", "minLength": 1 },
+        "commitSha": { "description": "The 40-hex commit the approval is bound to.", "type": "string", "pattern": "^[0-9a-f]{40}$" },
+        "grants": { "description": "The decision this approval grants. v0.1: only ALLOW.", "type": "string", "enum": ["ALLOW"] },
+        "forDecision": { "description": "The originating decision being upgraded. v0.1: only REQUIRE_APPROVAL.", "type": "string", "enum": ["REQUIRE_APPROVAL"] }
+      }
+    },
+    "approver": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id"],
+      "properties": {
+        "id": { "description": "Attributable approver identity (not a secret).", "type": "string", "minLength": 1 }
+      }
+    },
+    "issuedAt": { "type": "string", "minLength": 1 },
+    "expiresAt": { "type": "string", "minLength": 1 },
+    "attestation": {
+      "description": "Integrity envelope, signed with the DISTINCT approver key.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algo", "payloadDigest", "signature"],
+      "properties": {
+        "algo": { "type": "string", "enum": ["hmac-sha256"] },
+        "payloadDigest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "signature": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    }
+  }
+}

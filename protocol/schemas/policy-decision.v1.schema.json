@@ -62,7 +62,12 @@
               "attestation.signature",
               "freshness",
               "policy.evidence",
-              "policy.decision"
+              "policy.decision",
+              "identity.resolve",
+              "identity.repo",
+              "identity.commit",
+              "identity.worktree",
+              "identity.tree"
             ]
           },
           "passed": { "type": "boolean" },

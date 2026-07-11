@@ -68,6 +68,11 @@
         "branch": {
           "description": "Optional branch name the action targets.",
           "type": "string"
+        },
+        "tree": {
+          "description": "Optional 40-hex tree object id of the subject head, recorded at evidence time. When present, the remote verifier re-derives git rev-parse HEAD^{tree} and requires equality (binds evidence to the tree object directly).",
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
         }
       }
     },

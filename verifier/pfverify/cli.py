@@ -61,6 +61,15 @@ def _hardcoded_block(policy_id: str, reason: str, violation: str, detail: str = 
 
 
 def main(argv: Optional[list] = None) -> int:
+    # Subcommand dispatch (backward compatible): the FIRST token, if it is a known
+    # subcommand, routes to a handler; otherwise the legacy verify flow runs so
+    # `python -m verifier.pfverify --intent ...` keeps working byte-identically.
+    _argv = list(sys.argv[1:] if argv is None else argv)
+    if _argv and _argv[0] in ("attest", "verify-attestation", "verify-approval"):
+        sub, rest = _argv[0], _argv[1:]
+        from . import subcommands
+        return subcommands.dispatch(sub, rest, _emit, _hardcoded_block)
+
     ap = argparse.ArgumentParser(prog="pfverify", add_help=True)
     ap.add_argument("--intent", required=True)
     ap.add_argument("--bundle", required=True)
@@ -72,9 +81,20 @@ def main(argv: Optional[list] = None) -> int:
     ap.add_argument("--attestation-key-file", default=None,
                     help="File containing the HMAC key. When supplied, the bundle signature is required + verified.")
     ap.add_argument("--schema-dir", default=str(_DEFAULT_SCHEMA_DIR))
+    # Remote-authoritative mode (identity re-resolution). Defaults preserve local behavior.
+    ap.add_argument("--mode", choices=["local-advisory", "remote-authoritative"],
+                    default="local-advisory",
+                    help="local-advisory (default): trust claimed subject (current behavior). "
+                         "remote-authoritative: independently re-resolve repo+commit from --repo-root.")
+    ap.add_argument("--repo-root", default=None,
+                    help="Path to the real git checkout to re-resolve. Required iff mode=remote-authoritative.")
+    ap.add_argument("--expected-repo", default=None,
+                    help="Canonical repo id (e.g. $GITHUB_REPOSITORY) cross-checked against the checkout origin.")
+    ap.add_argument("--untracked-files", choices=["no", "normal"], default="no",
+                    help="Worktree-dirty sensitivity for identity.worktree (default: no, ignores untracked).")
 
     try:
-        args = ap.parse_args(argv)
+        args = ap.parse_args(_argv)
     except SystemExit:
         # argparse already printed usage to stderr; emit a machine BLOCK too.
         _emit(_hardcoded_block("unknown", "usage:bad-invocation", engine.V_INTERNAL))
@@ -127,6 +147,20 @@ def main(argv: Optional[list] = None) -> int:
                 return _emit(_hardcoded_block(
                     policy_id, "dependency:attestation-key-unavailable", engine.V_DEPENDENCY, str(e)))
 
+        # Mode/repo-root validation — every misconfiguration fails CLOSED, never open.
+        if args.mode == "local-advisory" and args.repo_root:
+            # A repo-root in advisory mode is a fail-open surprise (thinking you're
+            # authoritative while running advisory). Reject at USAGE level (exit 30) —
+            # emit a machine BLOCK too so no caller can read it as an allow.
+            _emit(_hardcoded_block(
+                policy_id, "usage:repo-root-without-remote-mode", engine.V_IDENTITY_MODE,
+                "identity.mode-misconfigured: --repo-root requires --mode remote-authoritative"))
+            return EXIT_USAGE
+        if args.mode == "remote-authoritative" and not args.repo_root:
+            return _emit(_hardcoded_block(
+                policy_id, "identity:unresolvable:no-repo-root", engine.V_IDENTITY_UNRESOLVABLE,
+                "remote-authoritative mode requires --repo-root"))
+
         verifier = engine.Verifier(
             intent_schema=intent_schema,
             bundle_schema=bundle_schema,
@@ -134,6 +168,10 @@ def main(argv: Optional[list] = None) -> int:
             evidence_root=args.evidence_root,
             now=now,
             attestation_key=key,
+            mode=args.mode,
+            repo_root=args.repo_root,
+            expected_repo=args.expected_repo,
+            untracked_mode=args.untracked_files,
         )
         decision = verifier.verify(intent, bundle)
         return _emit(decision)

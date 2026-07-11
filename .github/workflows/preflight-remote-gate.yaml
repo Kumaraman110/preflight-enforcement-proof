@@ -1,0 +1,115 @@
+---
+# Preflight Remote Decision Gate — an INDEPENDENT, server-authoritative decision check.
+#
+# Runs the independent verifier against the ACTUAL checked-out commit (remote-authoritative
+# mode: it re-resolves repo + commit FROM THE CHECKOUT, so a locally forged/self-issued
+# clearance cannot pass here), then produces an inspectable decision + signed attestation
+# artifact. Exits non-zero on BLOCK, on REQUIRE_APPROVAL without a valid approval, or on any
+# verifier failure — so it is suitable to configure as a REQUIRED STATUS CHECK.
+#
+# SAFETY POSTURE:
+#   • permissions: contents:read ONLY — no write scope, no PR/issue mutation, no merge.
+#   • This workflow does NOT modify branch protection. Making it a required check is a
+#     documented operator step (see docs/remote-gate.md), performed by a human with admin
+#     rights — never by this workflow.
+#   • The attestation signing key comes ONLY from the repository/organization secret
+#     PREFLIGHT_ATTEST_KEY, injected as an env var. It is NEVER stored in the repo. The
+#     producer/authoring agent does not have access to it — that is what makes the decision
+#     independently trustworthy. Approvals use a DISTINCT secret PREFLIGHT_APPROVAL_KEY.
+#   • No secret is echoed; artifacts contain only the decision + the (public) attestation.
+#
+# The gate logic lives in a PORTABLE shell entrypoint (verifier/ci/remote-gate.sh) that is
+# fully testable offline (tests/protocol/remote-gate-e2e-test.sh) without GitHub.
+
+name: Preflight Remote Decision Gate
+
+on:
+  # Intended to run against PRs / pushes for the branches an operator wants gated. The
+  # concrete branch list is an operator choice; kept minimal here and NOT auto-applied to
+  # any protected branch.
+  workflow_dispatch:
+    inputs:
+      intent:
+        description: "Path to the Action Intent JSON (produced by a producer adapter)"
+        required: true
+      bundle:
+        description: "Path to the Evidence Bundle JSON"
+        required: true
+  pull_request:
+    branches:
+      - feature/preflight-remote-decision-gate-v0.1
+
+permissions:
+  contents: read
+
+concurrency:
+  group: preflight-remote-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  remote-gate:
+    name: Independent remote decision gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout the TARGET commit (full history so HEAD is the real commit under decision)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Tooling versions
+        run: |
+          python3 --version || python --version
+          git --version
+          jq --version || true
+
+      - name: Locate intent + bundle
+        id: artifacts
+        run: |
+          # In a real deployment the producer adapter writes these (or they are committed /
+          # uploaded as an artifact). For workflow_dispatch, the caller supplies paths.
+          # Here we default to a conventional location; fail closed if absent.
+          INTENT="${{ github.event.inputs.intent }}"
+          BUNDLE="${{ github.event.inputs.bundle }}"
+          INTENT="${INTENT:-.preflight/protocol/intent.json}"
+          BUNDLE="${BUNDLE:-.preflight/protocol/bundle.json}"
+          if [ ! -f "$INTENT" ] || [ ! -f "$BUNDLE" ]; then
+            echo "::error::intent/bundle not found ($INTENT / $BUNDLE) — the producer adapter must emit them"
+            exit 1
+          fi
+          echo "intent=$INTENT" >> "$GITHUB_OUTPUT"
+          echo "bundle=$BUNDLE" >> "$GITHUB_OUTPUT"
+
+      - name: Run the independent remote decision gate
+        env:
+          # Signing keys come ONLY from secrets — never the repo. Empty on forks/without
+          # secrets; the gate then produces a decision without an attestation (still gates).
+          PREFLIGHT_ATTEST_KEY: ${{ secrets.PREFLIGHT_ATTEST_KEY }}
+          PREFLIGHT_APPROVAL_KEY: ${{ secrets.PREFLIGHT_APPROVAL_KEY }}
+        run: |
+          set -o pipefail
+          NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          EXPIRES="$(date -u -d '+1 hour' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+          mkdir -p gate-out
+          APPROVAL_ARG=""
+          [ -f .preflight/protocol/approval.json ] && APPROVAL_ARG="--approval .preflight/protocol/approval.json"
+          bash verifier/ci/remote-gate.sh \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --intent "${{ steps.artifacts.outputs.intent }}" \
+            --bundle "${{ steps.artifacts.outputs.bundle }}" \
+            --policy protocol/policies/push-safety.v1.policy.json \
+            --now "$NOW" --issued-at "$NOW" --expires-at "$EXPIRES" \
+            --expected-repo "$GITHUB_REPOSITORY" \
+            --run-id "$GITHUB_RUN_ID" --nonce "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+            --out-dir gate-out \
+            $APPROVAL_ARG
+          # remote-gate.sh exit code IS the check result: 0 ALLOW/approved, 10 REQUIRE_APPROVAL,
+          # 20 BLOCK, 30 usage. A non-zero code fails the required status check.
+
+      - name: Upload decision + attestation artifact (always, for inspection)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: preflight-remote-decision
+          path: gate-out/
+          if-no-files-found: warn

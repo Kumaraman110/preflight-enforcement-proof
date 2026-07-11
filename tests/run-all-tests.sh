@@ -1553,7 +1553,8 @@ run_protocol_tests() {
   # exits nonzero on any failure. Parse both counts so the runner totals stay accurate
   # (a test can pass some assertions and still fail — count both, never swallow either).
   local t
-  for t in verifier-decision schema-contract adapter-and-failmode; do
+  for t in verifier-decision schema-contract adapter-and-failmode \
+           identity-reresolution attestation approval remote-gate-e2e; do
     local test_script="$SCRIPT_DIR/protocol/${t}-test.sh"
     if [ -f "$test_script" ]; then
       local result sub_passes sub_failures
