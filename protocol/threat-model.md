@@ -37,21 +37,35 @@ guarantee is a worse defect than an honest gap — so limitations are labelled, 
 contradictory, or exceptional — that yields `ALLOW`. Every error path returns `BLOCK`
 (exit 20) or, for a process kill, a non-zero exit that shell callers must not treat as allow.
 
+## Remote-authoritative mode CLOSES the identity gap (v0.1 remote gate)
+
+The single largest local-mode gap — that `subject.repo`/`subject.head` are trusted as
+CLAIMED — is closed in **remote-authoritative mode** (`docs/remote-gate.md`). There the
+verifier independently re-resolves the repository and commit FROM THE CI CHECKOUT and blocks
+on disagreement: `identity.repo-mismatch`, `identity.commit-mismatch`, `identity.worktree-dirty`,
+`identity.unresolvable`. A locally self-issued ALLOW (forged head/repo) therefore CANNOT pass
+an independently executed verification — proven in `tests/protocol/identity-reresolution-test.sh`
+(case 9: ALLOW locally → BLOCK remotely). This holds ONLY in remote-authoritative mode with a
+real independent checkout the producer cannot write to; **local-advisory mode retains the B2
+boundary below verbatim.**
+
 ## What v0.1 does NOT defend against (stated boundaries)
 
 - **B1 — Verifier-domain integrity is assumed.** The verifier is the accountability root;
   if an attacker can modify the verifier code, the schemas, or the policy it loads, they
   own the decision. In a real deployment the verifier + its inputs run in a trust domain
-  the producer cannot write to (a server, a signed container). Locally, this is not enforced
-  — it is the single most important boundary to close next.
+  the producer cannot write to (a server, a signed container) — which is exactly what the
+  remote gate's independent CI checkout provides. Locally, this is not enforced.
 
-- **B2 — Unauthenticated *claim* forgery (no key).** Without `--attestation-key`, a forger who
-  edits an evidence **claim** (e.g. flips a fresh, hash-valid tier) **and recomputes
-  `bundleDigest`** passes the digest check — the digest proves internal consistency, not
-  authenticity. This is demonstrated in verifier-decision #15a (ALLOW without a key) and closed
-  in #15b (BLOCK with a key). The MVP surfaces this in every decision as the reason
-  `integrity:unauthenticated`. Closing it in production means the producer never holds the
-  signing key. NOTE: forgeries that require *structural* changes — a path traversal or a
+- **B2 — Unauthenticated *claim* forgery (no key), LOCAL-ADVISORY mode only.** Without
+  `--attestation-key`, a forger who edits an evidence **claim** (e.g. flips a fresh,
+  hash-valid tier) **and recomputes `bundleDigest`** passes the digest check — the digest
+  proves internal consistency, not authenticity. This is demonstrated in verifier-decision
+  #15a (ALLOW without a key) and closed in #15b (BLOCK with a key). The MVP surfaces this in
+  every decision as the reason `integrity:unauthenticated`. Closing it in production means the
+  producer never holds the signing key. In REMOTE-authoritative mode the identity re-resolution
+  above blocks the specific case of a forged head/repo regardless of the bundle key. NOTE:
+  forgeries that require *structural* changes — a path traversal or a
   disagreeing duplicate tier — are caught regardless of the key (see the defended table:
   `artifact.path-escape`, `policy.tier-unresolved`); B2 is now specifically the residual
   *claim-value* forgery on an otherwise well-formed, hash-consistent item.
