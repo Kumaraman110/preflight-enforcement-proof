@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://preflight.dev/protocol/schemas/action-intent.v1.schema.json",
+  "title": "Preflight Action Intent",
+  "description": "A model-neutral declaration of an action an agent (any model/tool) intends to perform, and the subject it targets. The verifier decides whether the accompanying Evidence Bundle authorizes it. Producer-agnostic: a Claude Code adapter, a CI job, or any other actor emits the same shape.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "intentId", "action", "actor", "subject"],
+  "properties": {
+    "schemaVersion": {
+      "description": "Full semver of the schema this document conforms to. Major must match the file (.v1.).",
+      "type": "string",
+      "pattern": "^1\\.[0-9]+\\.[0-9]+$"
+    },
+    "intentId": {
+      "description": "Stable identifier for this intent, referenced by the Evidence Bundle's intentRef.",
+      "type": "string",
+      "minLength": 1
+    },
+    "action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": {
+          "description": "The governed action class. Open vocabulary; git-push is the MVP exemplar.",
+          "type": "string",
+          "minLength": 1
+        },
+        "attributes": {
+          "description": "Action-specific attributes (e.g. remote, refspec, force). Free-form object.",
+          "type": "object"
+        }
+      }
+    },
+    "actor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "id"],
+      "properties": {
+        "kind": {
+          "description": "What produced the intent. 'model' = an LLM agent; 'automation' = CI/script; 'human' = a person.",
+          "type": "string",
+          "enum": ["model", "automation", "human"]
+        },
+        "id": {
+          "description": "Opaque actor identifier (model id, CI job, username). Not a secret.",
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repo", "head"],
+      "properties": {
+        "repo": {
+          "description": "Repository identity the action targets (path or canonical name).",
+          "type": "string",
+          "minLength": 1
+        },
+        "head": {
+          "description": "The commit SHA the intent is bound to. Evidence must attest THIS head; a drift is a contradiction.",
+          "type": "string",
+          "pattern": "^[0-9a-f]{7,64}$"
+        },
+        "branch": {
+          "description": "Optional branch name the action targets.",
+          "type": "string"
+        }
+      }
+    },
+    "context": {
+      "type": "object",
+      "additionalProperties": true,
+      "properties": {
+        "referenceTime": {
+          "description": "RFC3339 UTC time the verifier should treat as 'now' for freshness, if not injected via --now. Injecting time keeps decisions deterministic.",
+          "type": "string"
+        },
+        "tier": {
+          "description": "Optional producer-asserted risk tier (AUTO|CONFIRM|BLOCK). The verifier treats this as an untrusted CLAIM, re-checked against evidence, never as authorization.",
+          "type": "string",
+          "enum": ["AUTO", "CONFIRM", "BLOCK"]
+        }
+      }
+    }
+  }
+}

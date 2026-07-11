@@ -7,7 +7,7 @@
 # - Coupling analysis produces correct groupings
 # - Rubric cross-check catches contradicting suggestions
 #
-# Usage: bash tests/run-all-tests.sh [--suite stage1|coupling|crosscheck|operative|behavioral]
+# Usage: bash tests/run-all-tests.sh [--suite stage1|coupling|crosscheck|operative|behavioral|protocol]
 #
 # Exit 0 = all assertions pass
 # Exit 1 = at least one assertion failed (details printed)
@@ -1542,6 +1542,38 @@ run_dependency_map_validator_tests() {
   fi
 }
 
+run_protocol_tests() {
+  echo ""
+  echo "══════════════════════════════════════════"
+  echo " Protocol: model-neutral verifier + schemas"
+  echo "══════════════════════════════════════════"
+  echo ""
+
+  # Each protocol test prints a trailing summary line "<name>: N passed, M failed" and
+  # exits nonzero on any failure. Parse both counts so the runner totals stay accurate
+  # (a test can pass some assertions and still fail — count both, never swallow either).
+  local t
+  for t in verifier-decision schema-contract adapter-and-failmode; do
+    local test_script="$SCRIPT_DIR/protocol/${t}-test.sh"
+    if [ -f "$test_script" ]; then
+      local result sub_passes sub_failures
+      if result=$(bash "$test_script" 2>&1); then
+        sub_passes=$(echo "$result" | grep -E "^${t}: [0-9]+ passed" | awk '{print $2}')
+        PASSES=$((PASSES + ${sub_passes:-0}))
+      else
+        sub_passes=$(echo "$result" | grep -E "^${t}: [0-9]+ passed" | awk '{print $2}')
+        sub_failures=$(echo "$result" | grep -E "^${t}: [0-9]+ passed" | awk '{print $4}')
+        PASSES=$((PASSES + ${sub_passes:-0}))
+        FAILURES=$((FAILURES + ${sub_failures:-1}))
+        red "FAIL: protocol ${t} suite had failures"
+        echo "$result" | grep "^FAIL:" || true
+      fi
+    else
+      yellow "SKIP: protocol/${t}-test.sh not found"
+    fi
+  done
+}
+
 # ═══════════════════════════════════════════════════════════════
 # MAIN
 # ═══════════════════════════════════════════════════════════════
@@ -1559,6 +1591,7 @@ case "$SUITE" in
     run_behavioral_tests
     run_scan_profile_tests
     run_dependency_map_validator_tests
+    run_protocol_tests
     ;;
   stage1) run_stage1_tests ;;
   operative) run_operative_rule_tests ;;
@@ -1567,9 +1600,10 @@ case "$SUITE" in
   behavioral) run_behavioral_tests ;;
   scan-profiles) run_scan_profile_tests ;;
   dependency-map-validator) run_dependency_map_validator_tests ;;
+  protocol) run_protocol_tests ;;
   *)
     red "Unknown suite: $SUITE"
-    echo "Usage: $0 [all|stage1|operative|coupling|crosscheck|behavioral|scan-profiles|dependency-map-validator]"
+    echo "Usage: $0 [all|stage1|operative|coupling|crosscheck|behavioral|scan-profiles|dependency-map-validator|protocol]"
     exit 1
     ;;
 esac
