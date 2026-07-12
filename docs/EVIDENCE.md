@@ -10,25 +10,30 @@ throwaway test-only keys; no production system, secret, or organization identifi
 ## Required-check merge prevention (headline)
 
 Branch protection on `main`: `required_status_checks` = `["preflight-remote-decision-gate"]`,
-`strict: true`, `enforce_admins: true` (no admin bypass).
+`strict: true`, `enforce_admins: true` (no admin bypass). All rows are against the review-hardened
+`main`.
 
 | PR | change | decision | commit status | mergeStateStatus | merge attempt |
 |----|--------|----------|---------------|------------------|---------------|
-| #1 `pr-valid` | `app/safe/**` | ALLOW | `success` | CLEAN / MERGEABLE | eligible |
-| #2 `pr-blocked` | `app/protected/**` (lies AUTO) | BLOCK | `failure` | BLOCKED | **refused** |
-| #3 `pr-confirm` | `app/review/**` | REQUIRE_APPROVAL | `failure` | BLOCKED | needs approval |
+| #8 `pr-valid2` | `app/safe/**` | ALLOW | `success` | CLEAN / MERGEABLE | eligible |
+| #9 `pr-blocked2` | `app/protected/**` (lies AUTO) | BLOCK | `failure` | BLOCKED | **refused** |
+| #3 `pr-confirm` | `app/review/**` | REQUIRE_APPROVAL | `failure` | (approval-gated) | needs approval |
 | #4 `pr-judge-replace` | rewrites verifier+policy | BLOCK | `failure` | BLOCKED | refused |
 | #5 `pr-forge-clearance` | protected + smuggled ALLOW `decision.json` | BLOCK | `failure` | BLOCKED | refused |
+| #7 `pr-rename-evasion` | renames `app/protected/x` → `app/safe/x` | BLOCK | `failure` | BLOCKED | refused |
 
-`gh pr merge 2 --merge` → *"not mergeable: the base branch policy prohibits the merge"* (no `--admin`).
+`gh pr merge 9 --merge` → *"not mergeable: the base branch policy prohibits the merge"* (no `--admin`).
 A PR with no decision status yet is also `BLOCKED` (the required context is "expected") — a skipped,
-cancelled, or never-run decide cannot make a PR mergeable.
+cancelled, or never-run decide cannot make a PR mergeable. The rename-evasion case (#7) is BLOCKed by
+the hardened classifier, which scores the rename **source** path (`--no-renames`).
 
 ## What each case proves
 
-- **valid → ALLOW** (#1): independent verification + a signed decision attestation bound to the commit.
-- **forged tier / protected change → BLOCK** (#2): the trusted classifier derives the tier from the
+- **valid → ALLOW** (#8): independent verification + a signed decision attestation bound to the commit.
+- **forged tier / protected change → BLOCK** (#9): the trusted classifier derives the tier from the
   files actually changed; the PR's `tier.txt` hint is ignored.
+- **rename-evasion → BLOCK** (#7): renaming a protected file into `app/safe/` cannot launder it — the
+  classifier scores the source path (`--no-renames`).
 - **judge replacement → BLOCK** (#4): the verifier + policy run from the default branch (`--pkg-root`);
   the PR's rewritten verifier/policy are never executed.
 - **forged local clearance → BLOCK** (#5): a PR-committed `decision.json` claiming ALLOW is ignored;
