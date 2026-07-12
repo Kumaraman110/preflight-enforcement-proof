@@ -24,7 +24,10 @@ pass — the property the local trust kernel structurally cannot provide.
   approval signed with a **distinct approver key** — a producer cannot self-approve.
 - **Fork-safe CI**: a two-stage trusted split (untrusted `collect` with no secrets → trusted
   `decide` running the verifier + policy from the base ref against the PR commit as data-only),
-  least-privilege, SHA-pinned actions, fail-closed on missing signing material.
+  least-privilege, SHA-pinned actions, fail-closed on missing signing material. Evidence
+  authenticity is enforced via a distinct `PREFLIGHT_BUNDLE_KEY` + `--require-bundle-attestation`
+  so a fork cannot self-classify its own tier (identity re-resolution + evidence authentication
+  together — see the "fork-safe" scope note in `docs/remote-gate.md`).
 - Additive only. The local kernel and every existing test are unchanged (`local-advisory` mode
   is a byte-identical no-op). Stdlib-only Python; no third-party deps; no secrets in the repo.
 
@@ -77,7 +80,8 @@ Linux) it is expected to pass. This is the ONLY excepted failure.
 ## Rollout plan
 
 1. Merge the branch (human) to the integration branch; no behavior changes to the local kernel.
-2. Add org/repo secrets `PREFLIGHT_ATTEST_KEY` + distinct `PREFLIGHT_APPROVAL_KEY` (or wire OIDC→KMS).
+2. Add org/repo secrets `PREFLIGHT_ATTEST_KEY` (decision), `PREFLIGHT_BUNDLE_KEY` (evidence
+   authenticity — required for fork-safety), + distinct `PREFLIGHT_APPROVAL_KEY` (or wire OIDC→KMS).
 3. Enable the workflow for the target branch(es).
 4. Observe the Stage-2 `Independent remote decision gate` check on real PRs (advisory first).
 5. Once trusted, add the **Stage-2** check as a required status check on a **non-production test

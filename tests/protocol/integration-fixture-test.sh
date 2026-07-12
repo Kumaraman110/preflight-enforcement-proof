@@ -39,6 +39,9 @@ SLUG="United-Airlines-Org/preflight"
 ATTEST_KEY="$TMP/attest.key"; printf 'ci-attest-key\n' > "$ATTEST_KEY"
 APPROVER_KEY="$TMP/approver.key"; printf 'ci-approver-key-distinct\n' > "$APPROVER_KEY"
 PRODUCER_KEY="$TMP/producer.key"; printf 'producer-key\n' > "$PRODUCER_KEY"
+# BUNDLE key authenticates the producer's evidence (incl. the tier claim). The deployed workflow
+# provisions it + passes --require-bundle-attestation; the fixture models that hardened config.
+BUNDLE_KEY="$TMP/bundle.key"; printf 'ci-bundle-key\n' > "$BUNDLE_KEY"
 
 # Build a "subject" checkout (what actions/checkout of the PR head yields). $1=tier $2=name → sets SUBJ + SHEAD
 build_subject() {
@@ -54,15 +57,20 @@ build_subject() {
 }
 
 # Build the producer's claim (intent+bundle) for a given head+tier, sealed against the subject tree.
-build_claim() {  # $1 head  $2 tier  $3 subject-dir  $4 outdir
+# By default the bundle is HMAC-signed with the trusted BUNDLE key (models an authentic producer);
+# pass a 5th arg = key file to sign with a DIFFERENT key (a forgery), or "" to leave unsigned.
+build_claim() {  # $1 head  $2 tier  $3 subject-dir  $4 outdir  [$5 bundle-key(default $BUNDLE_KEY; ""=unsigned)]
   local head="$1" tier="$2" subj="$3" out="$4"; mkdir -p "$out"
+  local bkey; if [ "$#" -ge 5 ]; then bkey="$5"; else bkey="$BUNDLE_KEY"; fi
   cat > "$out/intent.json" <<EOF
 {"schemaVersion":"1.0.0","intentId":"i-fix","action":{"type":"git-push","attributes":{"remote":"origin","refspec":"HEAD:main"}},"actor":{"kind":"model","id":"claude"},"subject":{"repo":"github.com/$SLUG","head":"$head","branch":"main"}}
 EOF
   cat > "$out/bundle.json" <<EOF
 {"schemaVersion":"1.0.0","intentRef":{"intentId":"i-fix","subjectHead":"$head"},"issuer":{"adapter":"preflight-test","version":"0.1.0"},"evidence":[{"type":"tests-pass","producedAt":"2026-07-11T09:00:00Z","boundHead":"$head","artifact":{"path":"artifacts/tests.log","sha256":"0"},"claims":{"passed":true}},{"type":"push-tier","producedAt":"2026-07-11T09:00:05Z","boundHead":"$head","artifact":{"path":"artifacts/tier.txt","sha256":"0"},"claims":{"tier":"$tier"}}],"attestation":{"algo":"sha256","bundleDigest":"0"}}
 EOF
-  ( cd "$PROTO_ROOT" && "$PF_PY" verifier/tools/seal_bundle.py --bundle "$out/bundle.json" --evidence-root "$subj" >/dev/null )
+  local sealargs=(--bundle "$out/bundle.json" --evidence-root "$subj")
+  [ -n "$bkey" ] && sealargs+=(--attestation-key-file "$bkey")
+  ( cd "$PROTO_ROOT" && "$PF_PY" verifier/tools/seal_bundle.py "${sealargs[@]}" >/dev/null )
 }
 
 # Stage 2 invocation: TRUSTED pkg-root = the real repo; subject = the (untrusted) checkout.
@@ -76,7 +84,8 @@ stage2() {  # $1 claim-dir  $2 subject-dir  [extra args] ; sets GRC + ODIR
     --now "$NOW" --issued-at "$NOW" --expires-at "$EXP" --expected-repo "$SLUG" \
     --run-id "fix-run" --nonce "fix-nonce" --out-dir "$ODIR" \
     --attest-key-file "$ATTEST_KEY" --approval-key-file "$APPROVER_KEY" \
-    --require-attestation "${approval[@]}" "${@:3}" >/dev/null 2>&1
+    --bundle-key-file "$BUNDLE_KEY" \
+    --require-attestation --require-bundle-attestation "${approval[@]}" "${@:3}" >/dev/null 2>&1
   GRC=$?
 }
 mint_approval() {  # $1 out  $2 key  $3 head
@@ -155,6 +164,21 @@ build_claim "$SHEAD" BLOCK "$SUBJ" "$TMP/claim7b"
 # Stage 2 uses --pkg-root = TRUSTED repo (real BLOCK policy), --repo-root = the malicious subject.
 stage2 "$TMP/claim7b" "$SUBJ"
 [ "$GRC" = 20 ] && ok "case7b FORK policy/verifier tamper → still BLOCK exit 20 (trusted pkg-root wins)" || bad "case7b fork tamper forced non-BLOCK! (rc=$GRC)"
+
+# ── CASE 8: FORK EVIDENCE FORGERY — self-classified tier=AUTO in a bundle NOT signed by the bundle key ─
+# Under the hardened deployed config (--require-bundle-attestation + trusted PREFLIGHT_BUNDLE_KEY), a
+# fork that writes tier=AUTO into its own evidence and signs the bundle with its OWN (wrong) key is
+# rejected: the bundle signature does not verify under the trusted bundle key → BLOCK. This closes the
+# evidence-authenticity gap the final adversarial review flagged.
+build_subject AUTO forgeevid   # subject genuinely at AUTO tier, but the producer is untrusted
+FORK_KEY="$TMP/fork.key"; printf 'fork-controlled-key\n' > "$FORK_KEY"
+build_claim "$SHEAD" AUTO "$SUBJ" "$TMP/claim8" "$FORK_KEY"   # signed with the WRONG (fork) bundle key
+stage2 "$TMP/claim8" "$SUBJ"
+[ "$GRC" = 20 ] && ok "case8 fork-forged evidence (wrong bundle key) → BLOCK exit 20 (evidence authenticity enforced)" || bad "case8 forged evidence not blocked (rc=$GRC)"
+# And the honest producer (correct bundle key) still passes:
+build_subject AUTO honestprod; build_claim "$SHEAD" AUTO "$SUBJ" "$TMP/claim8b"   # default = correct BUNDLE_KEY
+stage2 "$TMP/claim8b" "$SUBJ"
+[ "$GRC" = 0 ] && ok "case8b honest producer (correct bundle key) → ALLOW exit 0" || bad "case8b honest producer blocked (rc=$GRC)"
 
 echo ""
 echo "integration-fixture: ${PASS} passed, ${FAIL} failed"

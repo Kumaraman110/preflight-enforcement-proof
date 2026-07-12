@@ -183,12 +183,28 @@ Enforced hardening (asserted by `tests/protocol/workflow-security-test.sh`):
   exit 20; usage/fail-closed → exit 30. The uploaded `decision.json` disambiguates
   `REQUIRE_APPROVAL` from `BLOCK` at the artifact level.
 
+## What "fork-safe" does and does NOT mean
+
+The two-stage split stops a fork from **editing the judge's code or policy** to force ALLOW (the
+verifier + policy run from the trusted base, not the PR). It does **not**, on its own, stop a fork
+from **lying in the evidence it submits** — the reversibility `tier` is producer-*claimed*
+evidence. If the deployment does not authenticate the evidence bundle, a fork can self-classify
+`tier=AUTO` in its own `tier.txt` and get ALLOW for a change a real classifier would rate
+CONFIRM/BLOCK. **Provisioning `PREFLIGHT_BUNDLE_KEY` closes this**: the trusted Stage 2 passes
+`--require-bundle-attestation`, so a bundle not HMAC-signed under the trusted bundle key is
+rejected (`integrity.signature-invalid` → BLOCK). The shipped workflow already wires this; the
+operator step below is therefore **required**, not optional, for a genuinely fork-safe required check.
+
 ## Configuring the required status check (operator step — not automated)
 
-1. Add repository/organization secrets `PREFLIGHT_ATTEST_KEY` (and, if using approvals, the
-   **distinct** `PREFLIGHT_APPROVAL_KEY`). Never commit these. For a hardened deployment prefer
-   an OIDC → KMS / Ed25519 signer so no long-lived symmetric secret is stored (future work; see
-   "Remaining production gaps").
+1. Add repository/organization secrets:
+   - `PREFLIGHT_ATTEST_KEY` — signs the decision (required; `--require-attestation`).
+   - `PREFLIGHT_BUNDLE_KEY` — authenticates the producer's evidence, incl. the tier claim
+     (**required** for fork-safety; `--require-bundle-attestation`). The producer that assembles
+     the bundle must hold this key; a fork does not.
+   - `PREFLIGHT_APPROVAL_KEY` — the **distinct** approver key (if using approvals).
+   Never commit these. For a hardened deployment prefer an OIDC → KMS / Ed25519 signer so no
+   long-lived symmetric secret is stored (future work; see "Remaining production gaps").
 2. Enable the `Preflight Remote Decision Gate` workflow for the branches you want gated.
 3. In branch protection for the protected branch, add the **Stage 2** check
    **`Independent remote decision gate`** as a required status check. Do **not** require the

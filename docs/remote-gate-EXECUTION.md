@@ -52,10 +52,13 @@ distinct `PREFLIGHT_APPROVAL_KEY`). For a **test** run, use a throwaway HMAC sec
 prefer OIDC→KMS/Ed25519 (see docs/remote-gate.md).
 
 ```bash
-# TEST secret (a random value — never a production key):
-python -c "import secrets;print(secrets.token_hex(32))" | gh secret set PREFLIGHT_ATTEST_KEY --repo United-Airlines-Org/preflight
+# TEST secrets (random values — never production keys). BUNDLE key is required for fork-safety.
+python -c "import secrets;print(secrets.token_hex(32))" | gh secret set PREFLIGHT_ATTEST_KEY   --repo United-Airlines-Org/preflight
+python -c "import secrets;print(secrets.token_hex(32))" | gh secret set PREFLIGHT_BUNDLE_KEY   --repo United-Airlines-Org/preflight
 python -c "import secrets;print(secrets.token_hex(32))" | gh secret set PREFLIGHT_APPROVAL_KEY --repo United-Airlines-Org/preflight
 ```
+Note: the producer that assembles the evidence bundle must sign it with `PREFLIGHT_BUNDLE_KEY`
+(via `seal_bundle.py --attestation-key-file`); a fork that lacks the key cannot self-classify.
 Rollback: `gh secret delete PREFLIGHT_ATTEST_KEY --repo …` (and the approval key).
 
 ## Step 4 — Run the workflow (reversible; observation only)

@@ -75,8 +75,10 @@ printf '%s' "$DECIDE_BLOCK" | grep -qE "git .*fetch .*origin" && ok "STAGE 2 mat
 # The entrypoint must run from gate/, not the subject tree.
 printf '%s' "$DECIDE_BLOCK" | grep -q "bash gate/verifier/ci/remote-gate.sh" && ok "entrypoint executed from TRUSTED gate/ (not the PR/subject tree)" || bad "entrypoint not run from gate/"
 
-# ── 7. FAIL-CLOSED: --require-attestation is passed in the authoritative stage ──────────────────────
-printf '%s' "$DECIDE_BLOCK" | grep -q -- "--require-attestation" && ok "STAGE 2 passes --require-attestation (fail-closed on missing key)" || bad "STAGE 2 missing --require-attestation"
+# ── 7. FAIL-CLOSED: --require-attestation + --require-bundle-attestation in the authoritative stage ─
+printf '%s' "$DECIDE_BLOCK" | grep -q -- "--require-attestation" && ok "STAGE 2 passes --require-attestation (fail-closed on missing decision key)" || bad "STAGE 2 missing --require-attestation"
+printf '%s' "$DECIDE_BLOCK" | grep -q -- "--require-bundle-attestation" && ok "STAGE 2 passes --require-bundle-attestation (evidence authenticity enforced)" || bad "STAGE 2 missing --require-bundle-attestation"
+printf '%s' "$DECIDE_BLOCK" | grep -q 'PREFLIGHT_BUNDLE_KEY: ${{ secrets.PREFLIGHT_BUNDLE_KEY }}' && ok "bundle key sourced ONLY from secrets" || bad "bundle key not sourced from secrets"
 
 # ── 8. EXACT PR HEAD: Stage 1 pins pull_request.head.sha (not the moving merge ref) ─────────────────
 printf '%s' "$COLLECT_BLOCK" | grep -q "pull_request.head.sha" && ok "STAGE 1 pins the exact PR head SHA" || bad "STAGE 1 does not pin pull_request.head.sha"

@@ -106,7 +106,13 @@ jobs:
       contents: read
     env:
       # Signing keys — injected ONLY in this trusted stage, ONLY from secrets. Never from PR input.
+      #  • ATTEST key signs the DECISION (output). Required (--require-attestation).
+      #  • BUNDLE key authenticates the producer's EVIDENCE (input). Without it the tier/claims are
+      #    trusted at face value — a fork could self-classify tier=AUTO. Requiring it closes that
+      #    evidence-authenticity gap (identity re-resolution alone does NOT). Provision it.
+      #  • APPROVAL key (distinct) gates REQUIRE_APPROVAL; never held by a producer.
       PREFLIGHT_ATTEST_KEY: ${{ secrets.PREFLIGHT_ATTEST_KEY }}
+      PREFLIGHT_BUNDLE_KEY: ${{ secrets.PREFLIGHT_BUNDLE_KEY }}
       PREFLIGHT_APPROVAL_KEY: ${{ secrets.PREFLIGHT_APPROVAL_KEY }}
       HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
       GATE_REPO: ${{ github.repository }}
@@ -176,6 +182,7 @@ jobs:
             --run-id "$GITHUB_RUN_ID" --nonce "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
             --out-dir gate-out \
             --require-attestation \
+            --require-bundle-attestation \
             $APPROVAL_ARG
           # Exit code IS the check result: 0 ALLOW/approved, 10 REQUIRE_APPROVAL (non-success,
           # documented), 20 BLOCK, 30 usage/fail-closed. Non-zero fails the required check.

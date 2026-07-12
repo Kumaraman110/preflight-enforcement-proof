@@ -21,7 +21,7 @@ set -uo pipefail
 REPO_ROOT="" INTENT="" BUNDLE="" POLICY="" NOW="" EXPECTED_REPO=""
 OUT_DIR="." APPROVAL="" ATTEST_KEY_FILE="" APPROVAL_KEY_FILE="" BUNDLE_KEY_FILE=""
 POLICY_VERSION="1.0.0" RUN_ID="local-run" NONCE="nonce-0"
-ISSUED_AT="" EXPIRES_AT="" UNTRACKED="no" PKG_ROOT_OVERRIDE="" REQUIRE_ATTESTATION="0"
+ISSUED_AT="" EXPIRES_AT="" UNTRACKED="no" PKG_ROOT_OVERRIDE="" REQUIRE_ATTESTATION="0" REQUIRE_BUNDLE_ATTESTATION="0"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -51,6 +51,11 @@ while [ $# -gt 0 ]; do
     # For a REQUIRED status check the decision must be independently attestable; a fork PR with
     # no secrets therefore cannot produce a passing authoritative result.
     --require-attestation) REQUIRE_ATTESTATION="1"; shift 1;;
+    # --require-bundle-attestation: fail CLOSED if no BUNDLE-signing key is available. Without a
+    # bundle key the producer's evidence (incl. the tier claim) is trusted at face value — a fork
+    # could self-classify tier=AUTO. Requiring it means an unsigned/forged bundle → BLOCK. Enable
+    # this when the deployment intends producer-evidence authenticity (recommended for a required check).
+    --require-bundle-attestation) REQUIRE_BUNDLE_ATTESTATION="1"; shift 1;;
     *) echo "remote-gate: unknown arg $1" >&2; exit 30;;
   esac
 done
@@ -121,6 +126,14 @@ if [ "$REQUIRE_ATTESTATION" = "1" ] && [ -z "$KEYFILE" ]; then
   echo "remote-gate: --require-attestation set but no signing key (PREFLIGHT_ATTEST_KEY / --attest-key-file) available — failing closed" >&2
   mkdir -p "$OUT_DIR"
   printf '{"decision":"BLOCK","reason":"attestation-key-unavailable","attested":false}\n' > "$OUT_DIR/decision.json"
+  exit 30
+fi
+# FAIL-CLOSED on missing BUNDLE key when evidence authenticity is required. Without it the
+# producer's evidence (incl. the tier claim) would be trusted at face value.
+if [ "$REQUIRE_BUNDLE_ATTESTATION" = "1" ] && [ -z "$BUNDLE_KEYFILE" ]; then
+  echo "remote-gate: --require-bundle-attestation set but no bundle key (PREFLIGHT_BUNDLE_KEY / --bundle-key-file) available — failing closed" >&2
+  mkdir -p "$OUT_DIR"
+  printf '{"decision":"BLOCK","reason":"bundle-key-unavailable","attested":false}\n' > "$OUT_DIR/decision.json"
   exit 30
 fi
 
