@@ -1,0 +1,65 @@
+---
+# Preflight Remote Gate — STAGE 1 (collect). The UNTRUSTED half of the two-stage trusted split.
+#
+# Runs in the pull-request (fork) context with NO secrets. It executes NO gate logic that can go
+# green — it only packages the producer's claim (Action Intent + Evidence Bundle, and the exact
+# PR head SHA) as an artifact for the trusted Stage 2 (preflight-remote-gate.yaml) to consume via
+# `workflow_run`. Splitting Stage 1 and Stage 2 into SEPARATE workflow files is required: a single
+# workflow cannot `workflow_run`-trigger on its own name.
+#
+# SAFETY: permissions contents:read only; no secrets referenced; pins the exact PR head SHA (not
+# the moving merge ref); actions pinned by immutable commit SHA. Do NOT make this check required —
+# it is untrusted-context and carries no verdict (see docs/remote-gate.md).
+
+name: Preflight Remote Gate — Collect
+
+on:
+  pull_request:
+    branches:
+      - feature/preflight-remote-decision-gate-v0.1
+
+permissions:
+  contents: read
+
+concurrency:
+  group: preflight-remote-gate-collect-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  collect:
+    name: Collect claim (untrusted, no secrets)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout the EXACT PR head commit (data only)
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683   # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Locate the producer's intent + bundle
+        run: |
+          set -o pipefail
+          INTENT=".preflight/protocol/intent.json"
+          BUNDLE=".preflight/protocol/bundle.json"
+          mkdir -p claim
+          if [ ! -f "$INTENT" ] || [ ! -f "$BUNDLE" ]; then
+            echo "::error::producer intent/bundle not found ($INTENT / $BUNDLE) — the producer adapter must emit them"
+            exit 1
+          fi
+          # Record the exact head sha the claim is about, so Stage 2 can fetch it as data.
+          cp "$INTENT" claim/intent.json
+          cp "$BUNDLE" claim/bundle.json
+          [ -f .preflight/protocol/approval.json ] && cp .preflight/protocol/approval.json claim/approval.json || true
+          echo "${{ github.event.pull_request.head.sha }}" > claim/head_sha.txt
+          echo "${{ github.event.pull_request.head.repo.full_name }}" > claim/head_repo.txt
+
+      - name: Upload claim artifact (intent/bundle/approval/head-sha)
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1   # v4.6.1
+        with:
+          name: preflight-claim
+          path: claim/
+          if-no-files-found: error

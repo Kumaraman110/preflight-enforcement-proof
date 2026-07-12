@@ -14,12 +14,16 @@ if ! _probe_python; then
   bad "no working python3/python (fail-closed: NOT green)"; echo ""; echo "workflow-security: ${PASS} passed, ${FAIL} failed"; exit 1
 fi
 
-WF="$PROTO_ROOT/.github/workflows/preflight-remote-gate.yaml"
+# The two-stage split lives in TWO workflow files (a single workflow cannot workflow_run-trigger
+# on its own name): Stage 1 = collect (on: pull_request), Stage 2 = decide (on: workflow_run).
+WF_COLLECT="$PROTO_ROOT/.github/workflows/preflight-remote-gate-collect.yaml"
+WF="$PROTO_ROOT/.github/workflows/preflight-remote-gate.yaml"   # Stage 2 (decide)
 GATE="$PROTO_ROOT/verifier/ci/remote-gate.sh"
-[ -f "$WF" ] || { bad "workflow missing: $WF"; echo ""; echo "workflow-security: ${PASS} passed, ${FAIL} failed"; exit 1; }
-[ -f "$GATE" ] || { bad "entrypoint missing: $GATE"; echo ""; echo "workflow-security: ${PASS} passed, ${FAIL} failed"; exit 1; }
+for f in "$WF_COLLECT" "$WF" "$GATE"; do
+  [ -f "$f" ] || { bad "missing: $f"; echo ""; echo "workflow-security: ${PASS} passed, ${FAIL} failed"; exit 1; }
+done
 
-# YAML query helper (python; path passed as argv — MSYS-safe).
+# YAML query helper against the Stage-2 (decide) file (python; path passed as argv — MSYS-safe).
 wf() { "$PF_PY" - "$WF" "$1" <<'PY'
 import sys, yaml
 d = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))
@@ -39,22 +43,26 @@ print("" if v is None else v)
 PY
 }
 
-# ── 1. LEAST-PRIVILEGE: top-level + every job is contents:read; NO write scope anywhere ─────────────
+# ── 1. LEAST-PRIVILEGE: both workflow files contents:read; NO write scope anywhere ──────────────────
 TOPPERM="$(wf permissions)"
-case "$TOPPERM" in *"'contents': 'read'"*|*"contents.*read"*) ok "top-level permissions = contents:read";; *) bad "top-level permissions not contents:read: $TOPPERM";; esac
+case "$TOPPERM" in *"'contents': 'read'"*|*"contents.*read"*) ok "Stage-2 top-level permissions = contents:read";; *) bad "Stage-2 top-level permissions not contents:read: $TOPPERM";; esac
 # Flag only an ACTUAL write GRANT (a `<scope>: write` value on a non-comment line), not the
-# word "write" appearing in a comment. Strip comments first, then look for a write permission.
-if grep -vE '^\s*#' "$WF" | grep -qE ':\s*write\b'; then bad "workflow grants a 'write' permission scope"; else ok "no 'write' permission grant anywhere in the workflow (comments aside)"; fi
+# word "write" appearing in a comment. Check BOTH workflow files.
+if grep -vE '^\s*#' "$WF" "$WF_COLLECT" | grep -qE ':\s*write\b'; then bad "a workflow grants a 'write' permission scope"; else ok "no 'write' permission grant in either workflow file (comments aside)"; fi
+grep -qE "contents: read" "$WF_COLLECT" && ok "Stage-1 (collect) declares contents:read" || bad "Stage-1 missing contents:read"
 
-# ── 2. TWO-STAGE TRUSTED SPLIT: pull_request (collect) + workflow_run (decide) ───────────────────────
+# ── 2. TWO-STAGE TRUSTED SPLIT: Stage 1 on pull_request; Stage 2 on workflow_run of Stage 1 ─────────
+grep -qE "^  pull_request:" "$WF_COLLECT" && ok "STAGE 1 triggers on pull_request" || bad "STAGE 1 missing pull_request trigger"
 TRIG="$(wf on)"
-{ echo "$TRIG" | grep -q "pull_request" && echo "$TRIG" | grep -q "workflow_run"; } && ok "two-stage triggers present (pull_request + workflow_run)" || bad "missing two-stage triggers: $TRIG"
-grep -q "collect:" "$WF" && grep -q "decide:" "$WF" && ok "collect + decide jobs present" || bad "missing collect/decide jobs"
+echo "$TRIG" | grep -q "workflow_run" && ok "STAGE 2 triggers on workflow_run" || bad "STAGE 2 missing workflow_run trigger: $TRIG"
+# NO self-reference: Stage 2's workflow_run must name the COLLECT workflow, not its own name.
+grep -q 'workflows: \["Preflight Remote Gate — Collect"\]' "$WF" && ok "STAGE 2 workflow_run references the Collect workflow (no self-reference)" || bad "STAGE 2 workflow_run does not reference the Collect workflow (self-reference startup-failure risk)"
+grep -q "collect:" "$WF_COLLECT" && grep -q "decide:" "$WF" && ok "collect job (Stage 1 file) + decide job (Stage 2 file) present" || bad "missing collect/decide jobs across files"
 
 # ── 3. STAGE 1 (collect) runs in PR context and does NOT reference secrets ──────────────────────────
-# Extract the collect job block (from 'collect:' to 'decide:') and assert no secrets. usage.
-COLLECT_BLOCK="$(awk '/^  collect:/{f=1} /^  decide:/{f=0} f' "$WF")"
-if printf '%s' "$COLLECT_BLOCK" | grep -qE "secrets\."; then bad "STAGE 1 (collect) references secrets — must be secret-free"; else ok "STAGE 1 (collect) references NO secrets"; fi
+# Match a real ${{ secrets.X }} expression on a NON-comment line (not the word "secrets" in prose).
+COLLECT_BLOCK="$(cat "$WF_COLLECT")"
+if grep -vE '^\s*#' "$WF_COLLECT" | grep -qE '\$\{\{\s*secrets\.'; then bad "STAGE 1 (collect) references a secrets.* expression — must be secret-free"; else ok "STAGE 1 (collect) references NO secrets"; fi
 
 # ── 4. STAGE 2 (decide) gates on workflow_run success + injects keys ONLY from secrets ──────────────
 DECIDE_BLOCK="$(awk '/^  decide:/{f=1} f' "$WF")"
@@ -83,19 +91,18 @@ printf '%s' "$DECIDE_BLOCK" | grep -q 'PREFLIGHT_BUNDLE_KEY: ${{ secrets.PREFLIG
 # ── 8. EXACT PR HEAD: Stage 1 pins pull_request.head.sha (not the moving merge ref) ─────────────────
 printf '%s' "$COLLECT_BLOCK" | grep -q "pull_request.head.sha" && ok "STAGE 1 pins the exact PR head SHA" || bad "STAGE 1 does not pin pull_request.head.sha"
 
-# ── 9. ACTION PINNING: actions pinned by 40-hex commit SHA, not a mutable @vN tag ───────────────────
-if grep -qE "uses:.*@v[0-9]+\s*$" "$WF"; then
+# ── 9. ACTION PINNING: actions pinned by 40-hex commit SHA, not a mutable @vN tag (BOTH files) ──────
+if grep -qE "uses:.*@v[0-9]+\s*$" "$WF" "$WF_COLLECT"; then
   bad "an action is pinned to a mutable @vN tag (must be a 40-hex commit SHA)"
 else
-  # every 'uses:' with a third-party action carries a 40-hex sha
-  BADPIN="$(grep -E "uses: (actions|[^/]+/[^@]+)@" "$WF" | grep -vE "@[0-9a-f]{40}" || true)"
-  [ -z "$BADPIN" ] && ok "all actions pinned by 40-hex commit SHA" || bad "unpinned action(s): $BADPIN"
+  BADPIN="$(grep -E "uses: (actions|[^/]+/[^@]+)@" "$WF" "$WF_COLLECT" | grep -vE "@[0-9a-f]{40}" || true)"
+  [ -z "$BADPIN" ] && ok "all actions pinned by 40-hex commit SHA (both files)" || bad "unpinned action(s): $BADPIN"
 fi
 
-# ── 10. CONCURRENCY + TIMEOUT controls present ──────────────────────────────────────────────────────
-grep -q "concurrency:" "$WF" && ok "concurrency control present" || bad "no concurrency control"
-grep -q "cancel-in-progress: true" "$WF" && ok "cancel-in-progress enabled" || bad "cancel-in-progress not set"
-grep -qE "timeout-minutes:" "$WF" && ok "job timeout(s) present" || bad "no job timeout"
+# ── 10. CONCURRENCY + TIMEOUT controls present (BOTH files) ─────────────────────────────────────────
+{ grep -q "concurrency:" "$WF" && grep -q "concurrency:" "$WF_COLLECT"; } && ok "concurrency control present in both files" || bad "concurrency control missing in a file"
+{ grep -q "cancel-in-progress: true" "$WF" && grep -q "cancel-in-progress: true" "$WF_COLLECT"; } && ok "cancel-in-progress enabled in both files" || bad "cancel-in-progress not set in a file"
+{ grep -qE "timeout-minutes:" "$WF" && grep -qE "timeout-minutes:" "$WF_COLLECT"; } && ok "job timeout(s) present in both files" || bad "job timeout missing in a file"
 
 # ── 11. ENTRYPOINT BEHAVIOR: --require-attestation with NO key → fail closed (exit 30), NOT a pass ───
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT

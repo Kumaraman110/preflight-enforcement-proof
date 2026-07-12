@@ -1,33 +1,25 @@
 ---
-# Preflight Remote Decision Gate — an INDEPENDENT, server-authoritative decision check.
+# Preflight Remote Decision Gate — STAGE 2 (decide). The TRUSTED half of the two-stage split.
 #
 # THREAT: a pull request (especially from a FORK) is UNTRUSTED code. If the gate ran its own
 # policy / verifier / entrypoint out of the PR checkout, a PR author could edit them to force
-# ALLOW — the judge would be running the defendant's code. So this workflow is a TWO-STAGE
-# TRUSTED SPLIT:
+# ALLOW — the judge would be running the defendant's code. This workflow therefore runs in the
+# BASE repo's TRUSTED context (triggered by `workflow_run` on the untrusted Stage 1,
+# "Preflight Remote Gate — Collect"), checks out the GATE MACHINERY (verifier + policy +
+# entrypoint) from the TRUSTED base ref, fetches the exact PR head commit as DATA-ONLY into
+# `subject/` (never executes it), and runs the trusted verifier to re-resolve identity against
+# that subject tree. Signing keys are injected ONLY here.
 #
-#   Stage 1 (collect, UNTRUSTED context, NO secrets): triggered by `pull_request`. Runs in the
-#     fork's context, has NO access to signing secrets, and executes NO gate logic that can go
-#     green. It only packages the producer's claim (intent + evidence bundle) as an artifact.
-#
-#   Stage 2 (decide, TRUSTED context, HAS secrets): triggered by `workflow_run` after Stage 1.
-#     Runs in the BASE repo's context. It checks out the GATE MACHINERY (verifier + policy +
-#     entrypoint) from a TRUSTED ref (this workflow's own base), fetches the exact PR head
-#     commit as DATA-ONLY into `subject/` (never executes it), and runs the trusted verifier to
-#     re-resolve identity against that subject tree. Signing keys are injected ONLY here.
-#
-# Only Stage 2's check ("Independent remote decision gate") should be configured as a REQUIRED
-# status check (see docs/remote-gate.md). Requiring Stage 1 would be meaningless.
+# This is the check to configure as a REQUIRED status check ("Independent remote decision gate").
+# Do NOT require the Stage-1 collect check (untrusted, no verdict). See docs/remote-gate.md.
 #
 # SAFETY POSTURE:
-#   • permissions: contents:read ONLY everywhere; no write scope, no PR/issue mutation, no merge.
-#   • Does NOT modify branch protection — that is a documented human operator step.
-#   • Signing keys come ONLY from org/repo secrets, injected ONLY in the trusted Stage 2, and
-#     NEVER from any repository-controlled input (no CLI flag or env is wired from PR content).
-#     A distinct approver secret gates REQUIRE_APPROVAL.
-#   • Actions are pinned by immutable commit SHA (with a version comment), not a mutable tag.
-#   • Stage 2 fails CLOSED: missing signing key / missing artifact / identity-unresolvable /
-#     dependency-missing → non-success, never a silent ALLOW (remote-gate.sh --require-attestation).
+#   • permissions: contents:read ONLY; no write scope, no PR/issue mutation, no merge.
+#   • Does NOT modify branch protection — a documented human operator step.
+#   • Signing keys come ONLY from org/repo secrets, injected here, NEVER from any repository-
+#     controlled input (no CLI flag or env is wired from PR content). Distinct approver secret.
+#   • Actions pinned by immutable commit SHA. Fails CLOSED: missing signing key / missing artifact /
+#     identity-unresolvable / dependency-missing → non-success, never a silent ALLOW.
 #
 # The gate logic lives in a PORTABLE shell entrypoint (verifier/ci/remote-gate.sh), fully
 # testable offline (tests/protocol/remote-gate-e2e-test.sh) with no GitHub and no network.
@@ -35,71 +27,22 @@
 name: Preflight Remote Decision Gate
 
 on:
-  # STAGE 1 — collect the producer's claim from the (untrusted) PR. No secrets, no verdict.
-  pull_request:
-    branches:
-      - feature/preflight-remote-decision-gate-v0.1
-  # STAGE 2 — decide, in the trusted base context, after Stage 1 completes.
   workflow_run:
-    workflows: ["Preflight Remote Decision Gate"]
+    workflows: ["Preflight Remote Gate — Collect"]
     types: [completed]
 
-# Least privilege everywhere. Nothing here needs write scope.
 permissions:
   contents: read
 
 concurrency:
-  # Collapse superseded runs. For Stage 2 the head SHA (carried by the triggering run) keys it;
-  # github.ref is adequate for Stage 1.
-  group: preflight-remote-gate-${{ github.event.workflow_run.head_sha || github.ref }}
+  group: preflight-remote-gate-${{ github.event.workflow_run.head_sha }}
   cancel-in-progress: true
 
 jobs:
-  # ── STAGE 1 — collect (untrusted PR context, NO secrets) ────────────────────────────────────
-  collect:
-    name: Collect claim (untrusted, no secrets)
-    if: ${{ github.event_name == 'pull_request' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: read
-    steps:
-      - name: Checkout the EXACT PR head commit (data only)
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683   # v4.2.2
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Locate the producer's intent + bundle
-        run: |
-          set -o pipefail
-          INTENT=".preflight/protocol/intent.json"
-          BUNDLE=".preflight/protocol/bundle.json"
-          mkdir -p claim
-          if [ ! -f "$INTENT" ] || [ ! -f "$BUNDLE" ]; then
-            echo "::error::producer intent/bundle not found ($INTENT / $BUNDLE) — the producer adapter must emit them"
-            exit 1
-          fi
-          # Record the exact head sha the claim is about, so Stage 2 can fetch it as data.
-          cp "$INTENT" claim/intent.json
-          cp "$BUNDLE" claim/bundle.json
-          [ -f .preflight/protocol/approval.json ] && cp .preflight/protocol/approval.json claim/approval.json || true
-          echo "${{ github.event.pull_request.head.sha }}" > claim/head_sha.txt
-          echo "${{ github.event.pull_request.head.repo.full_name }}" > claim/head_repo.txt
-
-      - name: Upload claim artifact (intent/bundle/approval/head-sha)
-        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1   # v4.6.1
-        with:
-          name: preflight-claim
-          path: claim/
-          if-no-files-found: error
-
-  # ── STAGE 2 — decide (trusted base context, HAS secrets) ────────────────────────────────────
   decide:
     name: Independent remote decision gate
-    # Only run for the workflow_run completion of Stage 1, and only if Stage 1 succeeded.
-    if: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' }}
+    # Only run once Stage 1 (collect) completed SUCCESSFULLY.
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -117,9 +60,9 @@ jobs:
       HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
       GATE_REPO: ${{ github.repository }}
     steps:
-      # 1. TRUSTED gate machinery: check out THIS repo's base (the ref the workflow itself runs
-      #    from is the base repo, not the PR head) into gate/. Its verifier + policy + entrypoint
-      #    are trusted because a PR author cannot alter the base ref.
+      # 1. TRUSTED gate machinery: check out the BASE repo (this workflow runs in the base context;
+      #    a PR author cannot alter the base ref) into gate/. Its verifier + policy + entrypoint are
+      #    therefore trusted. head_branch is the Stage-1 branch name resolved in the BASE repo.
       - name: Checkout TRUSTED gate machinery (base ref)
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683   # v4.2.2
         with:
@@ -161,8 +104,8 @@ jobs:
           jq --version || true
 
       # 4. Run the TRUSTED entrypoint from gate/, verifying the untrusted subject/ tree as DATA.
-      #    --pkg-root pins the verifier+policy to the trusted checkout; --require-attestation makes
-      #    a missing signing key fail closed (no green check without an independently signed decision).
+      #    --pkg-root pins the verifier+policy to the trusted checkout; --require-attestation +
+      #    --require-bundle-attestation make missing signing material fail closed.
       - name: Run the independent remote decision gate (trusted verifier, untrusted subject)
         run: |
           set -o pipefail
