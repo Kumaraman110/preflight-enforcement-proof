@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+# user-preflight-router — the USER-LEVEL PreToolUse Bash router (v0.10.0 user-install).
+#
+# Registered ONCE in ~/.claude/settings.json (matcher "Bash") via the stable dispatcher. It runs for
+# EVERY Bash tool call in EVERY repository the user opens — so its FIRST job is to get out of the way
+# instantly for any repository that has not opted into Preflight.
+#
+# CONTRACT (PreToolUse): stdin = tool JSON {"tool_name":"Bash","tool_input":{"command":"..."},"cwd":"..."}.
+#   exit 0 = allow · exit 2 = block (in-scope consequential candidate the engine blocked / could not
+#   adjudicate) · exit 0 + permissionDecision JSON = CONFIRM/ask relayed from the engine.
+#
+# DESIGN INVARIANTS (mission Phase 2):
+#   1. Exit immediately (exit 0) when the current repo has NOT opted into Preflight.
+#   2. Activate only when the repo has a valid .preflight/config.json (or .cpsl/.forge equivalent).
+#   3. Preserve the zero/near-zero ordinary-command fast path (delegates to the same builtins-only router).
+#   4. Fail closed ONLY for in-scope consequential actions (never for ordinary commands / inactive repos).
+#   5. Avoid running BOTH user-level and project-level Preflight twice: if the repo carries a PROJECT-level
+#      Bash registration, this user-level router yields (exit 0) and lets the project hook own the decision.
+#   6. Support normal repositories AND git worktrees (repo root via git, common-dir aware).
+#   7. NEVER write to an application repository during passive routing (read-only discovery only).
+#   8. NEVER treat local evidence as remote final authority (local gate is advisory/agent-resistant; the
+#      remote required-check is the final authority — documented, not enforced here).
+#
+# This file performs read-only repo DISCOVERY (a bounded set of filesystem stats + at most one `git`
+# rev-parse), then delegates the actual risk classification to the co-located pre-bash-risk-router, which
+# is builtins-only on the ordinary fast path. It writes NOTHING to the application repo.
+
+_URT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# ── Read stdin ONCE, byte-preserve for the delegate (the tool JSON must reach the router intact) ──────────
+IFS= read -r -d '' BLOB || true
+
+# ── Extract cwd from the tool JSON (pure parameter expansion, zero spawn). Fall back to $PWD. ────────────
+_URT_CWD=""
+case "$BLOB" in
+  *'"cwd":"'*)  _URT_CWD="${BLOB#*'"cwd":"'}";  _URT_CWD="${_URT_CWD%%\"*}" ;;
+  *'"cwd": "'*) _URT_CWD="${BLOB#*'"cwd": "'}"; _URT_CWD="${_URT_CWD%%\"*}" ;;
+esac
+[ -n "$_URT_CWD" ] || _URT_CWD="$PWD"
+# Un-escape JSON backslashes in the cwd (Windows paths arrive as C:\\Users\\...). Builtins only.
+_URT_CWD="${_URT_CWD//\\\\/\\}"
+
+# ── Locate the repository root from cwd WITHOUT spawning git on the fast path. Walk up looking for a repo
+#    marker (.git dir/file) OR an opt-in config. Bounded to 40 levels. This is the ONLY discovery cost an
+#    inactive repo pays: a handful of `[ -e ]` stats, no process spawn. ──────────────────────────────────
+_urt_find_root() {  # sets _URT_ROOT (dir containing .git or an opt-in config), or empty
+  local d="$1" i=0
+  while [ -n "$d" ] && [ "$i" -lt 40 ]; do
+    if [ -e "$d/.git" ]; then _URT_ROOT="$d"; return 0; fi
+    # An opt-in config can also anchor the root even outside a git repo (rare, but supported).
+    if [ -f "$d/.preflight/config.json" ] || [ -f "$d/.cpsl/config.json" ] || [ -f "$d/.forge.json" ]; then
+      _URT_ROOT="$d"; return 0
+    fi
+    local parent; parent="$(dirname "$d")"
+    [ "$parent" = "$d" ] && break
+    d="$parent"; i=$((i+1))
+  done
+  _URT_ROOT=""; return 1
+}
+_URT_ROOT=""
+_urt_find_root "$_URT_CWD"
+
+# ── INVARIANT 1+2: opt-in gate. No config at the repo root → NOT opted in → allow instantly. ─────────────
+# For a git worktree, the config lives in the working tree (repo root), which _urt_find_root already
+# resolves. We check the resolved root AND (defense) the raw cwd's own root marker location.
+_URT_CONFIG=""
+for cand in "$_URT_ROOT/.preflight/config.json" "$_URT_ROOT/.cpsl/config.json" "$_URT_ROOT/.forge.json"; do
+  if [ -n "$_URT_ROOT" ] && [ -f "$cand" ]; then _URT_CONFIG="$cand"; break; fi
+done
+if [ -z "$_URT_CONFIG" ]; then
+  exit 0   # repository has not opted in → zero-friction fast path
+fi
+
+# ── INVARIANT 5: no double-exec. If the repo carries a PROJECT-level Preflight Bash registration, the
+#    project hook will run for this same tool call (Claude Code hooks are additive/union across scopes).
+#    Yield to it (exit 0) so the decision is made exactly once, by the project-pinned runtime. Detection is
+#    read-only + spawn-free: a project router exists on disk AND is referenced by project settings. ──────
+_urt_project_owns() {  # returns 0 if a project-level Bash Preflight hook is registered
+  local root="$1"
+  [ -f "$root/.claude/hooks/pre-bash-risk-router" ] || [ -f "$root/.claude/hooks/run-hook.cmd" ] || return 1
+  local s
+  for s in "$root/.claude/settings.json" "$root/.claude/settings.local.json"; do
+    [ -f "$s" ] || continue
+    # spawn-free substring test for a Preflight-owned Bash registration
+    case "$(cat "$s" 2>/dev/null)" in
+      *pre-bash-risk-router*|*pre-push-gate-check*) return 0 ;;
+    esac
+  done
+  return 1
+}
+if _urt_project_owns "$_URT_ROOT"; then
+  exit 0   # project-level Preflight owns this repo → do not double-gate
+fi
+
+# ── INVARIANT 3+4: opted-in, user-level-owned → delegate to the builtins-only risk router, which keeps the
+#    ordinary fast path zero-spawn and invokes the heavy engine ONLY for governed candidates (scoped
+#    fail-closed). Re-feed the byte-preserved BLOB on stdin. The delegate never writes to the app repo. ──
+DELEGATE="$_URT_DIR/pre-bash-risk-router"
+if [ ! -f "$DELEGATE" ]; then
+  # Missing delegate is an INSTALL fault, not a governed op → allow (invariant 4: fail closed only for
+  # in-scope consequential candidates, which we cannot even classify without the delegate). The user-level
+  # verify/doctor commands detect a missing delegate; passive routing must not block ordinary work.
+  exit 0
+fi
+printf '%s' "$BLOB" | PF_USER_LEVEL=1 PF_REPO_ROOT="$_URT_ROOT" bash "$DELEGATE"
+exit $?
