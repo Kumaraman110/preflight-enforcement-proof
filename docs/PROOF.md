@@ -49,6 +49,28 @@ that ingests the untrusted subject — holds no signing key.
 (missing key/artifact/identity), any other → commit status `failure`. A timed-out or cancelled job
 is a GitHub non-success and can never be read as ALLOW.
 
+## Independent adversarial review — findings & dispositions
+
+Two independent reviewers (a GitHub-Actions security reviewer and a trust-boundary reviewer) attempted
+artifact substitution, trigger abuse, run-ID substitution, cache poisoning, signature bypass,
+repo/commit ambiguity, fork behavior, self-approval, check-name collision, and skipped/cancelled
+fail-open. The cryptographic + identity + artifact-handling layers were found DEFENDED. Findings that
+were fixed or documented:
+
+- **Tier classifier under-detection (FIXED).** The classifier originally defaulted to AUTO (denylist)
+  and used rename-detecting, `core.quotePath`-quoted diffs — so an unanticipated path, a rename of a
+  protected file into `app/safe/`, or a non-ASCII protected path could reach AUTO. Now an
+  allowlist default (BLOCK unless every path is explicitly safe) + `--no-renames` +
+  `core.quotePath=false` + NUL-delimited parsing. Locked by `tests/classifier-hardening-test.sh`.
+- **Classifier base (FIXED).** The tier diff now uses the **trusted default-branch tip** (`origin/main`,
+  which the judge fetches) instead of the PR's claimed `base_sha`.
+- **Commit status is forgeable by a `statuses:write` holder (DOCUMENTED).** Branch protection matches a
+  required status on context+state, not poster. A fork PR cannot post it (read-only token), but any
+  same-repo principal with `statuses:write` could. The **signed `attestation.json`** is the unforgeable
+  proof-of-record; the commit status is a merge-gating convenience mirror. A hardened deployment should
+  use a GitHub-App check-run with a pinned app-id and restrict `statuses:write`.
+- **No human dual-control on approval (DOCUMENTED ceiling).** See below.
+
 ## Known limitations (not production-ready)
 
 - HMAC is symmetric (the sealer and judge share the bundle key; the attest key signs decisions).

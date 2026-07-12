@@ -87,25 +87,29 @@ jobs:
           case "$HEAD_SHA" in *[!0-9a-f]*|"" ) echo "::error::bad head sha"; exit 1;; esac
           [ "${#HEAD_SHA}" -eq 40 ] || { echo "::error::head sha not 40-hex"; exit 1; }
           AUTH="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
-          # Fetch head AND base (base needed for the trusted tier classifier's diff) as DATA.
+          # Fetch the subject HEAD and the TRUSTED default-branch tip as DATA. The tier classifier
+          # diffs against the default-branch tip the JUDGE controls (origin/main), NOT the claim's
+          # base_sha (an untrusted input) — closing the base-substitution concern from the review.
           git init -q subject
           git -C subject remote add origin "https://github.com/${{ github.repository }}.git"
-          git -C subject -c http.https://github.com/.extraheader="AUTHORIZATION: basic $AUTH" -c protocol.version=2 fetch --depth 50 origin "$HEAD_SHA"
-          git -C subject -c http.https://github.com/.extraheader="AUTHORIZATION: basic $AUTH" -c protocol.version=2 fetch --depth 50 origin "$BASE_SHA" || true
+          git -C subject -c http.https://github.com/.extraheader="AUTHORIZATION: basic $AUTH" -c protocol.version=2 fetch --depth 100 origin "$HEAD_SHA"
+          git -C subject -c http.https://github.com/.extraheader="AUTHORIZATION: basic $AUTH" -c protocol.version=2 fetch --depth 100 origin "${{ env.TRUSTED_REF }}"
+          TRUSTED_BASE="$(git -C subject rev-parse FETCH_HEAD)"
+          echo "$TRUSTED_BASE" > claim/trusted_base_sha.txt
           git -C subject checkout -q "$HEAD_SHA"
-          echo "subject HEAD: $(git -C subject rev-parse HEAD)"
+          echo "subject HEAD: $(git -C subject rev-parse HEAD); trusted base (origin/${{ env.TRUSTED_REF }}): $TRUSTED_BASE"
 
       - name: Independently derive evidence from the subject commit (ignore PR-authored hints)
         run: |
           set -euo pipefail
-          BASE_SHA="$(cat claim/base_sha.txt)"
+          # Use the TRUSTED default-branch tip as the classifier base, not the untrusted claim base_sha.
+          BASE_SHA="$(cat claim/trusted_base_sha.txt)"
           HEAD_SHA="$(cat claim/head_sha.txt)"
           mkdir -p out
           bash gate/gate/generate-evidence.sh \
             "$PWD/subject" "$BASE_SHA" "$HEAD_SHA" "${{ github.repository }}" "$PWD/out" "$PWD/gate"
-          # Carry the head/base/PR-number forward for later jobs (as data).
+          # Carry the head/PR-number forward for later jobs (as data).
           cp claim/head_sha.txt out/head_sha.txt
-          cp claim/base_sha.txt out/base_sha.txt
           cp claim/pr_number.txt out/pr_number.txt 2>/dev/null || echo 0 > out/pr_number.txt
 
       - name: Upload the naked claim + authoritative evidence (run-scoped, keyed by commit)
@@ -291,8 +295,15 @@ jobs:
           esac
           if [ -z "$HEAD_SHA" ]; then echo "::error::no head sha to post status to"; exit 1; fi
           # The status CONTEXT is the name to require in branch protection. It is posted onto the PR
-          # head commit by the TRUSTED default-branch workflow — a PR author cannot forge it (they
-          # lack statuses:write in the base context; their pull_request token is read-only).
+          # head by the TRUSTED default-branch workflow; a FORK PR author cannot forge it (read-only
+          # token). HONEST BOUNDARY (per independent review): a bare commit status is matched by
+          # branch protection on context+state, not poster identity — so ANY principal holding
+          # statuses:write on the repo (a same-repo actor / broad PAT) could post a success. The
+          # UNFORGEABLE proof-of-record is the signed gate-out/attestation.json (HMAC bound to
+          # repo/commit/action/evidence), uploaded below. The commit status is a merge-gating
+          # CONVENIENCE mirror of that decision; treat the attestation as the trust root. A
+          # hardened deployment should use a GitHub-App check-run with a pinned app-id and/or
+          # verify the attestation out-of-band, and restrict who holds statuses:write.
           gh api -X POST "repos/${{ github.repository }}/statuses/$HEAD_SHA" \
             -f state="$STATE" \
             -f context="preflight-remote-decision-gate" \

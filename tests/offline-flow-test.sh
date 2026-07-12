@@ -96,7 +96,7 @@ sys.path.insert(0,'verifier')
 from pfverify import approval
 out,keyf,head,exp = sys.argv[1:5]
 key=open(keyf,'rb').read().strip()
-a=approval.build_approval(intent_id="i-sandbox", commit_sha=head, approver_id="release-manager",
+a=approval.build_approval(intent_id="i-demo", commit_sha=head, approver_id="release-manager",
                           issued_at="2026-07-12T09:00:00Z", expires_at=exp)
 json.dump(approval.sign_approval(a,key), open(out,'w',encoding='utf-8'))
 PY

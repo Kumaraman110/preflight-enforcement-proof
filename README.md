@@ -40,11 +40,15 @@ approve.yaml (workflow_dispatch, holds the Ed25519 PRIVATE key in a protected en
 ## Tier model (demonstration only)
 
 `gate/classify-tier.sh` derives the reversibility tier from the files a PR actually changed
-(`git diff base..head` — unforgeable), not from any PR-authored file:
+(diffed against the **trusted default-branch tip**, not the PR's claimed base — unforgeable), using a
+fail-closed **allowlist**:
 - a changed path under `verifier/ protocol/ gate/ .github/ app/protected/` → **BLOCK**;
-- else under `app/review/` → **CONFIRM** (needs a distinct approval);
-- else (`app/safe/**` or docs) → **AUTO**;
-- no resolvable diff → **BLOCK** (fail-closed).
+- else a changed path under `app/review/` → **CONFIRM** (needs a distinct approval);
+- **AUTO only when every changed path is on the safe allowlist** (`app/safe/**`, `docs/**`, a few root docs);
+- any unknown/unlisted path, or no resolvable diff → **BLOCK** (fail-closed).
+
+The diff uses `--no-renames` and `core.quotePath=false` so a rename of a protected file into a safe
+path, or a non-ASCII protected path, cannot launder a protected change into AUTO.
 
 ## Not production-ready
 
