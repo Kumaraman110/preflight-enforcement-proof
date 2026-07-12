@@ -164,6 +164,39 @@ RCN="$(fire "$DISP19" "git push origin main" "$ACT3")"
 # ── 20. (covered by the separate pilot-integrity check in acceptance; the suite never touches the pilot) ─
 ok "20 suite uses only isolated temp HOME + temp repos — never touches the real pilot/HOME"
 
+# ── 21. ADVERSARIAL RF2: `cd <opted-in> && git push` from a non-opted-in parent cwd → must GATE ─────────
+export PREFLIGHT_CLAUDE_HOME="$(new_home)"; pfu install --user --ref "$RESOLVED" --source "$REPO" >/dev/null 2>&1
+DISPA="$PREFLIGHT_CLAUDE_HOME/preflight/dispatcher.cmd"
+PAR="$(mktemp -d)/parent"; mkdir -p "$PAR"; SUB="$PAR/act"; mkdir -p "$SUB/.preflight"; ( cd "$SUB" && git init -q ); echo '{}' > "$SUB/.preflight/config.json"
+[ "$(fire "$DISPA" "cd $SUB && git push origin main" "$PAR")" != 0 ] && ok "21 RF2: cd<opted-in>&&push from inactive parent → GATED" || bad "21 RF2 evasion (cd) not closed"
+
+# ── 22. ADVERSARIAL RF3: false-yield (empty stub + incidental substring) → must GATE, not yield ─────────
+FPR="$(mktemp -d)/fp"; mkdir -p "$FPR/.preflight" "$FPR/.claude/hooks"; ( cd "$FPR" && git init -q )
+echo '{}' > "$FPR/.preflight/config.json"; : > "$FPR/.claude/hooks/pre-bash-risk-router"
+printf '{"note":"used pre-bash-risk-router once","hooks":{}}' > "$FPR/.claude/settings.json"
+[ "$(fire "$DISPA" "git push origin main" "$FPR")" != 0 ] && ok "22 RF3: empty-stub+substring no longer false-yields → GATED" || bad "22 RF3 false-yield not closed"
+
+# ── 23. ADVERSARIAL IF1: invalid pre-existing settings.json → install ABORTS (does not clobber) ─────────
+export PREFLIGHT_CLAUDE_HOME="$(new_home)"; printf '{ bad,, "model":"keep"' > "$PREFLIGHT_CLAUDE_HOME/settings.json"
+BEF="$(sha256sum "$PREFLIGHT_CLAUDE_HOME/settings.json" | cut -d' ' -f1)"
+pfu install --user --ref "$RESOLVED" --source "$REPO" >/dev/null 2>&1; RCI=$?
+AFT="$(sha256sum "$PREFLIGHT_CLAUDE_HOME/settings.json" | cut -d' ' -f1)"
+[ "$RCI" != 0 ] && [ "$BEF" = "$AFT" ] && ok "23 IF1: invalid settings.json → install aborted, file untouched" || bad "23 IF1 clobbered invalid settings (rc=$RCI)"
+
+# ── 24. ADVERSARIAL IF2: duplicate preflight entry → reinstall (same ref) collapses to one ──────────────
+export PREFLIGHT_CLAUDE_HOME="$(new_home)"; pfu install --user --ref "$RESOLVED" --source "$REPO" >/dev/null 2>&1
+# hand-duplicate the preflight Bash entry
+python - "$PREFLIGHT_CLAUDE_HOME/settings.json" <<'PY'
+import json,sys
+p=sys.argv[1]; d=json.load(open(p))
+pre=d["hooks"]["PreToolUse"]; bash=[h for h in pre if h.get("matcher")=="Bash"][0]
+pre.append(json.loads(json.dumps(bash)))  # duplicate
+json.dump(d,open(p,'w'))
+PY
+pfu install --user --ref "$RESOLVED" --source "$REPO" >/dev/null 2>&1
+N="$(python -c "import json,sys;d=json.load(open(sys.argv[1]));print(sum(1 for h in d['hooks']['PreToolUse'] if h.get('matcher')=='Bash' and any('dispatcher.cmd' in x.get('command','') for x in h.get('hooks',[]))))" "$PREFLIGHT_CLAUDE_HOME/settings.json")"
+[ "$N" = 1 ] && ok "24 IF2: duplicate preflight entry collapses to one on reinstall" || bad "24 IF2 duplicates persist ($N)"
+
 echo ""
 echo "user-install: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
