@@ -116,6 +116,13 @@ PY
 )
 [ $? -eq 0 ] && ok "verify_signature() separately testable (good=True, wrong-key=False, tampered=False)" || bad "verify_signature() behaved wrongly"
 
+# ── 11. SCHEMA ENFORCEMENT: the shipped decision-attestation schema is LOAD-BEARING ─────────────────
+# An attestation with an extra top-level field (additionalProperties:false) must be REJECTED by
+# verify-attestation when it loads the schema (proves the schema is enforced, not decorative).
+"$PF_PY" -c "import sys,json;a=json.load(open(sys.argv[1],encoding='utf-8'));a['injectedField']='x';json.dump(a,open(sys.argv[2],'w',encoding='utf-8'))" "$TMP/att.json" "$TMP/att_extrafield.json"
+OUT="$(pf_vatt "$TMP/att_extrafield.json" --now "2026-07-11T09:30:00Z")"; RC=$?
+{ printf '%s' "$OUT" | grep -q "schema-invalid" && [ "$RC" = 20 ]; } && ok "schema enforced: extra field → attestation.schema-invalid/20 (load-bearing schema)" || bad "schema not enforced on extra field (rc=$RC out=$OUT)"
+
 echo ""
 echo "attestation: ${PASS} passed, ${FAIL} failed"
 [ "$FAIL" -eq 0 ]

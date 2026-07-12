@@ -67,12 +67,16 @@ def verify_approval(
     intent_id: str,
     commit_sha: str,
     now: datetime,
+    schema: Optional[dict] = None,
 ) -> Tuple[bool, List[str]]:
     """Decide whether a REQUIRE_APPROVAL may be upgraded to ALLOW.
 
     Returns (upgrade_ok, violations). upgrade_ok is True ONLY when a well-formed approval
     is signed under the approver key, unexpired, and bound to THIS intentId + commitSha
     and to a REQUIRE_APPROVAL→ALLOW grant. Every other case fails closed.
+
+    If `schema` (the shipped approval.v1 schema) is supplied it is enforced via the bounded
+    validator so the schema is a load-bearing artifact.
     """
     violations: List[str] = []
     try:
@@ -83,6 +87,13 @@ def verify_approval(
             return False, [V_APPROVAL_SIG]
         if not isinstance(approval, dict) or "approves" not in approval or _ENVELOPE_KEY not in approval:
             return False, [V_APPROVAL_SCHEMA]
+        if schema is not None:
+            from . import schema as schema_mod
+            try:
+                if schema_mod.validate(approval, schema, "$approval"):
+                    return False, [V_APPROVAL_SCHEMA]
+            except schema_mod.SchemaError:
+                return False, [V_APPROVAL_SCHEMA]
 
         approves = approval.get("approves") or {}
         # signature under the DISTINCT approver key

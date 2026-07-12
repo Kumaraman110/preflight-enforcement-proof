@@ -108,6 +108,9 @@ def _verify_attestation(argv) -> int:
     ap.add_argument("--expect-commit-sha", default=None)
     ap.add_argument("--expect-action-digest", default=None)
     ap.add_argument("--expect-evidence-digest", default=None)
+    ap.add_argument("--schema-dir", default=None,
+                    help="Dir with decision-attestation.v1.schema.json; when given, the attestation "
+                         "is validated against it via the bounded validator (load-bearing schema).")
     args = ap.parse_args(argv)
 
     att = _load(args.attestation)
@@ -115,6 +118,17 @@ def _verify_attestation(argv) -> int:
     now = _parse_rfc3339(args.now)
     if now is None:
         _out({"ok": False, "violations": ["attestation.expired"], "detail": "unparseable --now"})
+        return 20
+
+    # Load the shipped attestation schema so validation is enforced, not decorative. Default to
+    # the schema colocated with the verifier package; a bad/missing schema fails closed.
+    schema = None
+    from pathlib import Path
+    schema_dir = Path(args.schema_dir) if args.schema_dir else (Path(__file__).resolve().parents[2] / "protocol" / "schemas")
+    try:
+        schema = _load(str(schema_dir / "decision-attestation.v1.schema.json"))
+    except (OSError, ValueError):
+        _out({"ok": False, "violations": ["attestation.schema-invalid"], "detail": "attestation schema unavailable"})
         return 20
 
     expected = {}
@@ -127,7 +141,7 @@ def _verify_attestation(argv) -> int:
     if args.expect_evidence_digest is not None:
         expected["evidenceDigest"] = args.expect_evidence_digest
 
-    ok, violations = attest.verify_attestation(att, key, now, expected or None)
+    ok, violations = attest.verify_attestation(att, key, now, expected or None, schema=schema)
     _out({"ok": ok, "violations": violations})
     return 0 if ok else 20
 
@@ -148,8 +162,17 @@ def _verify_approval(argv) -> int:
         _out({"upgrade": False, "violations": ["approval.expired"], "detail": "unparseable --now"})
         return 20
 
+    # Load the shipped approval schema so validation is enforced (load-bearing, not decorative).
+    from pathlib import Path
+    schema = None
+    schema_dir = Path(__file__).resolve().parents[2] / "protocol" / "schemas"
+    try:
+        schema = _load(str(schema_dir / "approval.v1.schema.json"))
+    except (OSError, ValueError):
+        schema = None  # absent schema → fall back to the built-in shape check (still fail-closed)
+
     upgrade, violations = approval.verify_approval(
-        appr, key, intent_id=args.intent_id, commit_sha=args.commit_sha, now=now)
+        appr, key, intent_id=args.intent_id, commit_sha=args.commit_sha, now=now, schema=schema)
     _out({"upgrade": upgrade, "violations": violations})
     # exit 0 = upgrade granted; 10 = no valid approval (still REQUIRE_APPROVAL); never a
     # silent allow.

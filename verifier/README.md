@@ -73,17 +73,32 @@ process kill (timeout) yields rc 124/137 — a non-zero, non-allow result.
 `required`, `properties`, `additionalProperties`, `pattern`, `enum`, `minLength`,
 `minItems`, `items`. Any keyword it does not recognize raises `SchemaError` — so it can
 never *silently under-enforce* a constraint it doesn't understand (fail-closed by
-construction). The `schema-contract` test asserts all three shipped schemas validate under
+construction). The `schema-contract` test asserts the core shipped schemas validate under
 it without raising, i.e. they use only supported keywords.
+
+Five schemas ship: `action-intent.v1`, `evidence-bundle.v1`, `policy-decision.v1` (the
+protocol core), plus `decision-attestation.v1` and `approval.v1` (the remote gate). All are
+load-bearing — the attestation and approval schemas are enforced by `verify-attestation` /
+`verify-approval` via this validator, not decorative.
 
 ## Tests
 
 ```bash
-bash tests/run-all-tests.sh protocol      # the three protocol suites
-bash tests/protocol/verifier-decision-test.sh      # positive/negative/stale/forged/contradictory/dep-fail (25)
+bash tests/run-all-tests.sh protocol      # all protocol + remote-gate suites
+# Protocol core:
+bash tests/protocol/verifier-decision-test.sh      # positive/negative/stale/forged/contradictory/dep-fail (29)
 bash tests/protocol/schema-contract-test.sh        # schema + validator contract (7)
 bash tests/protocol/adapter-and-failmode-test.sh   # adapter-as-producer + fail modes + timeout (11)
+# Remote decision gate (v0.2):
+bash tests/protocol/identity-reresolution-test.sh  # independent repo/commit re-resolution (18)
+bash tests/protocol/attestation-test.sh            # signed attestation: tamper/expiry/replay/wrong-key (11)
+bash tests/protocol/approval-test.sh               # REQUIRE_APPROVAL exception path, no self-approve (8)
+bash tests/protocol/remote-gate-e2e-test.sh        # portable CI entrypoint end-to-end (8)
+bash tests/protocol/workflow-security-test.sh      # GitHub workflow hardening assertions (20)
+bash tests/protocol/integration-fixture-test.sh    # deterministic GitHub-equivalent, 7 adversarial cases (9)
+bash tests/protocol/learning-loop-demo-test.sh     # two-service learning loop (11)
 ```
 
-See `../protocol/PROTOCOL.md` for the wire contract and `../protocol/threat-model.md`
-for trust boundaries and stated limitations.
+See `../protocol/PROTOCOL.md` for the wire contract, `../docs/remote-gate.md` for the CI
+integration + two-stage trusted split, and `../protocol/threat-model.md` for trust boundaries
+and stated limitations.

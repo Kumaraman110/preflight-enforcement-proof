@@ -60,7 +60,9 @@ from verifier.pfverify import schema as S
 import json
 paths=["protocol/schemas/action-intent.v1.schema.json",
        "protocol/schemas/evidence-bundle.v1.schema.json",
-       "protocol/schemas/policy-decision.v1.schema.json"]
+       "protocol/schemas/policy-decision.v1.schema.json",
+       "protocol/schemas/decision-attestation.v1.schema.json",
+       "protocol/schemas/approval.v1.schema.json"]
 try:
     for p in paths:
         sch=json.load(open(p,encoding="utf-8"))

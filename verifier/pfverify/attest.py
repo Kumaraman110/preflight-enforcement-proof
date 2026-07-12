@@ -135,6 +135,7 @@ def verify_attestation(
     key: bytes,
     now: datetime,
     expected: Optional[dict] = None,
+    schema: Optional[dict] = None,
 ) -> Tuple[bool, List[str]]:
     """Full attestation verification. Returns (ok, violations). Fail-closed on any error.
 
@@ -146,11 +147,24 @@ def verify_attestation(
     try:
         if not isinstance(attestation, dict):
             return False, [V_ATT_SCHEMA]
-        # Minimal shape check (a full JSON-Schema check happens in the gate via schema.py).
-        required = ["schemaVersion", "repoId", "commitSha", "actionDigest", "evidenceDigest",
-                    "policyId", "decision", "issuedAt", "expiresAt", _ENVELOPE_KEY]
-        if any(k not in attestation for k in required):
-            return False, [V_ATT_SCHEMA]
+        # Structural validation. If a JSON Schema is supplied (the shipped
+        # decision-attestation.v1.schema.json), enforce it via the bounded validator so the
+        # schema is a load-bearing artifact, not decoration. Fall back to a minimal required-key
+        # check when no schema is provided (keeps the function usable standalone). Either way,
+        # a mis-shaped attestation is a fail-closed V_ATT_SCHEMA.
+        if schema is not None:
+            from . import schema as schema_mod
+            try:
+                errs = schema_mod.validate(attestation, schema, "$attestation")
+            except schema_mod.SchemaError:
+                return False, [V_ATT_SCHEMA]
+            if errs:
+                return False, [V_ATT_SCHEMA]
+        else:
+            required = ["schemaVersion", "repoId", "commitSha", "actionDigest", "evidenceDigest",
+                        "policyId", "decision", "issuedAt", "expiresAt", _ENVELOPE_KEY]
+            if any(k not in attestation for k in required):
+                return False, [V_ATT_SCHEMA]
 
         # 1. payload integrity (tamper) — recompute payloadDigest.
         env = attestation.get(_ENVELOPE_KEY) or {}
