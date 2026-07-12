@@ -183,21 +183,21 @@ _stage_from_git(){ # $1 src repo  $2 sha  $3 stage
 # write RUNTIME_MANIFEST.json = sha256 of every file in the staged generation (except the manifest itself)
 _write_manifest(){ # $1 stage  $2 sha  $3 py
   local st="$1" sha="$2" py="$3"
-  ( cd "$st" && find . -type f ! -name RUNTIME_MANIFEST.json | LC_ALL=C sort ) > "$st/.mf-files" || return 1
-  "$py" - "$st" "$sha" "$RELEASE_VERSION" < "$st/.mf-files" > "$st/RUNTIME_MANIFEST.json" <<'PY' || return 1
+  "$py" - "$st" "$sha" "$RELEASE_VERSION" > "$st/RUNTIME_MANIFEST.json" <<'PY' || return 1
 import sys, json, hashlib, os
 stage, sha, ver = sys.argv[1], sys.argv[2], sys.argv[3]
 arts = {}
-for line in sys.stdin:
-    rel = line.strip()
-    if not rel: continue
-    p = os.path.join(stage, rel)
-    with open(p, 'rb') as fh: arts[rel.replace('\\','/').lstrip('./')] = hashlib.sha256(fh.read()).hexdigest()
+for dp, _, fs in os.walk(stage):
+    for f in fs:
+        if f == "RUNTIME_MANIFEST.json": continue
+        p = os.path.join(dp, f)
+        rel = os.path.relpath(p, stage).replace('\\', '/')
+        with open(p, 'rb') as fh:
+            arts[rel] = hashlib.sha256(fh.read()).hexdigest()
 json.dump({"framework":"preflight","model":"user-level-runtime","schema":1,
            "releaseVersion":ver,"sourceCommit":sha,"artifacts":dict(sorted(arts.items()))},
           sys.stdout, indent=2, sort_keys=True)
 PY
-  rm -f "$st/.mf-files"
   return 0
 }
 
