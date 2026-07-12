@@ -155,8 +155,11 @@ accountability layer on top.
 
 A pull request — especially from a **fork** — is *untrusted code*. If the gate ran its own
 policy, verifier, or entrypoint out of the PR checkout, a PR author could edit them to force
-`ALLOW`; the judge would be running the defendant's code. The workflow therefore uses a
-**two-stage trusted split** (`.github/workflows/preflight-remote-gate.yaml`):
+`ALLOW`; the judge would be running the defendant's code. The gate therefore uses a
+**two-stage trusted split** across **two workflow files** (a single workflow cannot
+`workflow_run`-trigger on its own name): Stage 1 in
+`.github/workflows/preflight-remote-gate-collect.yaml` and Stage 2 in
+`.github/workflows/preflight-remote-gate.yaml`:
 
 - **Stage 1 — `collect` (`on: pull_request`, untrusted context, NO secrets).** Checks out the
   **exact PR head commit** (`pull_request.head.sha`, not the moving merge ref), packages the
