@@ -43,7 +43,9 @@ json.dump({"framework":"preflight","model":"user-level-runtime","schema":1,"rele
 PY
 
 TARBALL="$OUT/preflight-user-${VER}.tar.gz"
-tar -czf "$TARBALL" -C "$(dirname "$STAGE")" "$(basename "$STAGE")"
+# Pack the CONTENTS flat (SOURCE_COMMIT at the tar root) so `install --from-artifact` extracts a
+# self-contained generation directly, with no wrapper subdir.
+tar -czf "$TARBALL" -C "$STAGE" .
 # checksum
 if command -v sha256sum >/dev/null 2>&1; then ( cd "$OUT" && sha256sum "$(basename "$TARBALL")" > "$(basename "$TARBALL").sha256" )
 else ( cd "$OUT" && shasum -a 256 "$(basename "$TARBALL")" > "$(basename "$TARBALL").sha256" ); fi
