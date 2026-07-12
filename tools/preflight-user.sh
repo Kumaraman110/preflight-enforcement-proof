@@ -101,8 +101,10 @@ cmd_install(){
   mkdir -p "$PF_RUNTIME" "$PF_BACKUPS"
   local GEN_DIR="$PF_RUNTIME/$RESOLVED_SHA"
 
-  # ---- Idempotent: identical generation already present + active + registered → no-op success ----
-  if [ -d "$GEN_DIR" ] && [ -f "$PF_ACTIVE" ] && [ "$(tr -d ' \t\r\n' < "$PF_ACTIVE")" = "$RESOLVED_SHA" ] && _is_registered; then
+  # ---- Idempotent: identical gen present + active + registered EXACTLY ONCE + intact → no-op success.
+  #      If duplicate preflight entries exist (review IF2), do NOT short-circuit — fall through so the
+  #      dedup merge collapses them. ----
+  if [ -d "$GEN_DIR" ] && [ -f "$PF_ACTIVE" ] && [ "$(tr -d ' \t\r\n' < "$PF_ACTIVE")" = "$RESOLVED_SHA" ] && [ "$(_registration_count)" = 1 ]; then
     if _verify_manifest "$GEN_DIR" "$PY"; then
       rm -rf "$STAGE_PARENT"
       echo "preflight-user: already installed + active at $RESOLVED_SHA ($RELEASE_VERSION) — no changes."
@@ -238,6 +240,12 @@ _is_registered(){
   [ -f "$PF_SETTINGS" ] || return 1
   case "$(cat "$PF_SETTINGS" 2>/dev/null)" in *preflight/dispatcher.cmd*) return 0;; *) return 1;; esac
 }
+# how many Preflight-owned Bash PreToolUse entries are registered (0 if none / unparseable)?
+_registration_count(){
+  [ -f "$PF_SETTINGS" ] || { echo 0; return; }
+  jq empty "$PF_SETTINGS" 2>/dev/null || { echo 0; return; }
+  jq --arg re "$PF_OWN_RE" '[(.hooks.PreToolUse // [])[] | select(.matcher=="Bash") | (.hooks // [])[] | select((.command // "") | test($re))] | length' "$PF_SETTINGS" 2>/dev/null || echo 0
+}
 
 # register (or refresh) the PreToolUse Bash hook, preserving all other settings, dedup by command identity
 _register_settings(){ # $1 py
@@ -246,7 +254,13 @@ _register_settings(){ # $1 py
   local cmd="\"${disp_fwd}\" user-preflight-router"
   local block; block="$(jq -n --arg cmd "$cmd" '{PreToolUse:[{matcher:"Bash",hooks:[{type:"command",command:$cmd,timeout:35000}]}]}')" || return 1
   local merged
-  if [ -f "$PF_SETTINGS" ] && jq empty "$PF_SETTINGS" 2>/dev/null; then
+  if [ -f "$PF_SETTINGS" ]; then
+    # FAIL-CLOSED (review IF1): an existing but UNPARSEABLE settings.json must NOT be overwritten
+    # (that would silently drop the user's unrelated keys). Abort and let the failure trap restore.
+    if ! jq empty "$PF_SETTINGS" 2>/dev/null; then
+      _err "existing $PF_SETTINGS is not valid JSON — refusing to overwrite it. Fix or move it, then re-install."
+      return 1
+    fi
     merged="$(jq --argjson blk "$block" --arg re "$PF_OWN_RE" '
       .hooks = (.hooks // {})
       | .hooks.PreToolUse = (

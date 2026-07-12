@@ -40,6 +40,14 @@ esac
 # Un-escape JSON backslashes in the cwd (Windows paths arrive as C:\\Users\\...). Builtins only.
 _URT_CWD="${_URT_CWD//\\\\/\\}"
 
+# ── Extract tool_input.command (pure parameter expansion, zero spawn) for target-dir analysis. Last-quote
+#    truncation can only drop trailing bytes, never an early governed token (fail-OPEN direction). ───────
+_URT_CMD=""
+case "$BLOB" in
+  *'"command":"'*)  _URT_CMD="${BLOB#*'"command":"'}";  _URT_CMD="${_URT_CMD%\"*}" ;;
+  *'"command": "'*) _URT_CMD="${BLOB#*'"command": "'}"; _URT_CMD="${_URT_CMD%\"*}" ;;
+esac
+
 # ── Locate the repository root from cwd WITHOUT spawning git on the fast path. Walk up looking for a repo
 #    marker (.git dir/file) OR an opt-in config. Bounded to 40 levels. This is the ONLY discovery cost an
 #    inactive repo pays: a handful of `[ -e ]` stats, no process spawn. ──────────────────────────────────
@@ -60,36 +68,83 @@ _urt_find_root() {  # sets _URT_ROOT (dir containing .git or an opt-in config), 
 _URT_ROOT=""
 _urt_find_root "$_URT_CWD"
 
-# ── INVARIANT 1+2: opt-in gate. No config at the repo root → NOT opted in → allow instantly. ─────────────
-# For a git worktree, the config lives in the working tree (repo root), which _urt_find_root already
-# resolves. We check the resolved root AND (defense) the raw cwd's own root marker location.
-_URT_CONFIG=""
-for cand in "$_URT_ROOT/.preflight/config.json" "$_URT_ROOT/.cpsl/config.json" "$_URT_ROOT/.forge.json"; do
-  if [ -n "$_URT_ROOT" ] && [ -f "$cand" ]; then _URT_CONFIG="$cand"; break; fi
-done
+# Helper: is a directory opted in? echoes the config path (empty if not).
+_urt_config_at() {  # $1 = repo root
+  local r="$1" c
+  [ -n "$r" ] || return 1
+  for c in "$r/.preflight/config.json" "$r/.cpsl/config.json" "$r/.forge.json"; do
+    [ -f "$c" ] && { printf '%s' "$c"; return 0; }
+  done
+  return 1
+}
+
+# ── INVARIANT 1+2: opt-in gate. No config at the cwd's repo root → check whether the COMMAND ITSELF
+#    explicitly targets an opted-in repo (fix for the review's F1/F2: `cd X && git push`, `git -C X push`,
+#    `--git-dir=X`). If neither the cwd NOR an explicit command-target dir is opted in → allow instantly. ─
+_URT_CONFIG=""; _URT_CONFIG="$(_urt_config_at "$_URT_ROOT" || true)"
+
 if [ -z "$_URT_CONFIG" ]; then
-  exit 0   # repository has not opted in → zero-friction fast path
+  # The cwd is not opted in. Only bother inspecting the command if it looks like a governed candidate
+  # (push / gh pr create|merge) — ordinary commands stay on the instant fast path regardless. Builtins only.
+  case "$_URT_CMD" in
+    *push*|*"pr create"*|*"pr merge"*|*"pr "*merge*|*"pr "*create*)
+      # Extract an explicit target directory the command would operate in, spawn-free:
+      #   `cd <dir> [&&|;] ...`   `git -C <dir> ...`   `--git-dir=<dir>`   `--git-dir <dir>`
+      _URT_TGT=""
+      case "$_URT_CMD" in
+        *"-C "*)        _URT_TGT="${_URT_CMD#*-C }";        _URT_TGT="${_URT_TGT%%[ ;&|]*}" ;;
+        *"--git-dir="*) _URT_TGT="${_URT_CMD#*--git-dir=}"; _URT_TGT="${_URT_TGT%%[ ;&|]*}"; _URT_TGT="${_URT_TGT%/.git}" ;;
+        "cd "*)         _URT_TGT="${_URT_CMD#cd }";         _URT_TGT="${_URT_TGT%%[ ;&|]*}" ;;
+        *"; cd "*)      _URT_TGT="${_URT_CMD#*; cd }";      _URT_TGT="${_URT_TGT%%[ ;&|]*}" ;;
+        *"&& cd "*)     _URT_TGT="${_URT_CMD#*&& cd }";     _URT_TGT="${_URT_TGT%%[ ;&|]*}" ;;
+      esac
+      # strip surrounding quotes the shell would remove
+      _URT_TGT="${_URT_TGT%\"}"; _URT_TGT="${_URT_TGT#\"}"; _URT_TGT="${_URT_TGT%\'}"; _URT_TGT="${_URT_TGT#\'}"
+      if [ -n "$_URT_TGT" ]; then
+        # resolve the target relative to cwd if it is not absolute
+        case "$_URT_TGT" in /*|[A-Za-z]:*) : ;; *) _URT_TGT="$_URT_CWD/$_URT_TGT" ;; esac
+        _URT_TROOT=""; _urt_find_root "$_URT_TGT"; _URT_TROOT="$_URT_ROOT"
+        _URT_CONFIG="$(_urt_config_at "$_URT_TROOT" || true)"
+        [ -n "$_URT_CONFIG" ] && _URT_ROOT="$_URT_TROOT"   # gate against the command's real target repo
+      fi
+      ;;
+  esac
+fi
+if [ -z "$_URT_CONFIG" ]; then
+  exit 0   # neither cwd nor an explicit command target is opted in → zero-friction fast path
 fi
 
 # ── INVARIANT 5: no double-exec. If the repo carries a PROJECT-level Preflight Bash registration, the
 #    project hook will run for this same tool call (Claude Code hooks are additive/union across scopes).
-#    Yield to it (exit 0) so the decision is made exactly once, by the project-pinned runtime. Detection is
-#    read-only + spawn-free: a project router exists on disk AND is referenced by project settings. ──────
-_urt_project_owns() {  # returns 0 if a project-level Bash Preflight hook is registered
-  local root="$1"
-  [ -f "$root/.claude/hooks/pre-bash-risk-router" ] || [ -f "$root/.claude/hooks/run-hook.cmd" ] || return 1
-  local s
+#    Yield to it (exit 0) so the decision is made exactly once, by the project-pinned runtime. ──────────
+#    FIX for the review's F3: require a REAL registration — a non-empty project router file AND a settings
+#    file that actually registers a PreToolUse Bash hook whose command references the router (parsed with
+#    jq when available; a hardened non-jq fallback still requires the command-shaped substring, not any
+#    incidental occurrence). A bare stub + an incidental substring in a note field no longer yields. ────
+_urt_project_owns() {  # returns 0 iff a project-level Bash Preflight hook is really registered
+  local root="$1" hookf="" s
+  for hookf in "$root/.claude/hooks/pre-bash-risk-router" "$root/.claude/hooks/run-hook.cmd"; do
+    [ -s "$hookf" ] && break || hookf=""      # -s: exists AND non-empty (a bare stub does not count)
+  done
+  [ -n "$hookf" ] || return 1
   for s in "$root/.claude/settings.json" "$root/.claude/settings.local.json"; do
     [ -f "$s" ] || continue
-    # spawn-free substring test for a Preflight-owned Bash registration
-    case "$(cat "$s" 2>/dev/null)" in
-      *pre-bash-risk-router*|*pre-push-gate-check*) return 0 ;;
-    esac
+    if command -v jq >/dev/null 2>&1 && jq empty "$s" 2>/dev/null; then
+      # parsed: a PreToolUse Bash hook whose command references the project router
+      local n
+      n="$(jq -r '[(.hooks.PreToolUse // [])[] | select(.matcher=="Bash") | (.hooks // [])[] | select((.command // "") | test("pre-bash-risk-router|pre-push-gate-check|run-hook"))] | length' "$s" 2>/dev/null || echo 0)"
+      [ "${n:-0}" -ge 1 ] && return 0
+    else
+      # no jq: require the registration SHAPE (command + router token), not any incidental substring
+      case "$(cat "$s" 2>/dev/null)" in
+        *'"command"'*pre-bash-risk-router*|*'"command"'*pre-push-gate-check*|*'"command"'*run-hook*) return 0 ;;
+      esac
+    fi
   done
   return 1
 }
 if _urt_project_owns "$_URT_ROOT"; then
-  exit 0   # project-level Preflight owns this repo → do not double-gate
+  exit 0   # project-level Preflight really owns this repo → do not double-gate
 fi
 
 # ── INVARIANT 3+4: opted-in, user-level-owned → delegate to the builtins-only risk router, which keeps the
