@@ -2,8 +2,8 @@
 
 The remote gate branch is **complete, tested, and local**. Nothing below has been performed —
 each step is a human decision because it is outward-facing or irreversible. Commands are exact
-and copy-pasteable. Branch: `feature/preflight-remote-decision-gate-v0.1` @ `96c9ad0`
-(7 commits on base `dac97e8`), worktree `C:/Users/v173617/Source_Code/code-forge-rdg`,
+and copy-pasteable. Branch: `feature/preflight-remote-decision-gate-v0.1` @ `299e800`
+(9 commits on base `dac97e8`), checked out in your feature worktree,
 remote `origin = https://github.com/United-Airlines-Org/preflight.git`.
 
 > NOTE ON SCOPE: `origin` is the canonical/shared remote. Pushing a NEW feature branch to it is
@@ -18,7 +18,7 @@ Smallest human action: publish the local branch to origin (a new, unprotected br
 rewrite, no protected-branch write).
 
 ```bash
-cd C:/Users/v173617/Source_Code/code-forge-rdg
+cd <your-feature-worktree>   # the checkout of feature/preflight-remote-decision-gate-v0.1
 # Review first:
 git log --oneline dac97e8..HEAD
 git diff --stat dac97e8..HEAD
