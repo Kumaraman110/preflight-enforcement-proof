@@ -51,3 +51,27 @@ the `doctor`/`verify` commands surface the fault.
 - Advisory local gate (above) — the primary residual risk; mitigated only by the remote required-check.
 - On a shared multi-user machine, `~/.claude/preflight/` is protected only by OS file permissions.
 - The reversibility tier used by the demonstration policy is a heuristic, not a formal risk model.
+
+## Findings from the independent adversarial review (what was fixed / what remains)
+
+Two non-author reviewers attacked the installer and the router. Fixed in this release candidate:
+- **Router opt-in scoping** — a `cd <opted-in> && git push` (or a config-referencing command) issued from
+  a non-opted-in working directory previously short-circuited the router. The router now extracts an
+  explicit command target (`cd X`, `git -C X`, `--git-dir=X`), checks opt-in at that directory, and routes
+  a governed candidate to the engine.
+- **Project-ownership detection** — the "don't double-execute" yield now requires a *parsed* PreToolUse
+  Bash registration plus a non-empty project hook file, not an incidental substring in `settings.json`.
+- **Invalid settings.json** — an existing but unparseable `~/.claude/settings.json` now causes install to
+  **abort** (never overwrite/drop your keys); fix or move the file and re-install.
+- **Duplicate registration** — a same-version reinstall now collapses any duplicate Preflight hook entries.
+
+Documented residual (pre-existing, not introduced by this release; reproduces unchanged on the baseline):
+- **Engine `git -C <dir>` / `--git-dir=` push analysis** — the decision engine currently ALLOWS a
+  `git -C <dir> push` even for an opted-in target. The router correctly routes it to the engine; closing
+  the engine's `-C`/`--git-dir` target analysis is a product-line follow-up. As with all local-gate limits,
+  the **remote required-check** is the authoritative backstop.
+- **Tampered generation is not auto-repaired** — `verify --user` detects tampering (fail), but a re-install
+  of the same version does not overwrite an already-materialized generation directory. Recover with
+  `uninstall --user` then `install --user`.
+- **Symlinked runtime home** — if `~/.claude/preflight` is a symlink, `uninstall` removes the link (never
+  the external target — safe), leaving the target's contents orphaned; remove them manually.
