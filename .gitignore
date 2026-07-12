@@ -1,0 +1,11 @@
+*.key
+*.pem.priv
+approval_priv.pem
+gate-out/
+out/
+claim/
+approval/
+.gate/evidence/
+subject/
+__pycache__/
+*.pyc

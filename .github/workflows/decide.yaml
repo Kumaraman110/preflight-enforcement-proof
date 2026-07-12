@@ -1,0 +1,311 @@
+---
+# Preflight Remote Decision Gate — STAGE 2 (decide). The TRUSTED half of the two-stage split.
+#
+# Triggered by `workflow_run` on the untrusted Stage 1 ("preflight-collect"). Per GitHub semantics,
+# this workflow file runs from the repository's DEFAULT BRANCH, in the base repo's trusted context,
+# with full secret access — a PR author (fork OR same-repo) cannot alter what runs here.
+#
+# THREE isolated jobs with LEAST-PRIVILEGE, DISJOINT secret access (no single job both signs
+# evidence AND issues the decision):
+#   A generate  — NO signing secrets. Fetches the subject commit as DATA-ONLY and INDEPENDENTLY
+#                 derives the reversibility tier + tests result from the commit itself (the PR's
+#                 own .gate/artifacts/* are ignored). Emits a naked (unsigned) bundle + the
+#                 authoritative evidence artifacts.
+#   B seal      — ONLY PREFLIGHT_BUNDLE_KEY. HMAC-signs the generator's bundle (the tier/evidence
+#                 authority). Operates on the bundle JSON only; no subject-tree access.
+#   C judge     — ONLY PREFLIGHT_ATTEST_KEY (+ PREFLIGHT_APPROVAL_KEY for the approval path). Runs
+#                 the TRUSTED verifier + policy (checked out from the DEFAULT BRANCH, never the PR)
+#                 against a freshly re-fetched subject commit in remote-authoritative mode, and
+#                 signs the decision attestation. THIS is the required status check.
+#
+# SAFETY: every trusted checkout pins the DEFAULT branch (fix for the shipped head_branch defect);
+# actions SHA-pinned; artifacts passed job→job are run-scoped (no mutable refs); concurrency +
+# timeouts; fails CLOSED (missing key / missing artifact / identity-unresolvable → non-success).
+
+name: preflight-decide
+
+on:
+  workflow_run:
+    workflows: ["preflight-collect"]
+    types: [completed]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: preflight-decide-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: false   # never cancel an in-flight decision (a cancel must not read as pass)
+
+env:
+  # The DEFAULT branch is the trusted root for all gate machinery. Pinned here, never head_branch.
+  TRUSTED_REF: main
+
+jobs:
+  # ── JOB A — generate authoritative evidence (NO signing secrets) ─────────────────────────────
+  generate:
+    name: Generate evidence (trusted, no signing keys)
+    if: ${{ github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read   # required to download the Stage-1 artifact from a DIFFERENT (collect) run
+    steps:
+      - name: Checkout TRUSTED gate machinery (DEFAULT branch, not the PR)
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683   # v4.2.2
+        with:
+          ref: ${{ env.TRUSTED_REF }}
+          path: gate
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Download the Stage-1 identity claim (data only)
+        uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806   # v4.1.9
+        with:
+          name: preflight-collect-claim
+          path: claim
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ github.event.workflow_run.id }}
+
+      - name: Validate the claim + materialize the subject commit (data only, never executed)
+        env:
+          # The AUTOMATIC per-run token (contents:read). NOT a provisioned repository secret — it is
+          # the intended mechanism to authenticate git ops against THIS private repo. Passed via an
+          # http.extraheader so it never persists into git config or a remote URL.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          HEAD_SHA="$(cat claim/head_sha.txt)"
+          BASE_SHA="$(cat claim/base_sha.txt)"
+          BASE_REPO="$(cat claim/base_repo.txt)"
+          # Defense in depth: the runner-provided workflow_run.head_sha MUST equal the claim's, and
+          # the base repo recorded by Stage 1 must be THIS repo (reject a foreign-origin claim).
+          if [ "$HEAD_SHA" != "${{ github.event.workflow_run.head_sha }}" ]; then
+            echo "::error::claim head_sha != workflow_run.head_sha — refusing"; exit 1; fi
+          if [ "$BASE_REPO" != "${{ github.repository }}" ]; then
+            echo "::error::claim base_repo ($BASE_REPO) != ${{ github.repository }} — refusing"; exit 1; fi
+          case "$HEAD_SHA" in *[!0-9a-f]*|"" ) echo "::error::bad head sha"; exit 1;; esac
+          [ "${#HEAD_SHA}" -eq 40 ] || { echo "::error::head sha not 40-hex"; exit 1; }
+          AUTH="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          # Fetch head AND base (base needed for the trusted tier classifier's diff) as DATA.
+          git init -q subject
+          git -C subject remote add origin "https://github.com/${{ github.repository }}.git"
+          git -C subject -c http.https://github.com/.extraheader="AUTHORIZATION: basic $AUTH" -c protocol.version=2 fetch --depth 50 origin "$HEAD_SHA"
+          git -C subject -c http.https://github.com/.extraheader="AUTHORIZATION: basic $AUTH" -c protocol.version=2 fetch --depth 50 origin "$BASE_SHA" || true
+          git -C subject checkout -q "$HEAD_SHA"
+          echo "subject HEAD: $(git -C subject rev-parse HEAD)"
+
+      - name: Independently derive evidence from the subject commit (ignore PR-authored hints)
+        run: |
+          set -euo pipefail
+          BASE_SHA="$(cat claim/base_sha.txt)"
+          HEAD_SHA="$(cat claim/head_sha.txt)"
+          mkdir -p out
+          bash gate/gate/generate-evidence.sh \
+            "$PWD/subject" "$BASE_SHA" "$HEAD_SHA" "${{ github.repository }}" "$PWD/out" "$PWD/gate"
+          # Carry the head/base/PR-number forward for later jobs (as data).
+          cp claim/head_sha.txt out/head_sha.txt
+          cp claim/base_sha.txt out/base_sha.txt
+          cp claim/pr_number.txt out/pr_number.txt 2>/dev/null || echo 0 > out/pr_number.txt
+
+      - name: Upload the naked claim + authoritative evidence (run-scoped, keyed by commit)
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1   # v4.6.1
+        with:
+          name: preflight-naked-claim-${{ github.event.workflow_run.head_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/
+          if-no-files-found: error
+
+  # ── JOB B — seal the claim (ONLY the bundle key) ─────────────────────────────────────────────
+  seal:
+    name: Seal claim (bundle key only)
+    needs: generate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      PREFLIGHT_BUNDLE_KEY: ${{ secrets.PREFLIGHT_BUNDLE_KEY }}
+    steps:
+      - name: Checkout TRUSTED gate machinery (DEFAULT branch)
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683   # v4.2.2
+        with:
+          ref: ${{ env.TRUSTED_REF }}
+          path: gate
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Download the naked claim
+        uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806   # v4.1.9
+        with:
+          name: preflight-naked-claim-${{ github.event.workflow_run.head_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out
+
+      - name: Sign the generator's bundle (evidence authenticity)
+        run: |
+          set -euo pipefail
+          bash gate/gate/seal-claim.sh "$PWD/out/bundle.json" "$PWD/gate"
+
+      - name: Upload the sealed claim
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1   # v4.6.1
+        with:
+          name: preflight-sealed-claim-${{ github.event.workflow_run.head_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: out/
+          if-no-files-found: error
+
+  # ── JOB C — the independent remote decision gate (ONLY the attest/approval keys) ─────────────
+  decide:
+    name: Independent remote decision gate
+    needs: seal
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read     # to look up an Ed25519 approval artifact for this commit (verified, not trusted)
+      statuses: write   # to post the decision as a commit status on the PR head (the required check)
+    env:
+      PREFLIGHT_ATTEST_KEY: ${{ secrets.PREFLIGHT_ATTEST_KEY }}
+      PREFLIGHT_APPROVAL_KEY: ${{ secrets.PREFLIGHT_APPROVAL_KEY }}
+      # The judge also needs the BUNDLE key to VERIFY the sealer's HMAC on the evidence bundle
+      # (--require-bundle-attestation). With SYMMETRIC HMAC, verify requires the same key as sign,
+      # so the sealer (sign) and judge (verify) unavoidably share it. Fully disjoint sealer/judge
+      # custody is realizable only with ASYMMETRIC signing (Ed25519/OIDC→KMS) — documented future
+      # work. The security-critical separations still hold: the evidence GENERATOR (which ingests
+      # the untrusted subject) holds NO key, and the APPROVAL key is never held by any producer.
+      PREFLIGHT_BUNDLE_KEY: ${{ secrets.PREFLIGHT_BUNDLE_KEY }}
+    steps:
+      - name: Checkout TRUSTED gate machinery (DEFAULT branch, never the PR)
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683   # v4.2.2
+        with:
+          ref: ${{ env.TRUSTED_REF }}
+          path: gate
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Download the sealed claim (data only)
+        uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806   # v4.1.9
+        with:
+          name: preflight-sealed-claim-${{ github.event.workflow_run.head_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: claim
+
+      - name: Re-fetch the subject commit independently (data only, never executed)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # automatic per-run token; private-repo git auth
+        run: |
+          set -euo pipefail
+          HEAD_SHA="$(cat claim/head_sha.txt)"
+          if [ "$HEAD_SHA" != "${{ github.event.workflow_run.head_sha }}" ]; then
+            echo "::error::sealed claim head != workflow_run.head_sha — refusing"; exit 1; fi
+          AUTH="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          git init -q subject
+          git -C subject remote add origin "https://github.com/${{ github.repository }}.git"
+          git -C subject -c http.https://github.com/.extraheader="AUTHORIZATION: basic $AUTH" -c protocol.version=2 fetch --depth 1 origin "$HEAD_SHA"
+          git -C subject checkout -q "$HEAD_SHA"
+          # Reconstruct the generator's authoritative evidence as UNTRACKED files bound to HEAD.
+          mkdir -p subject/.gate/evidence
+          cp claim/evidence/tests.log subject/.gate/evidence/tests.log
+          cp claim/evidence/tier.txt  subject/.gate/evidence/tier.txt
+
+      - name: Optionally fetch an Ed25519 approval for this exact commit (data only)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -uo pipefail
+          HEAD_SHA="$(cat claim/head_sha.txt)"
+          # An approval, if one exists, is published by the SEPARATE approve workflow as an artifact
+          # named preflight-approval-<commit>. Fetch the most recent such artifact for THIS commit.
+          # Absence is normal (→ REQUIRE_APPROVAL stands). This is DATA; it is verified, not trusted.
+          mkdir -p approval
+          AID="$(gh api "repos/${{ github.repository }}/actions/artifacts?per_page=100" \
+                  --jq ".artifacts[] | select(.name==\"preflight-approval-$HEAD_SHA\") | .id" 2>/dev/null | head -1)"
+          if [ -n "${AID:-}" ]; then
+            gh api "repos/${{ github.repository }}/actions/artifacts/$AID/zip" > approval/a.zip 2>/dev/null \
+              && (cd approval && unzip -o a.zip >/dev/null 2>&1) && echo "fetched approval artifact id=$AID" \
+              || echo "approval artifact present but not downloadable"
+          else
+            echo "no approval artifact for $HEAD_SHA (REQUIRE_APPROVAL will stand if CONFIRM)"
+          fi
+
+      - name: Run the independent remote decision gate (trusted verifier + policy)
+        run: |
+          set -uo pipefail
+          NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          EXPIRES="$(date -u -d '+1 hour' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+          mkdir -p gate-out
+          # ABSOLUTE paths: the entrypoint `cd`s into --pkg-root before running, so intent/bundle/
+          # out-dir must be absolute (only --policy is intentionally relative to pkg-root).
+          set +e
+          bash gate/verifier/ci/remote-gate.sh \
+            --pkg-root "$PWD/gate" \
+            --repo-root "$PWD/subject" \
+            --intent "$PWD/claim/intent.json" \
+            --bundle "$PWD/claim/bundle.json" \
+            --policy protocol/policies/push-safety.v1.policy.json \
+            --now "$NOW" --issued-at "$NOW" --expires-at "$EXPIRES" \
+            --expected-repo "${{ github.repository }}" \
+            --run-id "$GITHUB_RUN_ID" --nonce "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
+            --out-dir "$PWD/gate-out" \
+            --require-attestation \
+            --require-bundle-attestation
+          GATE_RC=$?
+          set -e
+          echo "base gate rc=$GATE_RC"
+          # 0 ALLOW · 10 REQUIRE_APPROVAL · 20 BLOCK · 30 usage/fail-closed.
+          FINAL_RC="$GATE_RC"
+          if [ "$GATE_RC" = 10 ]; then
+            # REQUIRE_APPROVAL: an Ed25519 approval signed by the SEPARATE approve workflow (private
+            # key held ONLY there) can upgrade to ALLOW. The judge holds ONLY the committed PUBLIC
+            # key (gate/gate/approval-pub.pem) → it can VERIFY but never MINT → no self-approval.
+            if [ -f approval/approval.json ]; then
+              PF_NOW="$NOW" bash gate/gate/check-approval.sh \
+                "$PWD/gate" "${{ github.repository }}" "$(cat claim/pr_number.txt 2>/dev/null || echo 0)" \
+                "$PWD/subject" "$PWD/claim/intent.json" "$PWD/claim/bundle.json" \
+                "$PWD/gate-out/decision.json" "$PWD/approval/approval.json" \
+                "$PWD/gate/gate/approval-pub.pem" "1.0.0"
+              ARC=$?
+              if [ "$ARC" = 0 ]; then echo "upgraded by valid Ed25519 approval → ALLOW"; FINAL_RC=0
+              else echo "approval present but invalid/mismatched → REQUIRE_APPROVAL stands"; FINAL_RC=10; fi
+            fi
+          fi
+          # Record the outcome for the status-posting step (which runs always()). Do NOT exit here —
+          # the required-check result is published as a COMMIT STATUS on the PR head (a workflow_run
+          # job's own check does not attach to the PR head commit).
+          echo "$FINAL_RC" > gate-out/final_rc.txt
+          echo "final gate rc=$FINAL_RC"
+
+      - name: Publish the decision as a commit status on the PR head (the REQUIRED check)
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -uo pipefail
+          HEAD_SHA="$(cat claim/head_sha.txt 2>/dev/null || echo '')"
+          RC="$(cat gate-out/final_rc.txt 2>/dev/null || echo 99)"
+          # Map the gate exit to a commit-status state. Only ALLOW (0) is success; everything else
+          # (REQUIRE_APPROVAL/BLOCK/fail-closed/internal) is a NON-success → blocks a required check.
+          case "$RC" in
+            0)  STATE=success; DESC="ALLOW — independently verified + attested";;
+            10) STATE=failure; DESC="REQUIRE_APPROVAL — needs a distinct signed approval";;
+            20) STATE=failure; DESC="BLOCK — denied or unverifiable";;
+            30) STATE=failure; DESC="fail-closed — missing signing authority/artifact";;
+            *)  STATE=failure; DESC="internal/unknown — fail closed";;
+          esac
+          if [ -z "$HEAD_SHA" ]; then echo "::error::no head sha to post status to"; exit 1; fi
+          # The status CONTEXT is the name to require in branch protection. It is posted onto the PR
+          # head commit by the TRUSTED default-branch workflow — a PR author cannot forge it (they
+          # lack statuses:write in the base context; their pull_request token is read-only).
+          gh api -X POST "repos/${{ github.repository }}/statuses/$HEAD_SHA" \
+            -f state="$STATE" \
+            -f context="preflight-remote-decision-gate" \
+            -f description="$DESC" \
+            -f target_url="https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" >/dev/null
+          echo "posted status: context=preflight-remote-decision-gate state=$STATE ($DESC) on $HEAD_SHA"
+          # Also fail THIS job on a non-success so the run's own conclusion reflects the decision.
+          [ "$RC" = 0 ]
+
+      - name: Upload decision + attestation (always, for inspection)
+        if: always()
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1   # v4.6.1
+        with:
+          name: preflight-decision-${{ github.event.workflow_run.head_sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: gate-out/
+          if-no-files-found: warn

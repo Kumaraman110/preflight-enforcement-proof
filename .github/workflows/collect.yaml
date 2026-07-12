@@ -1,0 +1,50 @@
+---
+# Preflight Remote Gate — STAGE 1 (collect). The UNTRUSTED half.
+#
+# Runs in the pull_request context. It carries NO secrets and executes NO gate logic that can go
+# green. It only records the exact PR head SHA + repo so the trusted Stage 2 (decide.yaml, on:
+# workflow_run) can independently fetch that commit as DATA and judge it. The PR's own evidence
+# files under .gate/artifacts/ are UNTRUSTED HINTS — Stage 2's evidence generator ignores
+# them and re-derives ground truth from the commit itself.
+#
+# SAFETY: permissions contents:read only; references NO secrets (fork PRs get none anyway; same-repo
+# PRs must not either); pins the exact PR head SHA (not the moving merge ref); actions SHA-pinned.
+# Do NOT make this check required — it is untrusted-context and carries no verdict.
+
+name: preflight-collect
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: preflight-collect-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  collect:
+    name: Collect claim (untrusted, no secrets)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Record the exact PR head identity (data only)
+        run: |
+          set -euo pipefail
+          mkdir -p claim
+          echo "${{ github.event.pull_request.head.sha }}"       > claim/head_sha.txt
+          echo "${{ github.event.pull_request.base.sha }}"       > claim/base_sha.txt
+          echo "${{ github.event.pull_request.number }}"         > claim/pr_number.txt
+          echo "${{ github.event.pull_request.head.repo.full_name }}" > claim/head_repo.txt
+          echo "${{ github.repository }}"                        > claim/base_repo.txt
+          echo "collected head=$(cat claim/head_sha.txt) base=$(cat claim/base_sha.txt)"
+
+      - name: Upload the collected identity claim
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1   # v4.6.1
+        with:
+          name: preflight-collect-claim
+          path: claim/
+          if-no-files-found: error

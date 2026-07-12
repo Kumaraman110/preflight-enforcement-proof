@@ -1,0 +1,131 @@
+---
+# Preflight approval authority — the SEPARATE, attributable approval action.
+#
+# A REQUIRE_APPROVAL decision is upgraded to ALLOW ONLY by an approval signed here. This workflow
+# holds the Ed25519 PRIVATE key (PREFLIGHT_APPROVAL_ED25519_PRIV) as a secret; the JUDGE holds only
+# the committed PUBLIC key (gate/approval-pub.pem) and therefore can VERIFY but NEVER MINT an
+# approval — a producer/PR author cannot self-approve.
+#
+# It is manually dispatched by an operator with the ORIGINAL decide RUN ID (not arbitrary facts).
+# It independently retrieves that run's signed decision + evidence bundle, confirms the PR still
+# points at the same subject commit, and mints a canonical approval scoped to
+# repo|pr|commit|actionDigest|evidenceDigest|policyVersion|decisionDigest|expiry|nonce, published as
+# an artifact `preflight-approval-<commit>` that the next decide run consumes.
+#
+# PLATFORM CEILING (honest): a DISTINCT-HUMAN required reviewer (so the PR initiator cannot release
+# the signer) needs GitHub Environment required-reviewers, which the API rejects on this private
+# repo's plan (HTTP 422 — see docs/SANDBOX.md). The separation proven here is CRYPTOGRAPHIC (the
+# judge cannot mint, only the key-holding approve workflow can) — not human dual-control. The exact
+# upgrade path (Team/Enterprise env required-reviewers, or OIDC→KMS) is documented.
+
+name: preflight-approve
+
+on:
+  workflow_dispatch:
+    inputs:
+      decide_run_id:
+        description: "The decide run ID that returned REQUIRE_APPROVAL"
+        required: true
+      pr_number:
+        description: "The PR number being approved"
+        required: true
+      ttl_minutes:
+        description: "Approval validity window (minutes)"
+        required: false
+        default: "60"
+
+permissions:
+  contents: read
+  actions: read
+  pull-requests: read
+
+concurrency:
+  group: preflight-approve-${{ github.event.inputs.decide_run_id }}
+  cancel-in-progress: false
+
+jobs:
+  approve:
+    name: Mint a scoped Ed25519 approval
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read   # to confirm the PR still points at the same subject commit
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      APPROVAL_PRIV: ${{ secrets.PREFLIGHT_APPROVAL_ED25519_PRIV }}
+    steps:
+      - name: Checkout TRUSTED gate machinery (DEFAULT branch)
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683   # v4.2.2
+        with:
+          ref: main
+          path: gate
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Retrieve the original decision + sealed bundle from the decide run
+        run: |
+          set -euo pipefail
+          RID="${{ github.event.inputs.decide_run_id }}"
+          mkdir -p orig
+          # List that run's artifacts; pull the decision + the sealed claim (intent+bundle).
+          ARTS="$(gh api "repos/${{ github.repository }}/actions/runs/$RID/artifacts?per_page=100")"
+          get() {  # $1 = name-prefix ; downloads+unzips into orig/$1
+            local id
+            id="$(printf '%s' "$ARTS" | python -c "import sys,json;[print(a['id']) for a in json.load(sys.stdin)['artifacts'] if a['name'].startswith('$1')]" | head -1)"
+            [ -n "$id" ] || { echo "::error::artifact $1 not found in run $RID"; exit 1; }
+            gh api "repos/${{ github.repository }}/actions/artifacts/$id/zip" > "orig/$1.zip"
+            mkdir -p "orig/$1"; (cd "orig/$1" && unzip -o "../$1.zip" >/dev/null)
+          }
+          get "preflight-decision"
+          get "preflight-sealed-claim"
+          echo "decision:"; cat orig/preflight-decision/decision.json | python -m json.tool | head -8
+
+      - name: Confirm the PR still points at the same subject commit
+        run: |
+          set -euo pipefail
+          PR="${{ github.event.inputs.pr_number }}"
+          CLAIM_HEAD="$(cat orig/preflight-sealed-claim/head_sha.txt)"
+          PR_HEAD="$(gh api "repos/${{ github.repository }}/pulls/$PR" --jq '.head.sha')"
+          if [ "$CLAIM_HEAD" != "$PR_HEAD" ]; then
+            echo "::error::PR #$PR head ($PR_HEAD) != decision run subject ($CLAIM_HEAD) — refusing to approve a moved PR"; exit 1; fi
+          # Only a REQUIRE_APPROVAL decision may be approved (not a BLOCK).
+          DEC="$(python -c "import json;print(json.load(open('orig/preflight-decision/decision.json'))['decision'])")"
+          [ "$DEC" = "REQUIRE_APPROVAL" ] || { echo "::error::decision was $DEC, not REQUIRE_APPROVAL — nothing to approve"; exit 1; }
+          echo "confirmed: PR #$PR still at $CLAIM_HEAD, decision REQUIRE_APPROVAL"
+
+      - name: Build the scoped payload and sign it (Ed25519 private key, held only here)
+        run: |
+          set -euo pipefail
+          PR="${{ github.event.inputs.pr_number }}"
+          COMMIT="$(cat orig/preflight-sealed-claim/head_sha.txt)"
+          INTENT="orig/preflight-sealed-claim/intent.json"
+          BUNDLE="orig/preflight-sealed-claim/bundle.json"
+          DEC="orig/preflight-decision/decision.json"
+          AD="$(cd gate && python -c "import sys,json;sys.path.insert(0,'verifier');from pfverify import attest;print(attest.action_digest(json.load(open('../'+sys.argv[1]))))" "$INTENT")"
+          ED="$(cd gate && python -c "import sys,json;sys.path.insert(0,'verifier');from pfverify import attest;print(attest.evidence_digest(json.load(open('../'+sys.argv[1]))))" "$BUNDLE")"
+          # Stable decision digest: hash ONLY decision+policyId+violations+reasons (exclude the
+          # volatile evaluatedAt) so it matches the judge's reconstruction on any re-run.
+          DD="$(cd gate && python -c "import sys,json;sys.path.insert(0,'verifier');from pfverify import canonical;d=json.load(open('../'+sys.argv[1]));core={k:d.get(k) for k in ('decision','policyId','violations','reasons')};print(canonical.sha256_hex(canonical.canonical_bytes(core)))" "$DEC")"
+          TTL="${{ github.event.inputs.ttl_minutes }}"
+          EXP="$(date -u -d "+${TTL} minutes" +%Y-%m-%dT%H:%M:%SZ)"
+          NONCE="approve-${RANDOM}-$GITHUB_RUN_ID"
+          bash gate/gate/build-approval-payload.sh \
+            "${{ github.repository }}" "$PR" "$COMMIT" "$AD" "$ED" "1.0.0" "$DD" "$EXP" "$NONCE" > payload.json
+          echo "$APPROVAL_PRIV" > approval_priv.pem
+          mkdir -p approval-out
+          bash gate/gate/approval-ed25519.sh sign payload.json approval_priv.pem approval-out/approval.json
+          rm -f approval_priv.pem
+          # Export the commit so the artifact can be keyed by it (judge looks up by exact commit).
+          echo "APPROVAL_COMMIT=$COMMIT" >> "$GITHUB_ENV"
+          echo "approval minted for commit $COMMIT (expires $EXP)"
+
+      - name: Publish the approval artifact (keyed by the exact subject commit)
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1   # v4.6.1
+        with:
+          # Judge looks up preflight-approval-<commit>; key by the exact commit so an approval
+          # cannot be reused for a different head.
+          name: preflight-approval-${{ env.APPROVAL_COMMIT }}
+          path: approval-out/
+          if-no-files-found: error

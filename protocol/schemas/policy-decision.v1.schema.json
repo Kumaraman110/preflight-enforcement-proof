@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/protocol/schemas/policy-decision.v1.schema.json",
+  "title": "Preflight Policy Decision",
+  "description": "The deterministic, machine-readable verdict the server-authoritative verifier returns for an Action Intent + Evidence Bundle under a named policy. The three decisions map to the local kernel's tiers: ALLOW=AUTO, REQUIRE_APPROVAL=CONFIRM, BLOCK=BLOCK. Any error, missing/stale/forged/contradictory evidence yields BLOCK (fail-closed).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "decision", "policyId", "intentId", "evaluatedAt", "reasons", "checks"],
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "pattern": "^1\\.[0-9]+\\.[0-9]+$"
+    },
+    "decision": {
+      "description": "The verdict. ALLOW: evidence authorizes the action. REQUIRE_APPROVAL: valid but the policy demands a human. BLOCK: denied or unverifiable.",
+      "type": "string",
+      "enum": ["ALLOW", "REQUIRE_APPROVAL", "BLOCK"]
+    },
+    "policyId": {
+      "description": "Identifier of the policy that produced this decision.",
+      "type": "string",
+      "minLength": 1
+    },
+    "intentId": {
+      "description": "The Action Intent this decision is for. 'unknown' when the intent could not be parsed (still a BLOCK).",
+      "type": "string",
+      "minLength": 1
+    },
+    "evaluatedAt": {
+      "description": "RFC3339 UTC reference time used for the decision (the injected 'now'), echoed for auditability and determinism.",
+      "type": "string",
+      "minLength": 1
+    },
+    "reasons": {
+      "description": "Sorted human-readable reason codes/notes explaining the decision (e.g. 'evidence:tests-pass:fresh', 'integrity:unauthenticated'). Sorted for byte-stable output.",
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "violations": {
+      "description": "Sorted machine codes for each failed check driving a non-ALLOW decision (e.g. 'schema.invalid', 'hash.mismatch', 'freshness.stale', 'evidence.missing', 'contradiction.head', 'integrity.forged', 'dependency.unavailable'). Empty on ALLOW.",
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "checks": {
+      "description": "The individual verification checks the verifier ran, in fixed order, each pass/fail. Makes the decision fully inspectable rather than a black box.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "passed"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "enum": [
+              "schema.intent",
+              "schema.bundle",
+              "provenance.issuer",
+              "consistency.intentRef",
+              "consistency.boundHead",
+              "artifact.hashes",
+              "attestation.digest",
+              "attestation.signature",
+              "freshness",
+              "policy.evidence",
+              "policy.decision",
+              "identity.resolve",
+              "identity.repo",
+              "identity.commit",
+              "identity.worktree",
+              "identity.tree"
+            ]
+          },
+          "passed": { "type": "boolean" },
+          "detail": { "type": "string" }
+        }
+      }
+    }
+  }
+}

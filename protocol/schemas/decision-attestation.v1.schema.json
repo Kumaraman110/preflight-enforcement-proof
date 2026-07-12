@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/protocol/schemas/decision-attestation.v1.schema.json",
+  "title": "Preflight Decision Attestation",
+  "description": "A signed, deterministic record that the INDEPENDENT verifier reached a decision for a specific (repo, commit, action, evidence, policy, verifier) tuple at a specific time. Produced only by the independent execution environment (which holds the signing key). Binds identity so it cannot be replayed onto a different commit/action/repo; tamper-evident via HMAC over the canonical payload (the object minus the attestation envelope).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "repoId", "commitSha", "actionDigest", "evidenceDigest", "policyId", "policyVersion", "verifierVersion", "decision", "issuedAt", "expiresAt", "runId", "nonce", "attestation"],
+  "properties": {
+    "schemaVersion": { "type": "string", "pattern": "^1\\.[0-9]+\\.[0-9]+$" },
+    "repoId": {
+      "description": "Canonical repository identity (host/owner/repo) the decision is bound to.",
+      "type": "string", "minLength": 1
+    },
+    "commitSha": {
+      "description": "The 40-hex commit SHA the decision was made against.",
+      "type": "string", "pattern": "^[0-9a-f]{40}$"
+    },
+    "actionDigest": {
+      "description": "Canonical sha256 of the Action Intent's action object.",
+      "type": "string", "pattern": "^[0-9a-f]{64}$"
+    },
+    "evidenceDigest": {
+      "description": "The Evidence Bundle's bundleDigest (canonical sha256 over the bundle sans attestation).",
+      "type": "string", "pattern": "^[0-9a-f]{64}$"
+    },
+    "policyId": { "type": "string", "minLength": 1 },
+    "policyVersion": { "type": "string", "minLength": 1 },
+    "verifierVersion": { "type": "string", "minLength": 1 },
+    "decision": { "type": "string", "enum": ["ALLOW", "REQUIRE_APPROVAL", "BLOCK"] },
+    "issuedAt": { "description": "RFC3339 UTC time the attestation was issued.", "type": "string", "minLength": 1 },
+    "expiresAt": { "description": "RFC3339 UTC time after which the attestation is stale (rejected).", "type": "string", "minLength": 1 },
+    "runId": { "description": "Identifier of the independent run that produced this (e.g. CI run id).", "type": "string", "minLength": 1 },
+    "nonce": { "description": "Unique per-issuance marker. v0.1 has no persistent nonce store (see threat model).", "type": "string", "minLength": 1 },
+    "attestation": {
+      "description": "Integrity envelope over the canonical payload (this object minus this field).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algo", "payloadDigest", "signature"],
+      "properties": {
+        "algo": { "type": "string", "enum": ["hmac-sha256"] },
+        "payloadDigest": {
+          "description": "Declared canonical sha256 over the attestation sans envelope. Recomputed + compared by the verifier (tamper → mismatch).",
+          "type": "string", "pattern": "^[0-9a-f]{64}$"
+        },
+        "signature": {
+          "description": "HMAC-SHA256 over payloadDigest under the independent-environment key. Symmetric (v0.1 boundary).",
+          "type": "string", "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    }
+  }
+}
