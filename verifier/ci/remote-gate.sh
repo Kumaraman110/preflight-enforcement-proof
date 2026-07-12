@@ -21,7 +21,7 @@ set -uo pipefail
 REPO_ROOT="" INTENT="" BUNDLE="" POLICY="" NOW="" EXPECTED_REPO=""
 OUT_DIR="." APPROVAL="" ATTEST_KEY_FILE="" APPROVAL_KEY_FILE="" BUNDLE_KEY_FILE=""
 POLICY_VERSION="1.0.0" RUN_ID="local-run" NONCE="nonce-0"
-ISSUED_AT="" EXPIRES_AT="" UNTRACKED="no"
+ISSUED_AT="" EXPIRES_AT="" UNTRACKED="no" PKG_ROOT_OVERRIDE="" REQUIRE_ATTESTATION="0"
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -42,6 +42,15 @@ while [ $# -gt 0 ]; do
     --issued-at) ISSUED_AT="$2"; shift 2;;
     --expires-at) EXPIRES_AT="$2"; shift 2;;
     --untracked-files) UNTRACKED="$2"; shift 2;;
+    # --pkg-root: the TRUSTED verifier package root (dir containing verifier/ and protocol/).
+    # In CI this MUST point at a checkout of a trusted ref, NOT the PR-under-decision tree —
+    # otherwise a fork PR could edit the verifier/policy to force ALLOW. If unset, it derives
+    # from this script's own location (correct only when the script itself is the trusted copy).
+    --pkg-root) PKG_ROOT_OVERRIDE="$2"; shift 2;;
+    # --require-attestation: fail CLOSED (exit 30, non-success) if no signing key is available.
+    # For a REQUIRED status check the decision must be independently attestable; a fork PR with
+    # no secrets therefore cannot produce a passing authoritative result.
+    --require-attestation) REQUIRE_ATTESTATION="1"; shift 1;;
     *) echo "remote-gate: unknown arg $1" >&2; exit 30;;
   esac
 done
@@ -53,9 +62,24 @@ for c in python3 python; do
 done
 [ -n "$PF_PY" ] || { echo "remote-gate: no working python3/python" >&2; exit 30; }
 
-# Locate the verifier package root (…/verifier/..). This script lives at verifier/ci/.
-SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PKG_ROOT="$(cd "$SELF_DIR/../.." && pwd)"   # repo root containing verifier/ and protocol/
+# Locate the verifier package root (dir containing verifier/ and protocol/). SECURITY: in CI
+# this MUST be a TRUSTED checkout (base ref / this action's own copy), never the PR-under-
+# decision tree — else a fork could edit the verifier or policy to force ALLOW. The
+# --pkg-root override (from the workflow, pointing at the trusted checkout) takes precedence;
+# otherwise it derives from this script's own location (valid only when this script IS the
+# trusted copy). This script lives at <pkg-root>/verifier/ci/remote-gate.sh.
+if [ -n "$PKG_ROOT_OVERRIDE" ]; then
+  PKG_ROOT="$(cd "$PKG_ROOT_OVERRIDE" && pwd)"
+else
+  SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  PKG_ROOT="$(cd "$SELF_DIR/../.." && pwd)"
+fi
+# The policy MUST be resolved from the trusted PKG_ROOT unless the caller passed an absolute
+# path. A bare/relative --policy is interpreted relative to PKG_ROOT (trusted), NOT the PR cwd.
+case "$POLICY" in
+  /*|[A-Za-z]:*) : ;;                          # absolute (caller's explicit choice)
+  *) POLICY="$PKG_ROOT/$POLICY" ;;             # relative → trusted package root
+esac
 
 # Mandatory inputs.
 for v in REPO_ROOT INTENT BUNDLE POLICY NOW; do
@@ -90,6 +114,16 @@ elif [ -n "$BUNDLE_KEY_FILE" ]; then
   BUNDLE_KEYFILE="$BUNDLE_KEY_FILE"
 fi
 
+# FAIL-CLOSED on missing signing material when attestation is required. A REQUIRED status
+# check must yield an independently-attestable decision; without the key (e.g. a fork PR with
+# no access to secrets) we must NOT emit a passing result. Exit 30 = non-success, not ALLOW.
+if [ "$REQUIRE_ATTESTATION" = "1" ] && [ -z "$KEYFILE" ]; then
+  echo "remote-gate: --require-attestation set but no signing key (PREFLIGHT_ATTEST_KEY / --attest-key-file) available — failing closed" >&2
+  mkdir -p "$OUT_DIR"
+  printf '{"decision":"BLOCK","reason":"attestation-key-unavailable","attested":false}\n' > "$OUT_DIR/decision.json"
+  exit 30
+fi
+
 mkdir -p "$OUT_DIR"
 DECISION_JSON="$OUT_DIR/decision.json"
 ATTEST_JSON="$OUT_DIR/attestation.json"
@@ -111,25 +145,38 @@ VRC=$?
 DECISION="$("$PF_PY" -c "import sys,json;print(json.load(open(sys.argv[1],encoding='utf-8')).get('decision','BLOCK'))" "$DECISION_JSON" 2>/dev/null || echo BLOCK)"
 echo "remote-gate: verifier decision=$DECISION (rc=$VRC)"
 
-emit_attestation() {  # $1 decision-file
-  [ -n "$KEYFILE" ] || { echo "remote-gate: no attestation key — decision not attested" >&2; return 0; }
+emit_attestation() {  # $1 decision-file ; returns nonzero if an attestation was REQUIRED but not written
+  if [ -z "$KEYFILE" ]; then
+    echo "remote-gate: no attestation key — decision not attested" >&2
+    [ "$REQUIRE_ATTESTATION" = "1" ] && return 1 || return 0
+  fi
   local commit repoid
   # Re-resolve the authoritative commit + repo for the attestation binding (independent).
   commit="$(git -C "$REPO_ROOT" rev-parse HEAD 2>/dev/null || echo)"
   repoid="$(git -C "$REPO_ROOT" config --get remote.origin.url 2>/dev/null || echo)"
   [ -n "$EXPECTED_REPO" ] && repoid="$EXPECTED_REPO"
-  ( cd "$PKG_ROOT" && "$PF_PY" -m verifier.pfverify attest \
-      --intent "$INTENT" --bundle "$BUNDLE" --decision "$1" \
-      --repo-id "$repoid" --commit-sha "$commit" --attest-key-file "$KEYFILE" \
-      --policy-version "$POLICY_VERSION" --issued-at "$ISSUED_AT" --expires-at "$EXPIRES_AT" \
-      --run-id "$RUN_ID" --nonce "$NONCE" ) > "$ATTEST_JSON" 2>/dev/null \
-    && echo "remote-gate: wrote $ATTEST_JSON" || echo "remote-gate: attestation step failed" >&2
+  if ( cd "$PKG_ROOT" && "$PF_PY" -m verifier.pfverify attest \
+        --intent "$INTENT" --bundle "$BUNDLE" --decision "$1" \
+        --repo-id "$repoid" --commit-sha "$commit" --attest-key-file "$KEYFILE" \
+        --policy-version "$POLICY_VERSION" --issued-at "$ISSUED_AT" --expires-at "$EXPIRES_AT" \
+        --run-id "$RUN_ID" --nonce "$NONCE" ) > "$ATTEST_JSON" 2>/dev/null; then
+    echo "remote-gate: wrote $ATTEST_JSON"; return 0
+  fi
+  echo "remote-gate: attestation step failed" >&2
+  [ "$REQUIRE_ATTESTATION" = "1" ] && return 1 || return 0
+}
+
+# A passing decision under --require-attestation MUST carry a written attestation, else the
+# check fails closed (a pass with no independently-verifiable attestation is not acceptable).
+pass_or_failclosed() {  # $1 decision-file
+  if emit_attestation "$1"; then exit 0; fi
+  echo "remote-gate: passing decision but attestation required and not produced — failing closed" >&2
+  exit 30
 }
 
 case "$DECISION" in
   ALLOW)
-    emit_attestation "$DECISION_JSON"
-    exit 0;;
+    pass_or_failclosed "$DECISION_JSON";;
   REQUIRE_APPROVAL)
     # A separate, attributable approval (signed with the DISTINCT approver key) can upgrade
     # to a pass. The producer cannot self-approve — it lacks the approver key.
@@ -142,8 +189,7 @@ case "$DECISION" in
       ARC=$?
       if [ "$ARC" = 0 ]; then
         echo "remote-gate: REQUIRE_APPROVAL upgraded by a valid approval → pass"
-        emit_attestation "$DECISION_JSON"
-        exit 0
+        pass_or_failclosed "$DECISION_JSON"
       fi
       echo "remote-gate: approval present but invalid/mismatched → REQUIRE_APPROVAL stands" >&2
     fi

@@ -1555,7 +1555,7 @@ run_protocol_tests() {
   local t
   for t in verifier-decision schema-contract adapter-and-failmode \
            identity-reresolution attestation approval remote-gate-e2e \
-           learning-loop-demo; do
+           learning-loop-demo workflow-security integration-fixture; do
     local test_script="$SCRIPT_DIR/protocol/${t}-test.sh"
     if [ -f "$test_script" ]; then
       local result sub_passes sub_failures

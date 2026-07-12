@@ -1,61 +1,152 @@
 ---
 # Preflight Remote Decision Gate — an INDEPENDENT, server-authoritative decision check.
 #
-# Runs the independent verifier against the ACTUAL checked-out commit (remote-authoritative
-# mode: it re-resolves repo + commit FROM THE CHECKOUT, so a locally forged/self-issued
-# clearance cannot pass here), then produces an inspectable decision + signed attestation
-# artifact. Exits non-zero on BLOCK, on REQUIRE_APPROVAL without a valid approval, or on any
-# verifier failure — so it is suitable to configure as a REQUIRED STATUS CHECK.
+# THREAT: a pull request (especially from a FORK) is UNTRUSTED code. If the gate ran its own
+# policy / verifier / entrypoint out of the PR checkout, a PR author could edit them to force
+# ALLOW — the judge would be running the defendant's code. So this workflow is a TWO-STAGE
+# TRUSTED SPLIT:
+#
+#   Stage 1 (collect, UNTRUSTED context, NO secrets): triggered by `pull_request`. Runs in the
+#     fork's context, has NO access to signing secrets, and executes NO gate logic that can go
+#     green. It only packages the producer's claim (intent + evidence bundle) as an artifact.
+#
+#   Stage 2 (decide, TRUSTED context, HAS secrets): triggered by `workflow_run` after Stage 1.
+#     Runs in the BASE repo's context. It checks out the GATE MACHINERY (verifier + policy +
+#     entrypoint) from a TRUSTED ref (this workflow's own base), fetches the exact PR head
+#     commit as DATA-ONLY into `subject/` (never executes it), and runs the trusted verifier to
+#     re-resolve identity against that subject tree. Signing keys are injected ONLY here.
+#
+# Only Stage 2's check ("Independent remote decision gate") should be configured as a REQUIRED
+# status check (see docs/remote-gate.md). Requiring Stage 1 would be meaningless.
 #
 # SAFETY POSTURE:
-#   • permissions: contents:read ONLY — no write scope, no PR/issue mutation, no merge.
-#   • This workflow does NOT modify branch protection. Making it a required check is a
-#     documented operator step (see docs/remote-gate.md), performed by a human with admin
-#     rights — never by this workflow.
-#   • The attestation signing key comes ONLY from the repository/organization secret
-#     PREFLIGHT_ATTEST_KEY, injected as an env var. It is NEVER stored in the repo. The
-#     producer/authoring agent does not have access to it — that is what makes the decision
-#     independently trustworthy. Approvals use a DISTINCT secret PREFLIGHT_APPROVAL_KEY.
-#   • No secret is echoed; artifacts contain only the decision + the (public) attestation.
+#   • permissions: contents:read ONLY everywhere; no write scope, no PR/issue mutation, no merge.
+#   • Does NOT modify branch protection — that is a documented human operator step.
+#   • Signing keys come ONLY from org/repo secrets, injected ONLY in the trusted Stage 2, and
+#     NEVER from any repository-controlled input (no CLI flag or env is wired from PR content).
+#     A distinct approver secret gates REQUIRE_APPROVAL.
+#   • Actions are pinned by immutable commit SHA (with a version comment), not a mutable tag.
+#   • Stage 2 fails CLOSED: missing signing key / missing artifact / identity-unresolvable /
+#     dependency-missing → non-success, never a silent ALLOW (remote-gate.sh --require-attestation).
 #
-# The gate logic lives in a PORTABLE shell entrypoint (verifier/ci/remote-gate.sh) that is
-# fully testable offline (tests/protocol/remote-gate-e2e-test.sh) without GitHub.
+# The gate logic lives in a PORTABLE shell entrypoint (verifier/ci/remote-gate.sh), fully
+# testable offline (tests/protocol/remote-gate-e2e-test.sh) with no GitHub and no network.
 
 name: Preflight Remote Decision Gate
 
 on:
-  # Intended to run against PRs / pushes for the branches an operator wants gated. The
-  # concrete branch list is an operator choice; kept minimal here and NOT auto-applied to
-  # any protected branch.
-  workflow_dispatch:
-    inputs:
-      intent:
-        description: "Path to the Action Intent JSON (produced by a producer adapter)"
-        required: true
-      bundle:
-        description: "Path to the Evidence Bundle JSON"
-        required: true
+  # STAGE 1 — collect the producer's claim from the (untrusted) PR. No secrets, no verdict.
   pull_request:
     branches:
       - feature/preflight-remote-decision-gate-v0.1
+  # STAGE 2 — decide, in the trusted base context, after Stage 1 completes.
+  workflow_run:
+    workflows: ["Preflight Remote Decision Gate"]
+    types: [completed]
 
+# Least privilege everywhere. Nothing here needs write scope.
 permissions:
   contents: read
 
 concurrency:
-  group: preflight-remote-gate-${{ github.ref }}
+  # Collapse superseded runs. For Stage 2 the head SHA (carried by the triggering run) keys it;
+  # github.ref is adequate for Stage 1.
+  group: preflight-remote-gate-${{ github.event.workflow_run.head_sha || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  remote-gate:
+  # ── STAGE 1 — collect (untrusted PR context, NO secrets) ────────────────────────────────────
+  collect:
+    name: Collect claim (untrusted, no secrets)
+    if: ${{ github.event_name == 'pull_request' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout the EXACT PR head commit (data only)
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683   # v4.2.2
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Locate the producer's intent + bundle
+        run: |
+          set -o pipefail
+          INTENT=".preflight/protocol/intent.json"
+          BUNDLE=".preflight/protocol/bundle.json"
+          mkdir -p claim
+          if [ ! -f "$INTENT" ] || [ ! -f "$BUNDLE" ]; then
+            echo "::error::producer intent/bundle not found ($INTENT / $BUNDLE) — the producer adapter must emit them"
+            exit 1
+          fi
+          # Record the exact head sha the claim is about, so Stage 2 can fetch it as data.
+          cp "$INTENT" claim/intent.json
+          cp "$BUNDLE" claim/bundle.json
+          [ -f .preflight/protocol/approval.json ] && cp .preflight/protocol/approval.json claim/approval.json || true
+          echo "${{ github.event.pull_request.head.sha }}" > claim/head_sha.txt
+          echo "${{ github.event.pull_request.head.repo.full_name }}" > claim/head_repo.txt
+
+      - name: Upload claim artifact (intent/bundle/approval/head-sha)
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1   # v4.6.1
+        with:
+          name: preflight-claim
+          path: claim/
+          if-no-files-found: error
+
+  # ── STAGE 2 — decide (trusted base context, HAS secrets) ────────────────────────────────────
+  decide:
     name: Independent remote decision gate
+    # Only run for the workflow_run completion of Stage 1, and only if Stage 1 succeeded.
+    if: ${{ github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      # Signing keys — injected ONLY in this trusted stage, ONLY from secrets. Never from PR input.
+      PREFLIGHT_ATTEST_KEY: ${{ secrets.PREFLIGHT_ATTEST_KEY }}
+      PREFLIGHT_APPROVAL_KEY: ${{ secrets.PREFLIGHT_APPROVAL_KEY }}
+      HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+      GATE_REPO: ${{ github.repository }}
     steps:
-      - name: Checkout the TARGET commit (full history so HEAD is the real commit under decision)
-        uses: actions/checkout@v4
+      # 1. TRUSTED gate machinery: check out THIS repo's base (the ref the workflow itself runs
+      #    from is the base repo, not the PR head) into gate/. Its verifier + policy + entrypoint
+      #    are trusted because a PR author cannot alter the base ref.
+      - name: Checkout TRUSTED gate machinery (base ref)
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683   # v4.2.2
         with:
-          fetch-depth: 0
+          ref: ${{ github.event.workflow_run.head_branch }}
+          path: gate
+          fetch-depth: 1
+          persist-credentials: false
+
+      # 2. Download Stage 1's claim (intent/bundle/approval/head-sha) — DATA, not code.
+      - name: Download the collected claim
+        uses: actions/download-artifact@cc203385981b70ca67e1cc392babf9cc229d5806   # v4.1.9
+        with:
+          name: preflight-claim
+          path: claim
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ github.event.workflow_run.id }}
+
+      # 3. Fetch the EXACT PR head commit as DATA-ONLY into subject/ (never executed).
+      - name: Materialize the subject commit (data only, never executed)
+        run: |
+          set -o pipefail
+          HEAD_FROM_CLAIM="$(cat claim/head_sha.txt)"
+          # Defense in depth: the runner-provided workflow_run.head_sha must match the claim.
+          if [ "$HEAD_FROM_CLAIM" != "$HEAD_SHA" ]; then
+            echo "::error::claim head_sha ($HEAD_FROM_CLAIM) != workflow_run head_sha ($HEAD_SHA) — refusing"
+            exit 1
+          fi
+          git init -q subject
+          git -C subject remote add origin "https://github.com/${GATE_REPO}.git"
+          git -C subject -c protocol.version=2 fetch --depth 1 origin "$HEAD_SHA"
+          git -C subject checkout -q "$HEAD_SHA"
+          # Restate the origin so identity re-resolution canonicalizes the intended repo.
+          echo "subject HEAD: $(git -C subject rev-parse HEAD)"
 
       - name: Tooling versions
         run: |
@@ -63,52 +154,35 @@ jobs:
           git --version
           jq --version || true
 
-      - name: Locate intent + bundle
-        id: artifacts
-        run: |
-          # In a real deployment the producer adapter writes these (or they are committed /
-          # uploaded as an artifact). For workflow_dispatch, the caller supplies paths.
-          # Here we default to a conventional location; fail closed if absent.
-          INTENT="${{ github.event.inputs.intent }}"
-          BUNDLE="${{ github.event.inputs.bundle }}"
-          INTENT="${INTENT:-.preflight/protocol/intent.json}"
-          BUNDLE="${BUNDLE:-.preflight/protocol/bundle.json}"
-          if [ ! -f "$INTENT" ] || [ ! -f "$BUNDLE" ]; then
-            echo "::error::intent/bundle not found ($INTENT / $BUNDLE) — the producer adapter must emit them"
-            exit 1
-          fi
-          echo "intent=$INTENT" >> "$GITHUB_OUTPUT"
-          echo "bundle=$BUNDLE" >> "$GITHUB_OUTPUT"
-
-      - name: Run the independent remote decision gate
-        env:
-          # Signing keys come ONLY from secrets — never the repo. Empty on forks/without
-          # secrets; the gate then produces a decision without an attestation (still gates).
-          PREFLIGHT_ATTEST_KEY: ${{ secrets.PREFLIGHT_ATTEST_KEY }}
-          PREFLIGHT_APPROVAL_KEY: ${{ secrets.PREFLIGHT_APPROVAL_KEY }}
+      # 4. Run the TRUSTED entrypoint from gate/, verifying the untrusted subject/ tree as DATA.
+      #    --pkg-root pins the verifier+policy to the trusted checkout; --require-attestation makes
+      #    a missing signing key fail closed (no green check without an independently signed decision).
+      - name: Run the independent remote decision gate (trusted verifier, untrusted subject)
         run: |
           set -o pipefail
           NOW="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           EXPIRES="$(date -u -d '+1 hour' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
           mkdir -p gate-out
           APPROVAL_ARG=""
-          [ -f .preflight/protocol/approval.json ] && APPROVAL_ARG="--approval .preflight/protocol/approval.json"
-          bash verifier/ci/remote-gate.sh \
-            --repo-root "$GITHUB_WORKSPACE" \
-            --intent "${{ steps.artifacts.outputs.intent }}" \
-            --bundle "${{ steps.artifacts.outputs.bundle }}" \
+          [ -f claim/approval.json ] && APPROVAL_ARG="--approval claim/approval.json"
+          bash gate/verifier/ci/remote-gate.sh \
+            --pkg-root "$PWD/gate" \
+            --repo-root "$PWD/subject" \
+            --intent claim/intent.json \
+            --bundle claim/bundle.json \
             --policy protocol/policies/push-safety.v1.policy.json \
             --now "$NOW" --issued-at "$NOW" --expires-at "$EXPIRES" \
-            --expected-repo "$GITHUB_REPOSITORY" \
+            --expected-repo "$GATE_REPO" \
             --run-id "$GITHUB_RUN_ID" --nonce "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" \
             --out-dir gate-out \
+            --require-attestation \
             $APPROVAL_ARG
-          # remote-gate.sh exit code IS the check result: 0 ALLOW/approved, 10 REQUIRE_APPROVAL,
-          # 20 BLOCK, 30 usage. A non-zero code fails the required status check.
+          # Exit code IS the check result: 0 ALLOW/approved, 10 REQUIRE_APPROVAL (non-success,
+          # documented), 20 BLOCK, 30 usage/fail-closed. Non-zero fails the required check.
 
       - name: Upload decision + attestation artifact (always, for inspection)
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1   # v4.6.1
         with:
           name: preflight-remote-decision
           path: gate-out/

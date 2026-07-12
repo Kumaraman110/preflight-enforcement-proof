@@ -151,25 +151,64 @@ case 9: a bundle that ALLOWs locally with a forged head BLOCKs remotely.)
 The two are complementary. The local kernel is unchanged; the remote gate adds an external
 accountability layer on top.
 
+## CI hardening — the two-stage trusted split (fork-safe)
+
+A pull request — especially from a **fork** — is *untrusted code*. If the gate ran its own
+policy, verifier, or entrypoint out of the PR checkout, a PR author could edit them to force
+`ALLOW`; the judge would be running the defendant's code. The workflow therefore uses a
+**two-stage trusted split** (`.github/workflows/preflight-remote-gate.yaml`):
+
+- **Stage 1 — `collect` (`on: pull_request`, untrusted context, NO secrets).** Checks out the
+  **exact PR head commit** (`pull_request.head.sha`, not the moving merge ref), packages the
+  producer's `intent.json` + `bundle.json` (+ optional `approval.json`) and the head SHA as an
+  artifact, and runs **no** gate logic that can go green. It never sees a signing secret.
+- **Stage 2 — `decide` (`on: workflow_run` after Stage 1, trusted base context, HAS secrets).**
+  Checks out the **trusted gate machinery** (verifier + policy + entrypoint) from the base ref
+  into `gate/`; downloads Stage 1's claim artifact; `git fetch`es the exact PR head commit into
+  `subject/` as **data only** (never executed); and runs the trusted entrypoint
+  `bash gate/verifier/ci/remote-gate.sh --pkg-root "$PWD/gate" --repo-root "$PWD/subject" …`.
+  The verifier re-resolves identity against the untrusted subject tree, while **all code and
+  policy come from the trusted checkout** (`--pkg-root`), and the signing key is injected here
+  only, from a secret. Only **Stage 2's** check should be made required.
+
+Enforced hardening (asserted by `tests/protocol/workflow-security-test.sh`):
+- `permissions: contents: read` only, no write scope anywhere; concurrency + timeouts.
+- Actions pinned by **immutable commit SHA** (not a mutable `@vN` tag).
+- Signing keys come **only** from secrets in Stage 2; **never** from any repo-controlled input
+  (no `--*-key-file` flag is wired from PR content, no key env is set from the repo).
+- `--require-attestation`: a missing signing key (e.g. a fork without secrets) **fails closed**
+  (exit 30) — a required check cannot go green without an independently signed attestation.
+- Decision → check: `ALLOW`/approved → exit 0 (success); `REQUIRE_APPROVAL` without a valid
+  approval → exit 10 (**non-success**, documented, blocks the check); `BLOCK`/unverifiable →
+  exit 20; usage/fail-closed → exit 30. The uploaded `decision.json` disambiguates
+  `REQUIRE_APPROVAL` from `BLOCK` at the artifact level.
+
 ## Configuring the required status check (operator step — not automated)
 
-1. Add repository/organization secrets `PREFLIGHT_ATTEST_KEY` (and, if using approvals,
-   `PREFLIGHT_APPROVAL_KEY`). Never commit these.
+1. Add repository/organization secrets `PREFLIGHT_ATTEST_KEY` (and, if using approvals, the
+   **distinct** `PREFLIGHT_APPROVAL_KEY`). Never commit these. For a hardened deployment prefer
+   an OIDC → KMS / Ed25519 signer so no long-lived symmetric secret is stored (future work; see
+   "Remaining production gaps").
 2. Enable the `Preflight Remote Decision Gate` workflow for the branches you want gated.
-3. In branch protection for the protected branch, add
-   `Independent remote decision gate` as a **required status check**.
+3. In branch protection for the protected branch, add the **Stage 2** check
+   **`Independent remote decision gate`** as a required status check. Do **not** require the
+   Stage 1 `Collect claim …` check (it is untrusted-context and carries no verdict).
 4. (Optional) restrict who can add an approval artifact by controlling access to
-   `PREFLIGHT_APPROVAL_KEY`.
+   `PREFLIGHT_APPROVAL_KEY` (the approver key must not be held by any producer/authoring agent).
 
 This project does not perform steps 1–4 for you; they require repo-admin rights and are
 outside the safety boundary of the framework build.
 
 ## Remaining production gaps
 
-- Asymmetric signing (Ed25519) for non-repudiation.
+- Asymmetric signing (OIDC → KMS / Ed25519) for true non-repudiation — the hardened alternative
+  to the symmetric-HMAC secret. Recommended for production; keeps no long-lived shared secret.
 - A persistent nonce/one-time-use ledger to eliminate within-window replay.
 - Adapter registration + key distribution for a real multi-producer deployment (the
   known-issuer set is a hard-coded allow-list in the MVP).
 - Binding evidence to a *reproducible* attestation (e.g. a signed CI test run) rather than
   trusting a `tests-pass` claim at face value (v0.1 checks the artifact hash + freshness,
   not re-execution).
+- The Stage-2 subject fetch uses the runner-provided `workflow_run.head_sha`, cross-checked
+  against the Stage-1-recorded head SHA; a production deployment should additionally verify the
+  PR head is an ancestor of / belongs to the expected repo via the API before fetching.
