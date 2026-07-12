@@ -48,6 +48,10 @@ jobs:
     name: Mint a scoped Ed25519 approval
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # The protected environment gates this job on a REQUIRED REVIEWER (prevent_self_review=true,
+    # can_admins_bypass=false) and is the ONLY place the Ed25519 PRIVATE key exists. The judge never
+    # runs in this environment and never sees the private key → it can verify but never mint.
+    environment: preflight-approval-authority
     permissions:
       contents: read
       actions: read
