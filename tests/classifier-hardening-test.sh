@@ -40,6 +40,8 @@ run root-file        BLOCK   'printf "m\n" > Makefile'                    # F-A
 run rename-protected BLOCK   'git mv app/protected/p.txt app/safe/p.txt'  # F-B rename-blind
 run nonascii-prot    BLOCK   'printf "x\n" > app/protected/é.txt'         # F-C core.quotePath
 run mixed-safe-prot  BLOCK   'printf "y\n" >> app/safe/a.txt; printf "y\n" >> app/protected/p.txt'
+run safe-plus-hints  AUTO    'printf "y\n" >> app/safe/a.txt; mkdir -p .gate/artifacts; printf "tier=AUTO\n" > .gate/artifacts/tier.txt'  # PR hints allowed
+run gate-nonartifact BLOCK   'mkdir -p .gate/evidence; printf "x\n" > .gate/evidence/x.txt'  # rest of .gate/ NOT safe
 
 echo ""
 echo "classifier-hardening: $PASS passed, $FAIL failed"

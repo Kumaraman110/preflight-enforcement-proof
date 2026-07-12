@@ -41,10 +41,12 @@ if [ "${#FILES[@]}" -eq 0 ]; then
   echo "BLOCK"; exit 0            # no resolvable diff → fail closed
 fi
 
-# is_safe: the ONLY paths that may keep a change at AUTO.
+# is_safe: the ONLY paths that may keep a change at AUTO. `.gate/artifacts/**` holds the PR's
+# UNTRUSTED evidence hints — safe to permit because their CONTENT is ignored (the tier is
+# independently re-derived); NOT the rest of `.gate/` (evidence/ etc.), which stays unlisted → BLOCK.
 is_safe() {
   case "$1" in
-    app/safe/*|docs/*|README.md|LICENSE|.gitignore) return 0;;
+    app/safe/*|docs/*|.gate/artifacts/*|README.md|LICENSE|.gitignore) return 0;;
     *) return 1;;
   esac
 }
