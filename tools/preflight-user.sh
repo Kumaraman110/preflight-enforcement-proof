@@ -235,16 +235,18 @@ sys.exit(1 if bad else 0)
 PY
 }
 
-# is the Preflight user hook currently registered in settings.json?
-_is_registered(){
-  [ -f "$PF_SETTINGS" ] || return 1
-  case "$(cat "$PF_SETTINGS" 2>/dev/null)" in *preflight/dispatcher.cmd*) return 0;; *) return 1;; esac
-}
-# how many Preflight-owned Bash PreToolUse entries are registered (0 if none / unparseable)?
+# how many Preflight-owned Bash PreToolUse entries are FUNCTIONALLY registered (0 if none / unparseable)?
+# This is the single source of truth for "is the hook registered" — a matcher-aware structured check, NOT
+# a substring scan (a substring like "preflight/dispatcher.cmd" in a note/comment is NOT a live hook).
 _registration_count(){
   [ -f "$PF_SETTINGS" ] || { echo 0; return; }
   jq empty "$PF_SETTINGS" 2>/dev/null || { echo 0; return; }
   jq --arg re "$PF_OWN_RE" '[(.hooks.PreToolUse // [])[] | select(.matcher=="Bash") | (.hooks // [])[] | select((.command // "") | test($re))] | length' "$PF_SETTINGS" 2>/dev/null || echo 0
+}
+# is the Preflight user hook FUNCTIONALLY registered? Keyed to the structured count (review F2): a decoy
+# substring in a comment/customField must NEVER read as registered (that let verify/doctor falsely PASS).
+_is_registered(){
+  [ "$(_registration_count)" -ge 1 ] 2>/dev/null
 }
 
 # register (or refresh) the PreToolUse Bash hook, preserving all other settings, dedup by command identity
@@ -254,13 +256,34 @@ _register_settings(){ # $1 py
   local cmd="\"${disp_fwd}\" user-preflight-router"
   local block; block="$(jq -n --arg cmd "$cmd" '{PreToolUse:[{matcher:"Bash",hooks:[{type:"command",command:$cmd,timeout:35000}]}]}')" || return 1
   local merged
-  if [ -f "$PF_SETTINGS" ]; then
-    # FAIL-CLOSED (review IF1): an existing but UNPARSEABLE settings.json must NOT be overwritten
-    # (that would silently drop the user's unrelated keys). Abort and let the failure trap restore.
-    if ! jq empty "$PF_SETTINGS" 2>/dev/null; then
-      _err "existing $PF_SETTINGS is not valid JSON — refusing to overwrite it. Fix or move it, then re-install."
-      return 1
+  # An EMPTY / whitespace-only / non-OBJECT settings.json is NOT a mergeable object. `jq empty` passes on
+  # empty input and on a bare scalar/array, and merging into it yields empty output (a lone newline) with
+  # NO hook registered — yet the old code declared success (review F1: a silent dead-gate + false success).
+  # Treat "not a JSON object" as a FRESH install (write the {hooks:$blk} block); only a NON-EMPTY,
+  # PARSEABLE, OBJECT settings.json is merged into. An existing object that is not valid JSON is fail-closed.
+  local is_mergeable_object="no"
+  if [ -f "$PF_SETTINGS" ] && [ -s "$PF_SETTINGS" ]; then
+    if ! jq -e 'type=="object"' "$PF_SETTINGS" >/dev/null 2>&1; then
+      # present, non-empty, but not a JSON object (invalid JSON, or a top-level array/scalar/empty-after-ws)
+      if jq empty "$PF_SETTINGS" 2>/dev/null; then
+        # valid JSON but not an object (array/scalar) OR whitespace-only → cannot merge; a non-empty
+        # array/scalar could hold user intent, so refuse rather than silently discard it.
+        if jq -e '. == null' "$PF_SETTINGS" >/dev/null 2>&1 || [ -z "$(tr -d ' \t\r\n' < "$PF_SETTINGS")" ]; then
+          is_mergeable_object="no"   # null / whitespace-only → safe to treat as fresh
+        else
+          _err "existing $PF_SETTINGS is valid JSON but not an object (top-level $(jq -r 'type' "$PF_SETTINGS" 2>/dev/null)) — refusing to overwrite it. Fix or move it, then re-install."
+          return 1
+        fi
+      else
+        # FAIL-CLOSED (review IF1): unparseable settings.json must NOT be overwritten (would drop user keys).
+        _err "existing $PF_SETTINGS is not valid JSON — refusing to overwrite it. Fix or move it, then re-install."
+        return 1
+      fi
+    else
+      is_mergeable_object="yes"
     fi
+  fi
+  if [ "$is_mergeable_object" = "yes" ]; then
     merged="$(jq --argjson blk "$block" --arg re "$PF_OWN_RE" '
       .hooks = (.hooks // {})
       | .hooks.PreToolUse = (
@@ -273,9 +296,14 @@ _register_settings(){ # $1 py
   else
     merged="$(jq -n --argjson blk "$block" '{hooks:$blk}')" || return 1
   fi
+  # The merged result MUST be a non-empty object; guard against an empty/degenerate merge before writing.
+  printf '%s' "$merged" | jq -e 'type=="object"' >/dev/null 2>&1 || { _err "settings merge produced no object — aborting"; return 1; }
   printf '%s\n' "$merged" > "$PF_SETTINGS.tmp" || return 1
   jq empty "$PF_SETTINGS.tmp" 2>/dev/null || { rm -f "$PF_SETTINGS.tmp"; return 1; }
   mv "$PF_SETTINGS.tmp" "$PF_SETTINGS" || return 1
+  # POST-CONDITION (review F1): after writing, the hook MUST be functionally registered. If not, the merge
+  # silently failed — fail the install rather than report a false success with a dead gate.
+  [ "$(_registration_count)" -ge 1 ] || { _err "post-merge registration check failed — the Preflight hook is not present in $PF_SETTINGS after merge"; return 1; }
   return 0
 }
 
@@ -411,10 +439,10 @@ cmd_doctor_project(){
     echo "  user runtime:    NOT INSTALLED (no ACTIVE generation)"
   else
     echo "  user runtime:    version $uver  commit $usha"
-    case "$(cat "$PF_SETTINGS" 2>/dev/null)" in
-      *preflight/dispatcher.cmd*) echo "  user registration: PRESENT in $PF_SETTINGS (PreToolUse Bash → dispatcher.cmd)" ;;
-      *) echo "  user registration: ABSENT from $PF_SETTINGS (user runtime staged but not registered)" ;;
-    esac
+    # Use the FUNCTIONAL (structured, matcher-aware) registration check — not a substring scan that a decoy
+    # comment could satisfy (review F2). Single source of truth: _is_registered → _registration_count.
+    if _is_registered; then echo "  user registration: PRESENT in $PF_SETTINGS (PreToolUse Bash → dispatcher.cmd)"
+    else echo "  user registration: ABSENT from $PF_SETTINGS (user runtime staged but not registered)"; fi
   fi
 
   # ---- find the repo root at/above the given path (read-only) ----

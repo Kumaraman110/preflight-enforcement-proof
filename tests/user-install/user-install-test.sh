@@ -219,6 +219,41 @@ assert d.get("model")=="orig" and d.get("newKey")=="post"
 assert not any(h.get("matcher")=="Bash" and any("dispatcher.cmd" in x.get("command","") for x in h.get("hooks",[])) for h in d.get("hooks",{}).get("PreToolUse",[]))
 PZ
 
+# ── 27. ADVERSARIAL F1: EMPTY settings.json → install must register the hook (no false-success dead gate) ─
+export PREFLIGHT_CLAUDE_HOME="$(new_home)"
+printf '' > "$PREFLIGHT_CLAUDE_HOME/settings.json"   # 0-byte pre-existing file
+pfu install --user --ref "$RESOLVED" --source "$REPO" >/dev/null 2>&1
+if pfu verify --user >/dev/null 2>&1 && python - "$PREFLIGHT_CLAUDE_HOME/settings.json" <<'PY'
+import json,sys
+d=json.load(open(sys.argv[1],encoding="utf-8"))
+pre=d.get("hooks",{}).get("PreToolUse",[])
+assert any(h.get("matcher")=="Bash" and any("dispatcher.cmd" in x.get("command","") for x in h.get("hooks",[])) for h in pre), "hook not registered on empty-settings install"
+PY
+then ok "27 F1: empty settings.json → hook registered + verify PASS (no false-success dead gate)"; else bad "27 F1 empty-settings install left hook unregistered (false success)"; fi
+
+# ── 28. ADVERSARIAL F1b: WHITESPACE-only settings.json → same (must register, not lone-newline no-op) ────
+export PREFLIGHT_CLAUDE_HOME="$(new_home)"
+printf '   \n\t\n' > "$PREFLIGHT_CLAUDE_HOME/settings.json"
+pfu install --user --ref "$RESOLVED" --source "$REPO" >/dev/null 2>&1
+pfu verify --user >/dev/null 2>&1 && ok "28 F1b: whitespace-only settings.json → hook registered + verify PASS" || bad "28 F1b whitespace-only install left hook unregistered"
+
+# ── 29. ADVERSARIAL F2: DECOY substring (no functional Bash hook) → verify must FAIL (not false-PASS) ────
+export PREFLIGHT_CLAUDE_HOME="$(new_home)"
+pfu install --user --ref "$RESOLVED" --source "$REPO" >/dev/null 2>&1
+# replace with a decoy: the dispatcher substring in a NOTE, but only a Write hook (no functional Bash gate)
+cat > "$PREFLIGHT_CLAUDE_HOME/settings.json" <<'EOF'
+{"note":"migrated away from preflight/dispatcher.cmd","hooks":{"PreToolUse":[{"matcher":"Write","hooks":[{"type":"command","command":"my-linter.sh"}]}]}}
+EOF
+pfu verify --user >/dev/null 2>&1 && bad "29 F2: verify FALSELY PASSED on a decoy substring (no functional hook)" || ok "29 F2: decoy substring (no functional Bash hook) → verify FAILS (not fooled by substring)"
+
+# ── 30. ADVERSARIAL F1c: top-level ARRAY settings.json (valid JSON, not an object) → install ABORTS ──────
+export PREFLIGHT_CLAUDE_HOME="$(new_home)"
+printf '[1,2,3]' > "$PREFLIGHT_CLAUDE_HOME/settings.json"
+BEF="$(sha256sum "$PREFLIGHT_CLAUDE_HOME/settings.json" | cut -d' ' -f1)"
+pfu install --user --ref "$RESOLVED" --source "$REPO" >/dev/null 2>&1; RCA=$?
+AFT="$(sha256sum "$PREFLIGHT_CLAUDE_HOME/settings.json" | cut -d' ' -f1)"
+[ "$RCA" != 0 ] && [ "$BEF" = "$AFT" ] && ok "30 F1c: top-level-array settings → install aborts, file untouched" || bad "30 F1c array settings clobbered/accepted (rc=$RCA)"
+
 echo ""
 echo "user-install: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
