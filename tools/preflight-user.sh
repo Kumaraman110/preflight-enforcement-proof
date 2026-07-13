@@ -14,14 +14,17 @@
 # It NEVER copies the working tree. Activation is an atomic pointer swap AFTER checksum validation, so a
 # half-written generation can never go live. On ANY failure the prior settings + pointers are restored.
 #
-# Usage:
-#   preflight-user.sh install  --user --ref <tag|sha> [--from-artifact <tarball>] [--source <code-forge-dir>]
-#   preflight-user.sh verify   --user
-#   preflight-user.sh status   --user
-#   preflight-user.sh version
-#   preflight-user.sh rollback --user
-#   preflight-user.sh uninstall --user
-#   preflight-user.sh doctor   --user
+# Usage (the `preflight` launcher execs this; both spellings work):
+#   preflight install  --user --ref <tag|sha> [--from-artifact <tarball>] [--source <code-forge-dir>]
+#   preflight init --local [--dir <repo>]   # opt THIS repo in (writes gitignored .preflight/config.json)
+#   preflight status  [--dir <repo>]        # active/inactive, owner, version, policy tier, health, remote
+#   preflight doctor  [--dir <repo>]        # diagnose deps, dup hooks, stale runtime, malformed config, git ctx
+#   preflight verify                        # integrity of the active user runtime
+#   preflight disable [--dir <repo>]        # deactivate THIS repo (reversible; keeps config as .disabled)
+#   preflight version
+#   preflight rollback  --user              # swap ACTIVE <-> PREVIOUS generation
+#   preflight uninstall --user              # remove the user-level runtime + hook (unrelated settings kept)
+#   preflight doctor --project <path>       # read-only hook-ownership report for another repo
 set -uo pipefail
 
 RELEASE_VERSION="v0.10.0-rc.3"
@@ -35,6 +38,17 @@ PF_ACTIVE="$PF_USER_HOME/ACTIVE"
 PF_PREVIOUS="$PF_USER_HOME/PREVIOUS"
 PF_DISPATCH="$PF_USER_HOME/dispatcher.cmd"
 PF_BACKUPS="$PF_USER_HOME/settings-backup"
+# Stable management-CLI copy (version-independent, like the dispatcher): the `preflight` launcher execs
+# THIS file, which reads ACTIVE to resolve the versioned runtime. Updated on every install so CLI
+# bugfixes propagate; the immutable, security-critical surface remains the per-generation runtime hooks.
+PF_CLI="$PF_USER_HOME/cli/preflight-user.sh"
+# The launcher lives on PATH. Real installs → ~/bin (or ~/.local/bin); isolated tests (a non-default
+# PREFLIGHT_CLAUDE_HOME) → inside the isolated home so they never pollute the real ~/bin. Overridable.
+_pf_bin_dir(){
+  if [ -n "${PREFLIGHT_BIN_DIR:-}" ]; then echo "$PREFLIGHT_BIN_DIR"; return; fi
+  if [ -n "${PREFLIGHT_CLAUDE_HOME:-}" ] || [ -n "${PREFLIGHT_USER_HOME:-}" ]; then echo "$PF_USER_HOME/bin"; return; fi
+  if [ -d "$HOME/bin" ]; then echo "$HOME/bin"; else echo "$HOME/.local/bin"; fi
+}
 
 # The runtime closure: exactly what the user-level Bash gate needs (kept in lockstep with the engine deps).
 RUNTIME_HOOKS="run-hook.cmd user-preflight-router pre-bash-risk-router pre-push-gate-engine pre-push-gate session-start"
@@ -143,6 +157,9 @@ cmd_install(){
   # stable dispatcher (idempotent overwrite — it is version-independent)
   cp "$STAGE/dispatcher.cmd" "$PF_DISPATCH" 2>/dev/null || cp "$GEN_DIR/dispatcher.cmd" "$PF_DISPATCH"
   chmod +x "$PF_DISPATCH" 2>/dev/null || true
+
+  # stable management CLI + the `preflight` launcher on PATH (version-independent, like the dispatcher).
+  _install_cli_and_launcher || _err "warning: CLI/launcher install incomplete (runtime is still active)"
 
   # ---- Pointer swap = the commit point. PREVIOUS <- old ACTIVE ; ACTIVE <- new sha ----
   if [ -n "$PRIOR_ACTIVE" ] && [ "$PRIOR_ACTIVE" != "$RESOLVED_SHA" ]; then printf '%s\n' "$PRIOR_ACTIVE" > "$PF_PREVIOUS.tmp"; mv "$PF_PREVIOUS.tmp" "$PF_PREVIOUS"; fi
@@ -254,7 +271,7 @@ _register_settings(){ # $1 py
   local py="$1"
   local disp_fwd; disp_fwd="$(printf '%s' "$PF_DISPATCH" | sed 's#\\#/#g')"
   local cmd="\"${disp_fwd}\" user-preflight-router"
-  local block; block="$(jq -n --arg cmd "$cmd" '{PreToolUse:[{matcher:"Bash",hooks:[{type:"command",command:$cmd,timeout:35000}]}]}')" || return 1
+  local block; block="$(jq -n --arg cmd "$cmd" '{PreToolUse:[{matcher:"Bash",hooks:[{type:"command",command:$cmd,timeout:60000}]}]}')" || return 1
   local merged
   # An EMPTY / whitespace-only / non-OBJECT settings.json is NOT a mergeable object. `jq empty` passes on
   # empty input and on a bare scalar/array, and merging into it yields empty output (a lone newline) with
@@ -307,6 +324,137 @@ _register_settings(){ # $1 py
   return 0
 }
 
+# ═══════════════════════════════ CLI + LAUNCHER ════════════════════════════════════════════════════════
+# Install a STABLE copy of this script at $PF_CLI and a thin `preflight` launcher on PATH that execs it.
+# The launcher path never changes across upgrades; only $PF_CLI's contents refresh. Best-effort: a failure
+# here never aborts a successful runtime activation (the runtime is what governs; the launcher is UX sugar).
+_install_cli_and_launcher(){
+  local self bindir launcher
+  self="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+  mkdir -p "$(dirname "$PF_CLI")" || return 1
+  # Copy THIS script verbatim to the stable location (idempotent overwrite).
+  cp "$self" "$PF_CLI" 2>/dev/null || return 1
+  chmod +x "$PF_CLI" 2>/dev/null || true
+  bindir="$(_pf_bin_dir)"; mkdir -p "$bindir" || return 1
+  launcher="$bindir/preflight"
+  # Thin polyglot launcher: on Git-Bash/Unix it execs the stable CLI with bash; it forwards all args and
+  # stdin. It hard-codes ONLY the stable CLI path (never a versioned one), so upgrades need not rewrite it.
+  cat > "$launcher" <<LAUNCH
+#!/usr/bin/env bash
+# preflight — user launcher (installed by preflight-user.sh). Execs the stable management CLI, which
+# resolves the ACTIVE immutable runtime generation. This launcher path is stable across upgrades.
+PF_CLI="${PF_CLI}"
+if [ ! -f "\$PF_CLI" ]; then echo "preflight: management CLI missing at \$PF_CLI — reinstall preflight" >&2; exit 1; fi
+exec bash "\$PF_CLI" "\$@"
+LAUNCH
+  chmod +x "$launcher" 2>/dev/null || true
+  # Windows companion: a preflight.cmd so `preflight` works from cmd.exe/PowerShell too (best-effort).
+  if [ -n "${WINDIR:-}${SystemRoot:-}" ] || case "$(uname -s 2>/dev/null)" in MINGW*|MSYS*|CYGWIN*) true;; *) false;; esac; then
+    local cli_win; cli_win="$(printf '%s' "$PF_CLI" | sed 's#/#\\#g')"
+    cat > "$bindir/preflight.cmd" <<WINCMD
+@echo off
+where bash >nul 2>&1 && (bash "%~dp0preflight" %* & exit /b !errorlevel!)
+echo preflight: bash not found on PATH 1>&2
+exit /b 1
+WINCMD
+  fi
+  echo "preflight-user: launcher at $launcher  (CLI at $PF_CLI)"
+  # PATH hint if the bindir is not currently on PATH.
+  case ":$PATH:" in *":$bindir:"*) : ;; *) echo "preflight-user: NOTE add '$bindir' to your PATH to run 'preflight' directly";; esac
+  return 0
+}
+
+# ═══════════════════════════════ REPO / OPT-IN HELPERS (init/disable/status) ═══════════════════════════
+# Resolve the repo root at/above a directory (read-only, bounded). Echoes the root or the input dir.
+_pf_repo_root(){  # $1 = start dir
+  local d="$1" i=0
+  while [ -n "$d" ] && [ "$i" -lt 40 ]; do
+    if [ -e "$d/.git" ] || [ -f "$d/.preflight/config.json" ] || [ -f "$d/.cpsl/config.json" ] || [ -f "$d/.forge.json" ]; then echo "$d"; return 0; fi
+    local p; p="$(dirname "$d")"; [ "$p" = "$d" ] && break; d="$p"; i=$((i+1))
+  done
+  echo "$1"; return 1
+}
+# The opt-in config path for a repo root (active form), and its disabled sibling.
+_pf_active_config(){ echo "$1/.preflight/config.json"; }
+_pf_disabled_config(){ echo "$1/.preflight/config.json.disabled"; }
+# Add a line to .git/info/exclude if the repo is a git repo and the line is not already present. This keeps
+# Preflight-owned local config UNTRACKED without touching the tracked .gitignore (no tracked change).
+_pf_exclude_local(){  # $1 = repo root ; $2 = pattern (e.g. /.preflight/)
+  local root="$1" pat="$2" gd exf
+  gd="$(cd "$root" 2>/dev/null && git rev-parse --git-dir 2>/dev/null)" || return 0
+  case "$gd" in /*|[A-Za-z]:*) : ;; *) gd="$root/$gd" ;; esac
+  exf="$gd/info/exclude"; mkdir -p "$gd/info" 2>/dev/null || return 0
+  [ -f "$exf" ] && grep -qxF "$pat" "$exf" 2>/dev/null && return 0
+  printf '%s\n' "$pat" >> "$exf" 2>/dev/null || return 0
+  return 0
+}
+
+# ═══════════════════════════════ INIT --local ══════════════════════════════════════════════════════════
+# Activate Preflight in the CURRENT repo by writing a Preflight-owned, gitignored opt-in config. Creates
+# ONLY .preflight/ (config + local exclude). Reports exactly what changed. No tracked change is made.
+cmd_init_local(){
+  local start="${OPT_DIR:-$PWD}" root cfg dis created="" reactivated="no"
+  root="$(_pf_repo_root "$start")"
+  cfg="$(_pf_active_config "$root")"; dis="$(_pf_disabled_config "$root")"
+  echo "preflight init --local"
+  echo "  repo:     $root"
+  if [ -f "$cfg" ]; then
+    echo "  config:   already present at $cfg (repo already opted in) — no change"
+    _pf_exclude_local "$root" "/.preflight/"
+    echo "  status:   ACTIVE"
+    return 0
+  fi
+  mkdir -p "$root/.preflight" || _die "cannot create $root/.preflight"
+  if [ -f "$dis" ]; then
+    mv "$dis" "$cfg" || _die "cannot re-activate $cfg"; reactivated="yes"
+    echo "  config:   re-activated $cfg (was disabled)"
+  else
+    # Minimal, self-documented opt-in config. Ships a safe generic default; the user edits branch.remote etc.
+    cat > "$cfg" <<'CFG'
+{
+  "_note": "Preflight opt-in config (LOCAL, gitignored). Its PRESENCE activates Preflight for this repo.",
+  "mode": "generic",
+  "branch": {
+    "base": "main",
+    "remote": "origin",
+    "_comment_remote": "VERIFY 'remote' is your intended push target (NOT a prod/legacy repo) before pushing.",
+    "forbiddenRemotes": [],
+    "forbiddenRepos": [],
+    "safeRemotes": []
+  }
+}
+CFG
+    created="yes"
+    echo "  config:   created $cfg  (mode=generic, base=main, remote=origin)"
+  fi
+  _pf_exclude_local "$root" "/.preflight/"
+  echo "  exclude:  ensured '/.preflight/' in .git/info/exclude (untracked — no tracked file changed)"
+  echo "  owner:    $(_pf_owner_for_repo "$root")"
+  echo "  status:   ACTIVE"
+  echo ""
+  echo "  Tip: verify 'branch.remote' in $cfg before your first push. Run 'preflight status' to confirm."
+  return 0
+}
+
+# ═══════════════════════════════ DISABLE ═══════════════════════════════════════════════════════════════
+# Deactivate Preflight in the current repo WITHOUT deleting the config: rename config.json → .disabled so the
+# router fast-exits (repo no longer opted in). `preflight init --local` re-activates it. Reversible, local.
+cmd_disable(){
+  local start="${OPT_DIR:-$PWD}" root cfg dis
+  root="$(_pf_repo_root "$start")"
+  cfg="$(_pf_active_config "$root")"; dis="$(_pf_disabled_config "$root")"
+  echo "preflight disable"
+  echo "  repo:     $root"
+  if [ ! -f "$cfg" ]; then
+    if [ -f "$dis" ]; then echo "  status:   already INACTIVE (config disabled at $dis)"; return 0; fi
+    echo "  status:   INACTIVE (no opt-in config present) — nothing to disable"; return 0
+  fi
+  mv "$cfg" "$dis" || _die "cannot disable $cfg"
+  echo "  config:   $cfg → $dis (preserved; re-enable with 'preflight init --local')"
+  echo "  status:   INACTIVE (router now fast-exits for this repo)"
+  return 0
+}
+
 # ═══════════════════════════════ VERIFY ════════════════════════════════════════════════════════════════
 cmd_verify(){
   local py; py="$(_py)" || _die "no python"
@@ -337,19 +485,101 @@ cmd_verify(){
 }
 
 # ═══════════════════════════════ STATUS / VERSION ══════════════════════════════════════════════════════
+# Locate + source lib/hook-arbitration.sh (dev tree, installed .claude/lib, or the ACTIVE runtime gen).
+_pf_load_arbitration(){
+  local here arb sha
+  here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  for arb in "$here/../lib/hook-arbitration.sh" "$here/../.claude/lib/hook-arbitration.sh"; do
+    [ -f "$arb" ] && { . "$arb"; return 0; }
+  done
+  [ -f "$PF_ACTIVE" ] && sha="$(tr -d ' \t\r\n' < "$PF_ACTIVE" 2>/dev/null)"
+  if [ -n "${sha:-}" ] && [ -f "$PF_RUNTIME/$sha/lib/hook-arbitration.sh" ]; then . "$PF_RUNTIME/$sha/lib/hook-arbitration.sh"; return 0; fi
+  return 1
+}
+# Effective owner (USER|PROJECT|AMBIGUOUS|NONE) for a repo root, via the SINGLE shared arbitration rule.
+_pf_owner_for_repo(){  # $1 = repo root
+  local root="$1" cfg="no" c
+  for c in "$root/.preflight/config.json" "$root/.cpsl/config.json" "$root/.forge.json"; do [ -f "$c" ] && { cfg="yes"; break; }; done
+  [ "$cfg" = yes ] || { echo "NONE"; return 0; }
+  if _pf_load_arbitration; then pfa_classify_owner "$root" "$PF_DISPATCH"; echo "$PFA_OWNER"; else echo "USER"; fi
+}
+# Policy tier + push posture derived from the repo's opt-in config (honest, config-derived; not a claim of
+# server-side enforcement). Echoes a one-line summary.
+_pf_policy_summary(){  # $1 = repo root
+  local root="$1" cfg="" c mode="generic" safe=0 forb=0
+  for c in "$root/.preflight/config.json" "$root/.cpsl/config.json" "$root/.forge.json"; do [ -f "$c" ] && { cfg="$c"; break; }; done
+  [ -n "$cfg" ] || { echo "n/a (repo not opted in)"; return 0; }
+  if command -v jq >/dev/null 2>&1 && jq empty "$cfg" >/dev/null 2>&1; then
+    mode="$(jq -r '.mode // "generic"' "$cfg" 2>/dev/null)"
+    safe="$(jq -r '((.branch.safeRemotes // []) | length)' "$cfg" 2>/dev/null || echo 0)"
+    forb="$(jq -r '(((.branch.forbiddenRemotes // []) + (.branch.forbiddenRepos // [])) | length)' "$cfg" 2>/dev/null || echo 0)"
+  fi
+  local tier="AUTO/CONFIRM/BLOCK (reversibility-tiered)"
+  [ "${safe:-0}" -gt 0 ] 2>/dev/null && tier="STRICT — AUTO restricted to safeRemotes allowlist"
+  echo "mode=$mode; push-gate=$tier; denylist entries=$forb (agent Bash-tool guard, fail-open by design; not server-side)"
+}
+# Is remote (CI-side) enforcement configured for this repo? Detects the remote-gate collector workflow or a
+# protocol policy present in the repo. HONEST: local install is advisory/agent-side; remote is the authority.
+_pf_remote_enforcement(){  # $1 = repo root
+  local root="$1"
+  if [ -f "$root/.github/workflows/preflight-remote-gate-collect.yaml" ] || [ -f "$root/.github/workflows/preflight-remote-gate.yaml" ]; then
+    echo "configured (remote-gate workflow present) — this is the authoritative required-check"; return 0
+  fi
+  echo "not configured (local agent-side advisory gate only; no server-side required-check)"
+}
+# One-line runtime-health check (no heavy verify): ACTIVE resolves + gen dir + router present + registered.
+_pf_runtime_health(){
+  local sha
+  [ -f "$PF_ACTIVE" ] || { echo "INACTIVE (no user runtime installed)"; return 0; }
+  sha="$(tr -d ' \t\r\n' < "$PF_ACTIVE" 2>/dev/null)"
+  case "$sha" in *[!0-9a-fA-F]*|"") echo "UNHEALTHY (ACTIVE not a valid sha)"; return 0;; esac
+  [ -d "$PF_RUNTIME/$sha" ] || { echo "UNHEALTHY (ACTIVE generation dir missing)"; return 0; }
+  [ -f "$PF_DISPATCH" ] || { echo "UNHEALTHY (stable dispatcher missing)"; return 0; }
+  [ -f "$PF_RUNTIME/$sha/hooks/user-preflight-router" ] || { echo "UNHEALTHY (router missing from active gen)"; return 0; }
+  if _is_registered; then echo "HEALTHY (installed, registered, router present)"; else echo "STAGED (installed but NOT registered in settings.json)"; fi
+}
+
 cmd_status(){
-  echo "preflight user-level status"
-  echo "  user home:   $PF_USER_HOME"
-  echo "  settings:    $PF_SETTINGS $( [ -f "$PF_SETTINGS" ] && echo '(present)' || echo '(absent)')"
-  echo "  ACTIVE:      $( [ -f "$PF_ACTIVE" ] && cat "$PF_ACTIVE" || echo '(none)')"
-  echo "  PREVIOUS:    $( [ -f "$PF_PREVIOUS" ] && cat "$PF_PREVIOUS" || echo '(none)')"
-  echo "  registered:  $( _is_registered && echo yes || echo no)"
-  if [ -d "$PF_RUNTIME" ]; then echo "  generations: $(find "$PF_RUNTIME" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')"; fi
-  local sha; [ -f "$PF_ACTIVE" ] && sha="$(tr -d ' \t\r\n' < "$PF_ACTIVE")"
-  [ -n "${sha:-}" ] && [ -f "$PF_RUNTIME/$sha/RELEASE_VERSION" ] && echo "  version:     $(cat "$PF_RUNTIME/$sha/RELEASE_VERSION")"
+  local start="${OPT_DIR:-$PWD}" root owner active_sha ver
+  root="$(_pf_repo_root "$start")"
+  owner="$(_pf_owner_for_repo "$root")"
+  [ -f "$PF_ACTIVE" ] && active_sha="$(tr -d ' \t\r\n' < "$PF_ACTIVE" 2>/dev/null)"
+  [ -n "${active_sha:-}" ] && [ -f "$PF_RUNTIME/$active_sha/RELEASE_VERSION" ] && ver="$(tr -d ' \t\r\n' < "$PF_RUNTIME/$active_sha/RELEASE_VERSION")"
+
+  echo "preflight status"
+  # ── this repo ──
+  echo "  repo:              $root"
+  if [ "$owner" = "NONE" ]; then
+    echo "  active here:       NO — this repo has NOT opted in (run: preflight init --local)"
+  else
+    echo "  active here:       YES — Preflight governs this repo"
+  fi
+  echo "  ownership:         $owner$( [ "$owner" = NONE ] && echo '  (no governing runtime)')"
+  echo "  policy:            $(_pf_policy_summary "$root")"
+  echo "  remote enforcement:$(printf ' %s' "$(_pf_remote_enforcement "$root")")"
+  # ── the user-level install ──
+  echo "  --- user install ---"
+  echo "  version:           ${ver:-（none active)}"
+  echo "  runtime health:    $(_pf_runtime_health)"
+  echo "  ACTIVE:            $( [ -f "$PF_ACTIVE" ] && cat "$PF_ACTIVE" || echo '(none)')"
+  echo "  PREVIOUS:          $( [ -f "$PF_PREVIOUS" ] && cat "$PF_PREVIOUS" || echo '(none)')"
+  echo "  registered (user): $( _is_registered && echo yes || echo no)"
+  if [ -d "$PF_RUNTIME" ]; then echo "  generations:       $(find "$PF_RUNTIME" -maxdepth 1 -mindepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')"; fi
+  echo "  settings:          $PF_SETTINGS $( [ -f "$PF_SETTINGS" ] && echo '(present)' || echo '(absent)')"
   return 0
 }
-cmd_version(){ echo "$RELEASE_VERSION"; }
+# version: report what is ACTUALLY governing (the ACTIVE generation), not just the CLI's compiled constant.
+cmd_version(){
+  local sha ver
+  [ -f "$PF_ACTIVE" ] && sha="$(tr -d ' \t\r\n' < "$PF_ACTIVE" 2>/dev/null)"
+  if [ -n "${sha:-}" ] && [ -f "$PF_RUNTIME/$sha/RELEASE_VERSION" ]; then
+    ver="$(tr -d ' \t\r\n' < "$PF_RUNTIME/$sha/RELEASE_VERSION")"
+    if [ "$ver" = "$RELEASE_VERSION" ]; then echo "$ver"
+    else echo "$ver (active runtime; CLI $RELEASE_VERSION)"; fi
+  else
+    echo "$RELEASE_VERSION (CLI; no active runtime)"
+  fi
+}
 
 # ═══════════════════════════════ ROLLBACK ══════════════════════════════════════════════════════════════
 cmd_rollback(){
@@ -511,26 +741,108 @@ cmd_doctor_project(){
   return 0
 }
 
+# Diagnose the CURRENT repo for the five classes the goal requires: duplicate hooks, stale runtime,
+# malformed config, missing dependencies, unsupported Git contexts. Prints findings + EXACT remediation.
+# READ-ONLY. Returns the count of problems found (0 = clean) via the global _PF_DOCTOR_PROBLEMS.
+_PF_DOCTOR_PROBLEMS=0
+_pf_doctor_diagnose_repo(){  # $1 = start dir
+  local root; root="$(_pf_repo_root "$1")"
+  echo "  --- repo diagnostics ($root) ---"
+
+  # (a) unsupported Git context: bare repo, detached/rebase/merge in progress, worktree edge, or non-repo.
+  local gd="" inside
+  inside="$(cd "$root" 2>/dev/null && git rev-parse --is-inside-work-tree 2>/dev/null)" || inside=""
+  if [ "$inside" != "true" ]; then
+    if (cd "$root" 2>/dev/null && git rev-parse --is-bare-repository 2>/dev/null | grep -q true); then
+      echo "  git context:      BARE repository — push-gating is designed for work-tree clones."
+      echo "                    FIX: run Preflight from a normal (non-bare) clone."
+      _PF_DOCTOR_PROBLEMS=$((_PF_DOCTOR_PROBLEMS+1))
+    else
+      echo "  git context:      NOT a git work tree — the push gate has nothing to govern here (OK if intended)."
+    fi
+  else
+    gd="$(cd "$root" && git rev-parse --git-dir 2>/dev/null)"
+    local state="clean"
+    [ -d "$root/$gd/rebase-merge" ] || [ -d "$root/$gd/rebase-apply" ] && state="rebase-in-progress"
+    [ -f "$root/$gd/MERGE_HEAD" ] && state="merge-in-progress"
+    echo "  git context:      work tree OK (git-dir=$gd; state=$state)"
+  fi
+
+  # (b) opt-in config present + parseable (malformed config).
+  local cfg="" c
+  for c in "$root/.preflight/config.json" "$root/.cpsl/config.json" "$root/.forge.json"; do [ -f "$c" ] && { cfg="$c"; break; }; done
+  if [ -z "$cfg" ]; then
+    if [ -f "$root/.preflight/config.json.disabled" ]; then
+      echo "  opt-in config:    DISABLED ($root/.preflight/config.json.disabled)"
+      echo "                    FIX: run 'preflight init --local' to re-enable."
+    else
+      echo "  opt-in config:    none — repo not opted in (run 'preflight init --local' to activate)."
+    fi
+  else
+    if command -v jq >/dev/null 2>&1; then
+      if jq empty "$cfg" >/dev/null 2>&1; then echo "  opt-in config:    $cfg (valid JSON)"
+      else echo "  opt-in config:    MALFORMED — $cfg is not valid JSON."; echo "                    FIX: correct the JSON or 'preflight disable' then 'preflight init --local'."; _PF_DOCTOR_PROBLEMS=$((_PF_DOCTOR_PROBLEMS+1)); fi
+    else echo "  opt-in config:    $cfg (present; install jq to validate)"; fi
+    # config.local overlay malformed?
+    if [ -f "$root/.preflight/config.local.json" ] && command -v jq >/dev/null 2>&1 && ! jq empty "$root/.preflight/config.local.json" >/dev/null 2>&1; then
+      echo "  local overlay:    MALFORMED — .preflight/config.local.json is not valid JSON."
+      echo "                    FIX: correct or remove it."; _PF_DOCTOR_PROBLEMS=$((_PF_DOCTOR_PROBLEMS+1))
+    fi
+  fi
+
+  # (c) ownership + duplicate hooks + stale project runtime, via the SHARED arbitration rule.
+  if [ -n "$cfg" ] && _pf_load_arbitration; then
+    pfa_classify_owner "$root" "$PF_DISPATCH"
+    echo "  effective owner:  $PFA_OWNER"
+    if [ "$PFA_DUP_RISK" = yes ]; then
+      echo "  duplicate hooks:  YES — a project settings entry re-invokes the SAME user runtime (double-exec risk)."
+      echo "                    FIX: remove the user-runtime reference from the project settings file"
+      echo "                         (the user-level install already governs this repo)."
+      _PF_DOCTOR_PROBLEMS=$((_PF_DOCTOR_PROBLEMS+1))
+    else
+      echo "  duplicate hooks:  none detected"
+    fi
+    if [ "$PFA_STALE" = yes ]; then
+      echo "  stale runtime:    YES — a project registration points at a missing/empty hook file."
+      echo "                    FIX: reinstall the project runtime, or remove the stale registration."
+      _PF_DOCTOR_PROBLEMS=$((_PF_DOCTOR_PROBLEMS+1))
+    else
+      echo "  stale runtime:    none detected"
+    fi
+  fi
+}
+
 cmd_doctor(){
   # doctor --project <path> → the read-only hook-arbitration report (does not require --user).
   if [ -n "${OPT_PROJECT:-}" ]; then cmd_doctor_project "$OPT_PROJECT"; return $?; fi
-  echo "preflight user-level doctor"
-  local py; py="$(_py)" && echo "  python:   $py OK" || echo "  python:   MISSING (fatal)"
-  command -v jq >/dev/null 2>&1 && echo "  jq:       $(jq --version)" || echo "  jq:       MISSING (settings merge needs it)"
-  command -v git >/dev/null 2>&1 && echo "  git:      $(git --version)" || echo "  git:      MISSING"
-  echo "  claude:   $(claude --version 2>/dev/null || echo 'not on PATH')"
-  cmd_status
+  _PF_DOCTOR_PROBLEMS=0
+  echo "preflight doctor"
+  echo "  --- dependencies ---"
+  local py; py="$(_py)" && echo "  python:   $py OK" || { echo "  python:   MISSING — install Python 3 (needed for manifest/checksum)."; _PF_DOCTOR_PROBLEMS=$((_PF_DOCTOR_PROBLEMS+1)); }
+  command -v jq >/dev/null 2>&1 && echo "  jq:       $(jq --version)" || { echo "  jq:       MISSING — install jq (needed for settings merge + config validation)."; _PF_DOCTOR_PROBLEMS=$((_PF_DOCTOR_PROBLEMS+1)); }
+  command -v git >/dev/null 2>&1 && echo "  git:      $(git --version)" || { echo "  git:      MISSING — install git."; _PF_DOCTOR_PROBLEMS=$((_PF_DOCTOR_PROBLEMS+1)); }
+  command -v timeout >/dev/null 2>&1 && echo "  timeout:  OK (candidate-path deadline enforced)" || echo "  timeout:  MISSING — engine runs unbounded on this host (degrades gracefully; install coreutils for the deadline)."
+  echo "  claude:   $(claude --version 2>/dev/null || echo 'not on PATH (Claude Code hooks inactive until installed)')"
+  # user-runtime health
+  echo "  --- user runtime ---"
+  echo "  health:   $(_pf_runtime_health)"
+  # repo-specific diagnostics
+  _pf_doctor_diagnose_repo "${OPT_DIR:-$PWD}"
   echo "  --- integrity ---"
   cmd_verify || true
+  echo ""
+  if [ "$_PF_DOCTOR_PROBLEMS" -eq 0 ]; then echo "doctor: no problems detected"; else echo "doctor: $_PF_DOCTOR_PROBLEMS problem(s) detected — see FIX lines above"; fi
   return 0
 }
 
 # ═══════════════════════════════ arg parse ═════════════════════════════════════════════════════════════
 SUB="${1:-}"; shift 2>/dev/null || true
-OPT_REF=""; OPT_ARTIFACT=""; OPT_SOURCE=""; OPT_USER=0; OPT_PROJECT=""
+OPT_REF=""; OPT_ARTIFACT=""; OPT_SOURCE=""; OPT_USER=0; OPT_PROJECT=""; OPT_LOCAL=0; OPT_DIR=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --user) OPT_USER=1; shift;;
+    --local) OPT_LOCAL=1; shift;;
+    --dir) OPT_DIR="${2:-}"; shift 2;;
     --ref) OPT_REF="${2:-}"; shift 2;;
     --from-artifact) OPT_ARTIFACT="${2:-}"; shift 2;;
     --source) OPT_SOURCE="${2:-}"; shift 2;;
@@ -539,14 +851,32 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+_usage(){ cat <<'USAGE'
+preflight — usable governance CLI (user-level install)
+
+  preflight init --local [--dir R]   opt this repo in (writes gitignored .preflight/config.json; no tracked change)
+  preflight status  [--dir R]        active/inactive · owner (USER/PROJECT) · version · policy tier · health · remote
+  preflight doctor  [--dir R]        diagnose deps, duplicate hooks, stale runtime, malformed config, git context
+  preflight verify                   integrity of the active user runtime (manifest + registration + dispatcher)
+  preflight disable [--dir R]        deactivate this repo (reversible; keeps config as .disabled)
+  preflight version                  the governing runtime version
+  preflight rollback  --user         swap ACTIVE <-> PREVIOUS generation
+  preflight uninstall --user         remove the user runtime + hook (unrelated settings preserved)
+  preflight install   --user --ref <tag|sha> [--from-artifact T] [--source DIR]
+  preflight doctor    --project P    read-only hook-ownership report for another repo
+USAGE
+}
+
 case "$SUB" in
   install)   [ "$OPT_USER" = 1 ] || _die "install requires --user"; cmd_install;;
+  init)      [ "$OPT_LOCAL" = 1 ] || _die "init requires --local (only local activation is supported)"; cmd_init_local;;
+  disable)   cmd_disable;;
   verify)    cmd_verify;;
   status)    cmd_status;;
   version)   cmd_version;;
   rollback)  [ "$OPT_USER" = 1 ] || _die "rollback requires --user"; cmd_rollback;;
   uninstall) [ "$OPT_USER" = 1 ] || _die "uninstall requires --user"; cmd_uninstall;;
   doctor)    cmd_doctor;;
-  ""|-h|--help|help) echo "usage: preflight-user.sh {install|verify|status|version|rollback|uninstall|doctor} [--user] [--project DIR] [--ref R] [--from-artifact T] [--source DIR]";;
-  *) _die "unknown subcommand: $SUB";;
+  ""|-h|--help|help) _usage;;
+  *) _die "unknown subcommand: $SUB (run 'preflight --help')";;
 esac
