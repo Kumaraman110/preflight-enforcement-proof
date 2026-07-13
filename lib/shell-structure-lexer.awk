@@ -312,7 +312,13 @@ function analyze_simple(parent, ctx, start, end, depth,
       }
     }
     if (ti <= TN) { a1s = TS[ti]; a1e = TE[ti]; if (tok_computed(a1s, a1e)) subcomp = 1; else sub1 = unquote(a1s, a1e) }
-    if (subcomp == 0 && ti+1 <= TN) { a2s = TS[ti+1]; a2e = TE[ti+1]; if (tok_computed(a2s, a2e)) subcomp = 1; else sub2 = unquote(a2s, a2e) }
+    # The 2-token subcommand window (sub1 sub2) exists ONLY for gh's two-word verbs (`gh pr create`,
+    # `gh pr merge`). For GIT the subcommand is the SINGLE first non-option token: `git push` is a push,
+    # but `git stash push` / `git config push` / `git tag push` are NOT pushes — `push` there is the
+    # subcommand's ARGUMENT, not the git subcommand. Reading a 2-token window for git made the engine's
+    # `*" push "*` match fire on `stash push` etc. (a false-positive BLOCK on benign local commands). So
+    # only widen to sub2 for the gh family; git stays single-token.
+    if (basename(prog_lit) != "git" && subcomp == 0 && ti+1 <= TN) { a2s = TS[ti+1]; a2e = TE[ti+1]; if (tok_computed(a2s, a2e)) subcomp = 1; else sub2 = unquote(a2s, a2e) }
     subcmd = sub1; if (sub2 != "") subcmd = sub1 " " sub2
     if (subcomp == 1) { opacity = "OPAQUE"; rcode = RC["computed-subcmd"] }
   }

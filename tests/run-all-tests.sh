@@ -1514,13 +1514,30 @@ run_behavioral_tests() {
   local nodup_test="$SCRIPT_DIR/behavioral/no-duplicate-exec-test.sh"
   if [ -f "$nodup_test" ]; then
     if bash "$nodup_test"; then
-      PASSES=$((PASSES + 11))
+      PASSES=$((PASSES + 12))
     else
       FAILURES=$((FAILURES + 1))
-      red "FAIL: no-duplicate-exec tests failed (exactly one authoritative Preflight runtime must adjudicate a single Bash event; the user runtime must yield for a project-owned repo and write nothing while deferring; a stale/malformed project registration must not drop the count to zero)"
+      red "FAIL: no-duplicate-exec tests failed (exactly one authoritative Preflight runtime must adjudicate a single Bash event; the user runtime must yield for a project-owned repo and write nothing while deferring; a stale/malformed project registration must not drop the count to zero; the inline fallback must delegate on an incidental substring and yield on a real branch-stable project)"
     fi
   else
     yellow "SKIP: no-duplicate-exec-test.sh not found"
+  fi
+
+  # ── v0.10.0-rc.3 router quoting bypass + git 2-token subcommand false-positive (two adversarial-review
+  # findings). A quoted program/subcommand token ("git" push / git "push" / git p"ush" / "gh" pr merge) must
+  # still be recognized as a governed candidate and routed to the engine (the recognizer unquotes tokens),
+  # never silently allowed; non-candidates stay fast-allow. And `git stash push`/`git config push`/`git tag
+  # push` must NOT be flagged as pushes (git subcommand is single-token; the 2-token window is gh-only). ──
+  local rq_test="$SCRIPT_DIR/behavioral/router-quoting-and-subcmd-test.sh"
+  if [ -f "$rq_test" ]; then
+    if bash "$rq_test"; then
+      PASSES=$((PASSES + 21))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: router-quoting-and-subcmd tests failed (a quoted git/gh program or subcommand token must route to the engine, never silent-allow; non-candidates must stay fast-allow; git stash/config/tag push must not be mis-flagged as pushes while gh pr create/merge two-word verbs are preserved)"
+    fi
+  else
+    yellow "SKIP: router-quoting-and-subcmd-test.sh not found"
   fi
 }
 

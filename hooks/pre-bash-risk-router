@@ -123,6 +123,14 @@ _rtr_structural() {  # $1 = command string (raw, JSON-escaped — we operate ZER
     set -- $seg
     set +f
     [ "$#" -gt 0 ] || continue
+    # UNQUOTE every token: bash strips shell quotes at runtime, so `"git"`, `git "push"`, `p"ush"`,
+    # `git""` all execute a real `git push`. The word-split above keeps the quote BYTES in the tokens, so
+    # a literal `case "$1" in git)` / `[ "$1" = push ]` would MISS them → the recognizer would not flag the
+    # candidate → the engine never runs → a governed push silently allowed (the router-quoting bypass).
+    # Removing quote characters can only ever expose MORE candidates (the engine then makes the real,
+    # quote-aware decision), never hide one — the fail-safe direction. Strip " and ' from all positional
+    # params up front so every match below sees the executed token.
+    { local _uq _ua=(); for _uq in "$@"; do _uq="${_uq//\"/}"; _uq="${_uq//\'/}"; _ua+=("$_uq"); done; set -- "${_ua[@]}"; }
     # Strip leading env-assignments (VAR=val) and a `command` / `\command` prefix (repeatable).
     while [ "$#" -gt 0 ]; do
       case "$1" in [A-Za-z_]*=*) shift ;; command|\\command) shift ;; *) break ;; esac
