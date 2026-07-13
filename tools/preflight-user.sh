@@ -294,9 +294,16 @@ cmd_verify(){
   [ -f "$gen/hooks/user-preflight-router" ] || { _err "active generation missing user-preflight-router"; rc=1; }
   # registered in settings
   if _is_registered; then echo "OK hook registered in settings.json"; else _err "hook NOT registered in settings.json"; rc=1; fi
-  # version consistency
+  # version: the ACTIVE generation must record a well-formed RELEASE_VERSION (self-consistency). It need
+  # NOT equal the CLI's compiled-in RELEASE_VERSION — after a legitimate ROLLBACK the active generation is
+  # an OLDER version (e.g. rc.1) while the CLI is newer (rc.2); that is a VALID state, not an integrity
+  # failure (v0.10.0-rc.2 fix). Integrity is manifest + registration + dispatcher (checked above). We
+  # report the active version, and note when it differs from the CLI (informational, non-failing).
   local ver=""; [ -f "$gen/RELEASE_VERSION" ] && ver="$(tr -d ' \t\r\n' < "$gen/RELEASE_VERSION")"
-  [ "$ver" = "$RELEASE_VERSION" ] && echo "OK version $ver" || { _err "version mismatch: gen=$ver cli=$RELEASE_VERSION"; rc=1; }
+  case "$ver" in
+    v[0-9]*) if [ "$ver" = "$RELEASE_VERSION" ]; then echo "OK version $ver"; else echo "OK version $ver (active generation differs from CLI $RELEASE_VERSION — expected after a rollback)"; fi ;;
+    *) _err "active generation has no valid RELEASE_VERSION"; rc=1 ;;
+  esac
   [ "$rc" = 0 ] && echo "VERIFY: PASS" || echo "VERIFY: FAIL"
   return $rc
 }
