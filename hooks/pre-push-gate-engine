@@ -88,14 +88,20 @@ done
 
 # ── Subprocess wedge-bounding (Layer 2 of the fail-closed conversion) ─────────
 # Each wedge-prone external call (git remote get-url, git rev-parse, jq config read) is run
-# under a SHORT per-call timeout, so a SINGLE stalled subprocess fails closed in ~3s with a
-# precise diagnostic instead of riding the 8s self-watchdog backstop. Fail direction CLOSED:
+# under a per-call timeout, so a SINGLE stalled subprocess fails closed with a precise diagnostic
+# instead of riding the self-watchdog backstop. Fail direction CLOSED:
 # a TIMED-OUT call (124) or signal-kill (137) sets a FILESYSTEM wedge flag — a shell variable
 # would not survive the `$(...)` subshells these calls run inside, but a file write does — and
 # the main shell checks the flag at each allow/ask decision point and BLOCKS (exit 2). A NORMAL
 # non-zero (e.g. `git remote get-url` exit 2 for an absent remote) is NOT a wedge: it is a
 # legitimate empty result, left to the existing `|| true` fail-open-by-design resolution paths.
-_PFG_SUBPROC_TIMEOUT=3
+# BUDGET (8s, was 3s): the timeout must distinguish a genuine HANG (credential/network prompt =
+# effectively infinite) from a slow-but-legitimate spawn. On a heavy endpoint-security host
+# (scan-on-exec) a normal `git`/`jq` invocation itself costs 2–4s, so a 3s bound tripped the wedge
+# flag on legitimate calls → intermittent spurious BLOCK of a push that should CONFIRM. 8s clears the
+# measured legitimate spawn cost with margin while a real hang (>8s and unbounded) still fails closed.
+# The short-circuit below keeps the total bounded: once ANY call wedges, remaining calls return instantly.
+_PFG_SUBPROC_TIMEOUT=8
 _PFG_WEDGE_FLAG="${TMPDIR:-/tmp}/.pfg-wedge.$$"
 rm -f "$_PFG_WEDGE_FLAG" 2>/dev/null || true
 trap 'rm -f "$_PFG_WEDGE_FLAG" 2>/dev/null || true' EXIT

@@ -244,15 +244,19 @@ fi
 # hooks.json Bash-hook `timeout` (×1000) and that the derived ceiling clears the platform kill — if either
 # the registration or this constant changes without the other, that coupling test FAILS (the dead-gate /
 # dual-source bug class CLAUDE.md rule 5 names).
-_RTR_PLATFORM_TIMEOUT_S=35     # MUST equal hooks.json PreToolUse Bash hook "timeout" (35000ms) — see coupling test
+_RTR_PLATFORM_TIMEOUT_S=60     # MUST equal hooks.json PreToolUse Bash hook "timeout" (60000ms) — see coupling test
 _RTR_KILL_GRACE_S=2            # `timeout -k 2`: SIGKILL the engine 2s after SIGTERM if it ignores SIGTERM
 _RTR_OVERHEAD_MARGIN_S=10      # headroom for the router's OWN startup + post-engine teardown spawns (slow-spawn host)
 # Ceiling: the largest engine deadline that still lets the router's exit 2 beat the platform SIGKILL.
-_RTR_DEADLINE_CEILING=$(( _RTR_PLATFORM_TIMEOUT_S - _RTR_KILL_GRACE_S - _RTR_OVERHEAD_MARGIN_S ))   # 35-2-10 = 23
+_RTR_DEADLINE_CEILING=$(( _RTR_PLATFORM_TIMEOUT_S - _RTR_KILL_GRACE_S - _RTR_OVERHEAD_MARGIN_S ))   # 60-2-10 = 48
 [ "$_RTR_DEADLINE_CEILING" -lt 10 ] && _RTR_DEADLINE_CEILING=10   # never let the derivation invert below the floor
-# Default deadline = the safe ceiling (NOT the old unsafe 30s). On a normal host the engine decides in
-# seconds, so 23s is ample; on a pathologically slow host NO sub-platform deadline can let the engine
-# finish, so the candidate fails CLOSED (block) — the SAFE direction — instead of fail-OPEN via rc=137.
+# Default deadline = the safe ceiling. On a normal host the engine decides in <1s, so 48s is far more than
+# ample; the wider budget exists for heavy endpoint-security (scan-on-exec) hosts where each git/jq/awk spawn
+# costs seconds — there the engine reaches its CORRECT verdict (measured worst-case ~26s) and must not be
+# killed mid-decision (that swallowed a legitimate CONFIRM into a spurious fail-closed BLOCK). On a
+# pathologically slow host NO sub-platform deadline can let the engine finish, so the candidate STILL fails
+# CLOSED (block) — the SAFE direction — instead of fail-OPEN via rc=137. The ceiling stays strictly under
+# the platform kill so the router's clean exit 2 always wins the race.
 _eng_deadline="${PREFLIGHT_ENGINE_DEADLINE:-$_RTR_DEADLINE_CEILING}"
 case "$_eng_deadline" in (*[!0-9]*|'') _eng_deadline=$_RTR_DEADLINE_CEILING ;; esac   # non-numeric/empty → safe default
 # OVERFLOW-SAFE clamp. A huge env value (e.g. 22 digits) overflows bash's `test` int64, so a NAIVE

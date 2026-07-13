@@ -54,6 +54,25 @@ else
   fi
 fi
 
+# ── (1b) REGISTRATION SOURCES agree with hooks.json (the INSTALLERS write the live timeout) ───────────────
+# hooks.json is the reference, but two installers ALSO emit a PreToolUse Bash `timeout` into a consumer's
+# settings: tools/preflight-user.sh (user-level) and tools/preflight-runtime-install.sh (project branch-stable).
+# If either drifts from hooks.json, an INSTALLED consumer runs with a platform timeout that no longer matches
+# the router's derived ceiling → the fail-OPEN race can silently return on that install. Assert both equal the
+# hooks.json Bash timeout (ms). (Same dual-source dead-gate class CLAUDE.md rule 5 names.)
+if [ -n "${HJ_TIMEOUT_MS:-}" ]; then
+  for pair in "user-installer:$ROOT/tools/preflight-user.sh" "runtime-installer:$ROOT/tools/preflight-runtime-install.sh"; do
+    lbl="${pair%%:*}"; f="${pair#*:}"
+    [ -f "$f" ] || { bad "missing $lbl ($f)"; continue; }
+    # the registration line builds a jq object with `timeout:<ms>` for the Bash PreToolUse hook
+    got="$(grep -oE 'timeout:[0-9]+' "$f" | head -1 | sed -E 's/timeout://')"
+    if [ -z "$got" ]; then bad "$lbl: could not find a 'timeout:<ms>' registration literal in $f"
+    elif [ "$got" -eq "$HJ_TIMEOUT_MS" ]; then ok "$lbl registers timeout:${got} == hooks.json (${HJ_TIMEOUT_MS}ms)"
+    else bad "DUAL-SOURCE DRIFT: $lbl registers timeout:${got}ms but hooks.json is ${HJ_TIMEOUT_MS}ms — an install from this source would run the WRONG platform timeout. Re-sync it with hooks.json."
+    fi
+  done
+fi
+
 # Derive the ceiling the way the router does and assert it clears the platform kill with margin.
 KILL_GRACE="$(grep -E '^_RTR_KILL_GRACE_S=' "$ROUTER" | head -1 | sed -E 's/^_RTR_KILL_GRACE_S=([0-9]+).*/\1/')"
 OVERHEAD="$(grep -E '^_RTR_OVERHEAD_MARGIN_S=' "$ROUTER" | head -1 | sed -E 's/^_RTR_OVERHEAD_MARGIN_S=([0-9]+).*/\1/')"

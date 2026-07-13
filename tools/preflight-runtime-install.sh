@@ -83,11 +83,11 @@ PFG_BASH_OWN_RE='run-hook\.cmd.*(pre-push-gate-check|pre-bash-risk-router)'
 # ── settings.local.json hooks block: register the Bash gate at an ABSOLUTE pinned-runtime path ────────────
 # Shell form (no `args`) is MANDATORY: run-hook.cmd is a .cmd shim and Windows cannot spawn a .cmd in exec
 # form (DOCUMENTED). The absolute path is baked because ${CLAUDE_PROJECT_DIR} resolves to the WORKTREE root,
-# not the common dir. Forward slashes are safest on Git-Bash. Keep the SAME timeout as hooks.json (35000).
+# not the common dir. Forward slashes are safest on Git-Bash. Keep the SAME timeout as hooks.json (60000).
 emit_local_settings_merge() {  # $1 = existing settings.local.json (may be missing) ; $2 = abs run-hook.cmd path
   local existing="$1" runhook="$2" block
   block="$(jq -n --arg cmd "\"${runhook}\" pre-bash-risk-router \"\$TOOL_INPUT\"" '
-    { PreToolUse: [ { matcher: "Bash", hooks: [ { type:"command", command:$cmd, timeout:35000, async:false } ] } ] }')"
+    { PreToolUse: [ { matcher: "Bash", hooks: [ { type:"command", command:$cmd, timeout:60000, async:false } ] } ] }')"
   if [ -f "$existing" ] && jq empty "$existing" 2>/dev/null; then
     # Preserve every other key/layer AND any of the USER's OWN local hooks — including a foreign local Bash
     # hook. We must NOT strip all Bash matcher entries (that would delete a user's personal linter hook).
