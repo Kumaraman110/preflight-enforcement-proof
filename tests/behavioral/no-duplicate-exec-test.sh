@@ -158,6 +158,28 @@ fire_user "git push origin main" "$R"
 AFTER="$(find "$R/.preflight" -type f | LC_ALL=C sort)"
 [ "$BEFORE" = "$AFTER" ] && ok "11 user dispatcher deferring wrote NO .preflight file (read-only)" || bad "11 defer wrote files: $(diff <(echo "$BEFORE") <(echo "$AFTER"))"
 
+# ── 12. NF-2 REGRESSION: router INLINE FALLBACK (lib unresolvable) must NOT silent-allow. A repo with an
+#    incidental router substring (a note) + only a Write gate, NO real Bash gate → the fallback must NOT
+#    yield (it must delegate to the user gate); a genuine branch-stable project → must yield. We co-locate
+#    the router WITHOUT the lib to force the inline fallback. The user delegate here exits 2 (= "ran").
+run_event
+DFB="$(mktemp -d)/rt"; mkdir -p "$DFB/hooks"     # NOTE: no lib/ dir → inline fallback path
+cp "$REPO/hooks/user-preflight-router" "$DFB/hooks/"
+printf '#!/usr/bin/env bash\nprintf "USER\\n" >> "$PF_TEST_CTR"\nexit 0\n' > "$DFB/hooks/pre-bash-risk-router"; chmod +x "$DFB/hooks/pre-bash-risk-router"
+fire_fb(){ printf '{"tool_name":"Bash","tool_input":{"command":"%s"},"cwd":"%s"}' "$1" "$2" | PF_TEST_CTR="$CTR" bash "$DFB/hooks/user-preflight-router" >/dev/null 2>&1; echo $?; }
+# incidental-substring repo (no real Bash gate) → fallback must delegate (user runs), NOT yield
+INC="$(mktemp -d)/inc"; mkdir -p "$INC/.preflight" "$INC/.claude"; echo '{"mode":"generic"}' > "$INC/.preflight/config.json"
+printf '{"note":"migrated off pre-bash-risk-router last week","hooks":{"PreToolUse":[{"matcher":"Write","hooks":[{"type":"command","command":"my-linter.sh"}]}]}}' > "$INC/.claude/settings.json"
+RCI="$(fire_fb 'git push origin main' "$INC")"
+# genuine branch-stable project → fallback must yield (user contributes 0)
+BSF="$(mktemp -d)/bsf"; mkdir -p "$BSF/.preflight" "$BSF/.claude/hooks"; echo '{"mode":"generic"}' > "$BSF/.preflight/config.json"
+TGF="$BSF/.git/preflight/runtime/aaa/hooks"; mkdir -p "$TGF"; printf '#stub\n' > "$TGF/run-hook.cmd"
+printf '{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"\\"%s/run-hook.cmd\\" pre-bash-risk-router"}]}]}}' "$TGF" > "$BSF/.claude/settings.local.json"
+RCB="$(fire_fb 'git push origin main' "$BSF")"
+if [ "$RCI" != 0 ] && [ "$RCB" = 0 ]; then
+  ok "12 NF-2: inline fallback delegates on incidental-substring (rc=$RCI, no silent-allow), yields on real branch-stable project (rc=$RCB)"
+else bad "12 NF-2 inline fallback wrong (incidental rc=$RCI expect!=0; branch-stable rc=$RCB expect 0)"; fi
+
 echo ""
 echo "no-duplicate-exec: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

@@ -128,6 +128,39 @@ proj_settings "$R" "{\"hooks\":{\"PreToolUse\":[{\"matcher\":\"Write\",\"hooks\"
 classify "$R"
 [ "$PFA_OWNER" = USER ] && [ "$PFA_DUP_RISK" = yes ] && ok "13 Write gate + Bash user-dup → USER+dup (matcher-aware, Write not counted)" || bad "13 got $PFA_OWNER dup=$PFA_DUP_RISK"
 
+# ── 14. NF-1 REGRESSION: a python3 that RUNS the `-c` probe but prints NOTHING for the real parse (the
+#    Windows Store-alias stub) must NOT be trusted as "parsed with zero commands" → noparser → AMBIGUOUS
+#    (user owns safely), NEVER a wrongful USER-classification of a real project (which would double-exec).
+#    We exercise this by masking jq + pointing PATH at a stub python3, in a subshell.
+if command -v jq >/dev/null 2>&1; then
+  R="$(new_root)"; T="$(mk_runtime_target "$R")"; branch_stable_reg "$R" "$T"
+  STUB="$(mktemp -d)/bin"; mkdir -p "$STUB"
+  printf '#!/usr/bin/env bash\nif [ "$1" = "-c" ]; then exit 0; fi\nexit 0\n' > "$STUB/python3"; chmod +x "$STUB/python3"
+  CU="$(dirname "$(command -v cat)")"
+  OUT="$(PATH="$STUB:$CU" bash -c '. "'"$LIB"'"; pfa_classify_owner "'"$R"'"; echo "$PFA_OWNER"' 2>/dev/null)"
+  [ "$OUT" = AMBIGUOUS ] && ok "14 NF-1: stub python3 (runs probe, prints nothing) + no jq → AMBIGUOUS (not wrongly USER)" || bad "14 NF-1 got $OUT (stub trusted → would double-exec a real project)"
+else
+  ok "14 NF-1: jq absent on this host — skipped (guard requires jq to mask it)"
+fi
+
+# ── 15. NF-1 POSITIVE: a REALLY-RUNNABLE python (no jq) correctly classifies the branch-stable project as
+#    PROJECT. Probe-find an interpreter that actually runs (the host may only have `python`, not `python3`,
+#    and `command -v python3` may resolve the non-runnable Windows Store stub — exactly the NF-1 hazard).
+RPY=""
+for _c in python3 python py; do
+  if command -v "$_c" >/dev/null 2>&1 && "$_c" -c 'print(1)' >/dev/null 2>&1; then RPY="$(command -v "$_c")"; break; fi
+done
+if command -v jq >/dev/null 2>&1 && [ -n "$RPY" ]; then
+  R="$(new_root)"; T="$(mk_runtime_target "$R")"; branch_stable_reg "$R" "$T"
+  WORK="$(mktemp -d)/bin"; mkdir -p "$WORK"
+  printf '#!/usr/bin/env bash\nexec "%s" "$@"\n' "$RPY" > "$WORK/python3"; chmod +x "$WORK/python3"  # wrapper (Windows: no symlink priv)
+  CU="$(dirname "$(command -v cat)")"
+  OUT="$(PATH="$WORK:$CU" bash -c '. "'"$LIB"'"; pfa_classify_owner "'"$R"'"; echo "$PFA_OWNER"' 2>/dev/null)"
+  [ "$OUT" = PROJECT ] && ok "15 NF-1: really-runnable python (no jq) → PROJECT (matcher-aware fallback works)" || bad "15 NF-1 got $OUT (runnable python should classify PROJECT)"
+else
+  ok "15 NF-1 positive: no runnable python or no jq on this host — skipped"
+fi
+
 echo ""
 echo "hook-arbitration: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

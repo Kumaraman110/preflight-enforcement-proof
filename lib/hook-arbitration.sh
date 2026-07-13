@@ -121,29 +121,42 @@ _pfa_settings_bash_cmds() {  # $1 = settings file path
     fi
     return 0
   fi
-  local py=""
-  command -v python3 >/dev/null 2>&1 && py=python3 || { command -v python >/dev/null 2>&1 && py=python; }
+  # Pick a python that ACTUALLY RUNS — never trust `command -v` alone. On Windows `command -v python3`
+  # resolves the non-runnable WindowsApps Store-alias stub, which exits without producing output; trusting
+  # it silently yielded PARSE=ok with zero commands (a jq-less host would then misclassify a real project as
+  # USER → double-exec). We probe-execute each candidate (like preflight-user.sh's _py) and require rc 0.
+  local py="" c
+  for c in python3 python py; do
+    if command -v "$c" >/dev/null 2>&1 && "$c" -c 'import sys' >/dev/null 2>&1; then py="$c"; break; fi
+  done
   if [ -n "$py" ]; then
-    _PFA_CMDS="$("$py" - "$s" <<'PY' 2>/dev/null
+    # The python script prints a mandatory "__PFA_OK__" first line on success, then the Bash commands. If
+    # the interpreter did not actually run (stub), stdout is empty → no marker → we treat it as noparser
+    # (safe), NOT as an empty command list. Malformed JSON prints "__PFA_MALFORMED__".
+    local out; out="$("$py" - "$s" <<'PY' 2>/dev/null
 import json,sys
 try:
     d=json.load(open(sys.argv[1],encoding="utf-8"))
 except Exception:
     print("__PFA_MALFORMED__"); sys.exit(0)
+print("__PFA_OK__")
 pre=(d.get("hooks",{}) or {}).get("PreToolUse",[]) or []
 for e in pre:
     if isinstance(e,dict) and e.get("matcher")=="Bash":
         for h in (e.get("hooks",[]) or []):
             if isinstance(h,dict):
-                c=h.get("command","")
-                if c: print(c)
+                cmd=h.get("command","")
+                if cmd: print(cmd)
 PY
 )"
-    if [ "$_PFA_CMDS" = "__PFA_MALFORMED__" ]; then _PFA_PARSE=malformed; _PFA_CMDS="";
-    else _PFA_PARSE=ok; fi
+    case "$out" in
+      __PFA_MALFORMED__*) _PFA_PARSE=malformed; _PFA_CMDS="" ;;
+      __PFA_OK__*)        _PFA_PARSE=ok;        _PFA_CMDS="${out#__PFA_OK__}"; _PFA_CMDS="${_PFA_CMDS#$'\n'}" ;;
+      *)                  _PFA_PARSE=noparser;  _PFA_CMDS="" ;;   # interpreter did not really run (stub)
+    esac
     return 0
   fi
-  # No jq AND no python: cannot make a matcher-aware decision. Fail to the SAFE side (caller → user owns).
+  # No jq AND no runnable python: cannot make a matcher-aware decision. Fail to the SAFE side (user owns).
   _PFA_PARSE=noparser
   _PFA_CMDS=""
   return 0

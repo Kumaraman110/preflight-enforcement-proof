@@ -146,20 +146,34 @@ else
   # (the branch-stable project runtime lives at .git/preflight/runtime/ and IS a project owner). The lib
   # ships in RUNTIME_LIBS, so this fallback runs only on a broken/relocated install; it errs toward yielding
   # for a real project registration (safe: the project gate then owns it — never a silent double-decision).
+  # Prefer a MATCHER-AWARE parse (jq) even in the degraded path: a project OWNS the repo only if a
+  # PreToolUse *Bash* hook names a project router whose target file exists. A Write/Edit gate or an
+  # incidental substring in a note must NOT trigger a yield (that would be a silent-allow — the user gate
+  # stands down with no real Bash gate present). If NO jq is available here, we do NOT yield: we delegate
+  # to the user gate. On an already-broken install (the only way this fallback runs), a redundant
+  # double-gate is the safe lesser-evil; a governed push escaping is not.
   _urt_project_owns_fallback() {
-    local root="$1" s content
+    local root="$1" s cmd tgt
+    command -v jq >/dev/null 2>&1 || return 1   # no parser → don't yield (user gate runs; never silent-allow)
     for s in "$root/.claude/settings.json" "$root/.claude/settings.local.json"; do
       [ -f "$s" ] || continue
-      # Read the WHOLE file (settings JSON is typically single-line with NO trailing newline, so a
-      # while-read loop would silently drop it). Yield if a project router token is present anywhere in a
-      # command — the project (or a re-invoked) runtime will handle the event, so the SAFE direction in this
-      # degraded path is to yield (never a silent double-decision). This deliberately does NOT special-skip
-      # the bare 'preflight/runtime/' segment: the branch-stable PROJECT runtime lives at
-      # <repo>/.git/preflight/runtime/<sha>/…/run-hook.cmd and IS a project owner.
-      content="$(cat "$s" 2>/dev/null)"
-      case "$content" in
-        *'"command"'*pre-bash-risk-router*|*'"command"'*pre-push-gate-check*) return 0 ;;
-      esac
+      jq empty "$s" >/dev/null 2>&1 || continue
+      while IFS= read -r cmd; do
+        [ -n "$cmd" ] || continue
+        case "$cmd" in
+          *preflight/dispatcher.cmd*|*.claude/preflight/*) continue ;;   # user-runtime dup, not a project owner
+        esac
+        case "$cmd" in
+          *pre-bash-risk-router*|*pre-push-gate-check*|*pre-push-gate-engine*)
+            # resolve the registered target and require it to exist (mirrors the lib's staleness check)
+            tgt="${cmd#*\"}"; case "$cmd" in \"*) tgt="${tgt%%\"*}" ;; *) tgt="${cmd%%[[:space:]]*}" ;; esac
+            tgt="${tgt//\$\{CLAUDE_PROJECT_DIR\}/$root}"; tgt="${tgt//\$CLAUDE_PROJECT_DIR/$root}"
+            case "$tgt" in /*|[A-Za-z]:*) : ;; *) tgt="$root/$tgt" ;; esac
+            [ -s "$tgt" ] && return 0 ;;
+        esac
+      done <<JQEOF
+$(jq -r '(.hooks.PreToolUse // [])[] | select(.matcher=="Bash") | (.hooks // [])[] | (.command // "")' "$s" 2>/dev/null)
+JQEOF
     done
     return 1
   }
