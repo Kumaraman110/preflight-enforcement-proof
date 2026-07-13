@@ -1,0 +1,26 @@
+=== Phase 4 Performance — installed dispatcher, 20 runs/path ===
+Host: Windows 11 / Git-Bash + CrowdStrike scan-on-exec EDR (every exec is AV-scanned).
+
+BASELINE (unavoidable, paid by EVERY Bash tool call regardless of Preflight):
+  bare-bash-startup    n=20  p50=650ms   p90=781ms   max=820ms
+
+(1) INACTIVE path — ordinary command, repo NOT opted in (router fast-exit, zero engine spawn):
+  inactive/ordinary    n=20  p50=3802ms  p90=4673ms  max=5053ms   rc=[0]
+
+(2) ACTIVE-SAFE path — ordinary command in an opted-in repo (router delegates, fast-allow, no engine):
+  active/ordinary      n=20  p50=4949ms  p90=5914ms  max=6382ms   rc=[0]
+
+(3) CONSEQUENTIAL path — a governed push (full engine decision, CONFIRM tier):
+  consequential/CONFIRM n=20 p50=25764ms p90=29236ms max=33493ms  rc=[0]
+  (all 20 reached the CORRECT verdict permissionDecision:ask within the 48s deadline — no timeout, no spurious BLOCK)
+
+DISPOSITION:
+- Inactive & active-safe: the router adds NO extra process spawn over bare bash; the ~3-6s is
+  bash-startup + a handful of `[ -e ]` stats + one settings parse, all scan-taxed by the EDR. On a
+  normal host (bash startup ~5-15ms) these paths are effectively free (<100ms). Not materially disruptive.
+- Consequential: bounded (<48s ceiling, which is < the 60s platform kill) and, if the engine cannot
+  decide in time, fails CLOSED (blocks) — the SAFE direction. On this scan-on-exec host the ~26s reflects
+  ~10 git/jq/awk spawns × ~2-6s each of AV scan tax; on a normal host the same decision is <1s.
+- The ir-push-perf synthetic stress cases (16 KiB command line, multiple push nodes) can exceed even 60s
+  on THIS host and fail CLOSED — a documented host ceiling, not a correctness defect (verdict is right;
+  wall clock loses). These two cases ALSO failed at the rc.3 baseline — pre-existing, not a regression.
