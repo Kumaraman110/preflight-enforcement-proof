@@ -197,6 +197,28 @@ pfu install --user --ref "$RESOLVED" --source "$REPO" >/dev/null 2>&1
 N="$(python -c "import json,sys;d=json.load(open(sys.argv[1]));print(sum(1 for h in d['hooks']['PreToolUse'] if h.get('matcher')=='Bash' and any('dispatcher.cmd' in x.get('command','') for x in h.get('hooks',[]))))" "$PREFLIGHT_CLAUDE_HOME/settings.json")"
 [ "$N" = 1 ] && ok "24 IF2: duplicate preflight entry collapses to one on reinstall" || bad "24 IF2 duplicates persist ($N)"
 
+# ── 25. UNINSTALL exact-bytes restore (v0.10.0-rc.2): compact pre-install settings restored byte-identical ─
+export PREFLIGHT_CLAUDE_HOME="$(new_home)"
+printf '{"model":"keep","env":{"X":"1"},"hooks":{"PreToolUse":[{"matcher":"Write","hooks":[{"type":"command","command":"my.sh"}]}]}}' > "$PREFLIGHT_CLAUDE_HOME/settings.json"
+B25="$(sha256sum "$PREFLIGHT_CLAUDE_HOME/settings.json" | cut -d' ' -f1)"
+pfu install --user --ref "$RESOLVED" --source "$REPO" >/dev/null 2>&1
+pfu uninstall --user >/dev/null 2>&1
+A25="$(sha256sum "$PREFLIGHT_CLAUDE_HOME/settings.json" 2>/dev/null | cut -d' ' -f1 || echo GONE)"
+[ "$B25" = "$A25" ] && ok "25 uninstall restores pre-install settings BYTE-IDENTICAL" || bad "25 uninstall not byte-exact ($B25 vs $A25)"
+
+# ── 26. UNINSTALL preserves a POST-install user change (does not clobber with the stale backup) ──────────
+export PREFLIGHT_CLAUDE_HOME="$(new_home)"
+printf '{"model":"orig"}' > "$PREFLIGHT_CLAUDE_HOME/settings.json"
+pfu install --user --ref "$RESOLVED" --source "$REPO" >/dev/null 2>&1
+python -c "import json,sys;p=sys.argv[1];d=json.load(open(p));d['newKey']='post';json.dump(d,open(p,'w'))" "$PREFLIGHT_CLAUDE_HOME/settings.json"
+pfu uninstall --user >/dev/null 2>&1
+python - "$PREFLIGHT_CLAUDE_HOME/settings.json" <<'PZ' && ok "26 uninstall preserves post-install change + removes preflight hook" || bad "26 post-install change lost"
+import json,sys
+d=json.load(open(sys.argv[1],encoding="utf-8"))
+assert d.get("model")=="orig" and d.get("newKey")=="post"
+assert not any(h.get("matcher")=="Bash" and any("dispatcher.cmd" in x.get("command","") for x in h.get("hooks",[])) for h in d.get("hooks",{}).get("PreToolUse",[]))
+PZ
+
 echo ""
 echo "user-install: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

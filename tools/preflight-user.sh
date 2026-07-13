@@ -350,8 +350,22 @@ cmd_uninstall(){
     ' "$PF_SETTINGS")" || _die "settings edit failed"
     printf '%s\n' "$cleaned" > "$PF_SETTINGS.tmp"
     jq empty "$PF_SETTINGS.tmp" 2>/dev/null || { rm -f "$PF_SETTINGS.tmp"; _die "produced invalid settings"; }
-    # If settings.json is now an empty object AND we originally created it, remove it (restore ABSENT).
-    if [ "$(jq -S . "$PF_SETTINGS.tmp")" = "{}" ] && _originally_absent; then rm -f "$PF_SETTINGS.tmp" "$PF_SETTINGS"; echo "preflight-user: removed settings.json (was created by install)"; else mv "$PF_SETTINGS.tmp" "$PF_SETTINGS"; fi
+    # v0.10.0-rc.2: EXACT-BYTES restore. If the surgically-cleaned result is SEMANTICALLY identical to the
+    # oldest pre-install backup (i.e. the user made no other change since install), restore that backup's
+    # EXACT bytes rather than the jq-reserialized form — so uninstall restores the prior settings *exactly*
+    # (byte-for-byte), not merely equivalently. Falls back to the cleaned form when they differ (preserving
+    # any post-install user edits) or when no file backup exists.
+    local firstbk; firstbk="$(find "$PF_BACKUPS" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | LC_ALL=C sort | head -1)"
+    if [ -n "$firstbk" ] && [ -f "$firstbk/settings.json" ] \
+       && [ "$(jq -S . "$PF_SETTINGS.tmp" 2>/dev/null)" = "$(jq -S . "$firstbk/settings.json" 2>/dev/null)" ]; then
+      cp "$firstbk/settings.json" "$PF_SETTINGS"; rm -f "$PF_SETTINGS.tmp"
+      echo "preflight-user: restored settings.json byte-for-byte from the pre-install backup"
+    elif [ "$(jq -S . "$PF_SETTINGS.tmp")" = "{}" ] && _originally_absent; then
+      # settings.json is now empty AND install created it → restore ABSENT (remove the file).
+      rm -f "$PF_SETTINGS.tmp" "$PF_SETTINGS"; echo "preflight-user: removed settings.json (was created by install)"
+    else
+      mv "$PF_SETTINGS.tmp" "$PF_SETTINGS"; echo "preflight-user: removed the Preflight hook; preserved post-install settings changes"
+    fi
   fi
   # remove ONLY Preflight-owned data
   rm -rf "$PF_USER_HOME"
