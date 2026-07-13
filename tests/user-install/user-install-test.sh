@@ -57,9 +57,13 @@ RC="$(fire "$DISP" "git push origin main" "$BAD")"
 [ "$RC" = 2 ] || [ "$RC" = 0 ] && ok "7 malformed activation handled safely (exit $RC, no crash)" || bad "7 malformed activation crashed (exit $RC)"
 
 # ── 8. Existing project-local Preflight: no duplicate execution (user router yields) ──────────────────
+#    REALISTIC registration: the Bash hook command names the ACTUAL project hook FILE (as the real
+#    project/branch-stable installer emits — an absolute or ${CLAUDE_PROJECT_DIR}-relative path to a file
+#    that exists), so the arbitration classifies it PROJECT (a registration whose target does not exist is
+#    correctly STALE, not a project owner — see the hook-arbitration suite).
 PROJ="$(mktemp -d)/proj"; mkdir -p "$PROJ/.preflight" "$PROJ/.claude/hooks"; ( cd "$PROJ" && git init -q )
 echo '{"mode":"generic"}' > "$PROJ/.preflight/config.json"; printf '#stub\n' > "$PROJ/.claude/hooks/pre-bash-risk-router"
-printf '{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"run-hook.cmd pre-bash-risk-router"}]}]}}' > "$PROJ/.claude/settings.json"
+printf '{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"\"%s/.claude/hooks/pre-bash-risk-router\" pre-bash-risk-router \"$TOOL_INPUT\""}]}]}}' "$PROJ" > "$PROJ/.claude/settings.json"
 [ "$(fire "$DISP" "git push origin main" "$PROJ")" = 0 ] && ok "8 project-local Preflight present → user router yields (no double-exec)" || bad "8 double-exec not prevented"
 
 # ── 9. Git worktree using a common git directory ───────────────────────────────────────────────────────
