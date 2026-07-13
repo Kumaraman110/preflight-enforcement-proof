@@ -87,12 +87,24 @@ cmd_install(){
   local STAGE_PARENT; STAGE_PARENT="$(mktemp -d)"; local STAGE="$STAGE_PARENT/gen"
   mkdir -p "$STAGE"
   local RESOLVED_SHA=""
+  # The version STAMPED into this generation. For a git-object install it is the CLI's compiled constant;
+  # for a from-artifact install it is the artifact's OWN staged RELEASE_VERSION — the artifact is the source
+  # of truth for what it contains (same trust already given to SOURCE_COMMIT), so a correctly-built v0.10.0
+  # artifact must NOT be re-stamped with the installer's compiled constant (review P1: that made every
+  # from-artifact install self-report as whatever the CLI literal happened to be, diverging from the
+  # artifact's own SBOM/manifest). Defaults to the compiled constant; overridden below for the artifact path.
+  local GEN_VERSION="$RELEASE_VERSION"
   if [ -n "$ARTIFACT" ]; then
     [ -f "$ARTIFACT" ] || { rm -rf "$STAGE_PARENT"; _die "artifact not found: $ARTIFACT"; }
     tar -xzf "$ARTIFACT" -C "$STAGE" 2>/dev/null || { rm -rf "$STAGE_PARENT"; _die "cannot extract artifact"; }
     # a self-contained artifact carries SOURCE_COMMIT
     if [ -f "$STAGE/SOURCE_COMMIT" ]; then RESOLVED_SHA="$(tr -d ' \t\r\n' < "$STAGE/SOURCE_COMMIT")"; fi
     [ -n "$RESOLVED_SHA" ] || { rm -rf "$STAGE_PARENT"; _die "artifact missing SOURCE_COMMIT"; }
+    # trust the artifact's own version (it was built for a specific release; the installer must not relabel it)
+    if [ -f "$STAGE/RELEASE_VERSION" ]; then
+      local _art_ver; _art_ver="$(tr -d ' \t\r\n' < "$STAGE/RELEASE_VERSION")"
+      case "$_art_ver" in v[0-9]*) GEN_VERSION="$_art_ver" ;; esac
+    fi
   else
     _resolve_source
     git -C "$SRC_REPO" rev-parse --git-dir >/dev/null 2>&1 || { rm -rf "$STAGE_PARENT"; _die "source '$SRC_REPO' is not a git repo"; }
@@ -105,9 +117,9 @@ cmd_install(){
 
   # ---- Record identity + write the manifest (sha256 of every staged artifact) ----
   printf '%s\n' "$RESOLVED_SHA" > "$STAGE/SOURCE_COMMIT"
-  printf '%s\n' "$RELEASE_VERSION" > "$STAGE/RELEASE_VERSION"
-  printf '%s\n' "$RELEASE_VERSION" > "$STAGE/VERSION"
-  _write_manifest "$STAGE" "$RESOLVED_SHA" "$PY" || { rm -rf "$STAGE_PARENT"; _die "manifest write failed"; }
+  printf '%s\n' "$GEN_VERSION" > "$STAGE/RELEASE_VERSION"
+  printf '%s\n' "$GEN_VERSION" > "$STAGE/VERSION"
+  _write_manifest "$STAGE" "$RESOLVED_SHA" "$GEN_VERSION" "$PY" || { rm -rf "$STAGE_PARENT"; _die "manifest write failed"; }
 
   # ---- Validate checksums of the staged generation BEFORE any activation ----
   _verify_manifest "$STAGE" "$PY" || { rm -rf "$STAGE_PARENT"; _die "staged generation failed checksum validation — NOT activating"; }
@@ -121,7 +133,7 @@ cmd_install(){
   if [ -d "$GEN_DIR" ] && [ -f "$PF_ACTIVE" ] && [ "$(tr -d ' \t\r\n' < "$PF_ACTIVE")" = "$RESOLVED_SHA" ] && [ "$(_registration_count)" = 1 ]; then
     if _verify_manifest "$GEN_DIR" "$PY"; then
       rm -rf "$STAGE_PARENT"
-      echo "preflight-user: already installed + active at $RESOLVED_SHA ($RELEASE_VERSION) — no changes."
+      echo "preflight-user: already installed + active at $RESOLVED_SHA ($GEN_VERSION) — no changes."
       return 0
     fi
   fi
@@ -179,7 +191,7 @@ cmd_install(){
   trap - ERR
   set +e
   rm -rf "$STAGE_PARENT" 2>/dev/null || true
-  echo "preflight-user: installed $RELEASE_VERSION (source $RESOLVED_SHA); ACTIVE=$RESOLVED_SHA PREVIOUS=$(cat "$PF_PREVIOUS" 2>/dev/null || echo none)"
+  echo "preflight-user: installed $GEN_VERSION (source $RESOLVED_SHA); ACTIVE=$RESOLVED_SHA PREVIOUS=$(cat "$PF_PREVIOUS" 2>/dev/null || echo none)"
   echo "preflight-user: settings backup at $BK"
   return 0
 }
@@ -208,9 +220,9 @@ _stage_from_git(){ # $1 src repo  $2 sha  $3 stage
 }
 
 # write RUNTIME_MANIFEST.json = sha256 of every file in the staged generation (except the manifest itself)
-_write_manifest(){ # $1 stage  $2 sha  $3 py
-  local st="$1" sha="$2" py="$3"
-  "$py" - "$st" "$sha" "$RELEASE_VERSION" > "$st/RUNTIME_MANIFEST.json" <<'PY' || return 1
+_write_manifest(){ # $1 stage  $2 sha  $3 version  $4 py
+  local st="$1" sha="$2" ver="$3" py="$4"
+  "$py" - "$st" "$sha" "$ver" > "$st/RUNTIME_MANIFEST.json" <<'PY' || return 1
 import sys, json, hashlib, os
 stage, sha, ver = sys.argv[1], sys.argv[2], sys.argv[3]
 arts = {}
@@ -409,9 +421,18 @@ _pf_disabled_config(){ echo "$1/.preflight/config.json.disabled"; }
 #   4 = git repo but the exclude write FAILED (dir uncreatable or file not writable) — caller must warn
 _pf_exclude_local(){  # $1 = repo root ; $2 = pattern (e.g. /.preflight/)
   local root="$1" pat="$2" gd exf
-  gd="$(cd "$root" 2>/dev/null && git rev-parse --git-dir 2>/dev/null)" || return 3
+  # Use the COMMON git dir, NOT --git-dir (review P1): Git reads info/exclude ONLY from the common dir. In a
+  # LINKED WORKTREE `--git-dir` returns .git/worktrees/<name>/, so writing info/exclude there has NO effect —
+  # .preflight/ stays committable while init falsely claims "untracked". --git-common-dir is the .git that
+  # Git actually consults, and equals --git-dir in a normal (non-worktree) repo. This project is itself
+  # developed in linked worktrees (code-forge-rdg), so the worktree case is the common case here.
+  gd="$(cd "$root" 2>/dev/null && git rev-parse --git-common-dir 2>/dev/null)" || return 3
   [ -n "$gd" ] || return 3
-  case "$gd" in /*|[A-Za-z]:*) : ;; *) gd="$root/$gd" ;; esac
+  # --git-common-dir may return a path relative to the worktree's cwd; resolve to absolute.
+  case "$gd" in
+    /*|[A-Za-z]:*) : ;;
+    *) gd="$(cd "$root" 2>/dev/null && cd "$gd" 2>/dev/null && pwd)" || gd="$root/$gd" ;;
+  esac
   exf="$gd/info/exclude"
   [ -f "$exf" ] && grep -qxF "$pat" "$exf" 2>/dev/null && return 0   # already excluded
   mkdir -p "$gd/info" 2>/dev/null || return 4
