@@ -1089,10 +1089,10 @@ run_behavioral_tests() {
   local rtr_budget_test="$SCRIPT_DIR/behavioral/router-timeout-budget-test.sh"
   if [ -f "$rtr_budget_test" ]; then
     if bash "$rtr_budget_test"; then
-      PASSES=$((PASSES + 4))
+      PASSES=$((PASSES + 6))
     else
       FAILURES=$((FAILURES + 1))
-      red "FAIL: router-timeout-budget tests failed (the router's candidate deadline must be DERIVED from the hooks.json platform timeout so its fail-closed exit 2 always fires BEFORE the platform SIGKILL — a 137 is non-blocking = fail-OPEN)"
+      red "FAIL: router-timeout-budget tests failed (the router's candidate deadline must be DERIVED from the hooks.json platform timeout so its fail-closed exit 2 always fires BEFORE the platform SIGKILL — a 137 is non-blocking = fail-OPEN; BOTH installers must register the same timeout)"
     fi
   else
     yellow "SKIP: router-timeout-budget-test.sh not found"
@@ -1554,6 +1554,23 @@ run_behavioral_tests() {
     fi
   else
     yellow "SKIP: runtime-closure-lockstep-test.sh not found"
+  fi
+
+  # ── v0.10.0 usable CLI surface — the `preflight` launcher + init --local / disable / repo-aware status /
+  # doctor. Proves a new user can operate Preflight with simple commands: init --local activates a repo with
+  # NO tracked change (only .preflight/ + a .git/info/exclude line), status is repo-aware (active/inactive,
+  # USER/PROJECT ownership, version, policy tier, health, remote-enforcement), doctor diagnoses a malformed
+  # config with a FIX, and disable deactivates REVERSIBLY (router fast-exits) with init --local re-enabling. ──
+  local cli_test="$SCRIPT_DIR/behavioral/cli-usability-test.sh"
+  if [ -f "$cli_test" ]; then
+    if bash "$cli_test"; then
+      PASSES=$((PASSES + 20))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: cli-usability tests failed (the preflight launcher must exec the stable CLI; init --local must activate with NO tracked change and be idempotent/reversible via disable; status must be repo-aware; doctor must flag a malformed config with a FIX)"
+    fi
+  else
+    yellow "SKIP: cli-usability-test.sh not found"
   fi
 }
 
