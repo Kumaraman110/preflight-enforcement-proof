@@ -332,7 +332,14 @@ _pfg_ir_identify() {
   set +e
   # ONE awk spawn (the lexer), timeout-bounded, in a nested subshell so a crash/`set -e` inside cannot
   # escape. Emits one "PUSH <start> <end>" per NON-opaque git-push node, then "ST=… OP=… CP=… IP=…".
-  _facts="$(timeout "${PFG_SS_IR_TIMEOUT:-8}" bash -c '
+  # BUDGET (20s, was 8s): the authoritative IR parse is `source lib/shell-structure.sh` + ONE awk lexer
+  # spawn. On a fast host that is ~50ms; on a heavy endpoint-security host (scan-on-exec) the source+spawn
+  # is scan-taxed to ~6s MEASURED, and momentary contention pushed it past an 8s bound → a rc=124 that
+  # fail-closed to a deterministic BLOCK even though the parse would SUCCEED (it swallowed a legitimate
+  # CONFIRM/AUTO into a spurious BLOCK, the same class as the subprocess-wedge fix above). 20s clears the
+  # measured cost with wide margin and stays far under the 48s router ceiling. A genuinely pathological
+  # parse (unbounded) still times out → BLOCK (the SAFE direction). Overridable via PFG_SS_IR_TIMEOUT.
+  _facts="$(timeout "${PFG_SS_IR_TIMEOUT:-20}" bash -c '
       set +e
       source "$1" 2>/dev/null || { echo "ST=PROTO OP=0 CP=0 IP=0"; exit 0; }
       [ -n "$3" ] && { _PFG_SS_AWK="$3"; _PFG_SS_AWK_IMPL="ir-preresolved"; }   # skip the lib re-resolve spawns
