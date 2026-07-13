@@ -147,15 +147,19 @@ else
   # ships in RUNTIME_LIBS, so this fallback runs only on a broken/relocated install; it errs toward yielding
   # for a real project registration (safe: the project gate then owns it — never a silent double-decision).
   _urt_project_owns_fallback() {
-    local root="$1" s line
+    local root="$1" s content
     for s in "$root/.claude/settings.json" "$root/.claude/settings.local.json"; do
       [ -f "$s" ] || continue
-      while IFS= read -r line; do
-        case "$line" in
-          *'"command"'*preflight/dispatcher.cmd*|*'"command"'*.claude/preflight/*) continue ;;  # user-runtime dup
-          *'"command"'*pre-bash-risk-router*|*'"command"'*pre-push-gate-check*) return 0 ;;
-        esac
-      done < "$s"
+      # Read the WHOLE file (settings JSON is typically single-line with NO trailing newline, so a
+      # while-read loop would silently drop it). Yield if a project router token is present anywhere in a
+      # command — the project (or a re-invoked) runtime will handle the event, so the SAFE direction in this
+      # degraded path is to yield (never a silent double-decision). This deliberately does NOT special-skip
+      # the bare 'preflight/runtime/' segment: the branch-stable PROJECT runtime lives at
+      # <repo>/.git/preflight/runtime/<sha>/…/run-hook.cmd and IS a project owner.
+      content="$(cat "$s" 2>/dev/null)"
+      case "$content" in
+        *'"command"'*pre-bash-risk-router*|*'"command"'*pre-push-gate-check*) return 0 ;;
+      esac
     done
     return 1
   }
