@@ -1589,6 +1589,23 @@ run_behavioral_tests() {
     yellow "SKIP: wrapper-prefix-failopen-test.sh not found"
   fi
 
+  # ── v0.10.0 engine-side wrapper TAXONOMY (adversarial-review P0 completion). The router routes any segment
+  # with a bare git/gh word behind an unrecognized program to the engine; the engine must never silently ALLOW
+  # a governed push behind a wrapper. TRANSPARENT wrappers (env/env -S/sudo/doas/nice/ionice/chrt/taskset/
+  # flock/…) peel + apply normal policy (forbidden push still BLOCKs); REMOTE executors (ssh/docker/…) →
+  # CONFIRM; DATA-ONLY (echo/grep) → allow; UNKNOWN + governed → CONFIRM (interactive) / BLOCK (headless). ──
+  local tax_test="$SCRIPT_DIR/behavioral/wrapper-taxonomy-test.sh"
+  if [ -f "$tax_test" ]; then
+    if bash "$tax_test"; then
+      PASSES=$((PASSES + 35))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: wrapper-taxonomy tests failed (a transparent wrapper over a forbidden push must BLOCK; a remote executor must CONFIRM; data-only must allow; an unknown wrapper over a governed token must CONFIRM/BLOCK, never silently allow; ordinary commands must not be over-gated)"
+    fi
+  else
+    yellow "SKIP: wrapper-taxonomy-test.sh not found"
+  fi
+
   # ── v0.10.0 release-version coupling — the compiled RELEASE_VERSION constant (which every git-object
   # install stamps into the runtime) must equal the CHANGELOG's top entry, so a release cut without bumping
   # the constant fails CI before the runtime self-reports the wrong version (adversarial-review P1 guard). ──

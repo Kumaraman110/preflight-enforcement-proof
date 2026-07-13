@@ -187,6 +187,193 @@ else
   _pfg_stage "command-extracted"
 fi
 
+# ══ WRAPPER TAXONOMY PRE-CLASSIFIER (closes the command-wrapper fail-open class) ═════════════════════════
+# The router routes ANY segment containing a bare git/gh word behind an unrecognized program to this engine
+# (over-routing is safe). This pass classifies the leading program of each segment so a governed push behind
+# a wrapper can never silently ALLOW. It does NOT re-implement the push parser — for TRANSPARENT wrappers it
+# PEELS them in-place so $COMMAND becomes the wrapped `git … push …` and the existing authoritative push
+# policy below runs unchanged. For the other shapes it emits a verdict directly. Taxonomy (user-decided):
+#   • TRANSPARENT (env[-S]/sudo/doas/nice/ionice/chrt/taskset/flock/command/builtin/nohup/setsid/timeout/
+#     exec/stdbuf/setpriority/eatmydata/proot/catchsegv/unbuffer/faketime/torsocks) — exec the wrapped command
+#     in the same local context → PEEL (recursive, bounded, cycle-safe) and apply normal policy.
+#   • REMOTE/ISOLATED executor (ssh/docker/podman/kubectl/nsenter/chroot) with a git/gh token in its args —
+#     runs the command ELSEWHERE, not a local governed push → CONFIRM (a human decides; NOT local-git policy).
+#   • DATA-ONLY (echo/printf/grep/…) with a literal git/gh arg — not an execution → ALLOW (leave to normal flow).
+#   • UNKNOWN leading program followed by a plausible governed git/gh command → never silently ALLOW:
+#     CONFIRM (AMBIGUOUS_WRAPPED_GOVERNED_COMMAND) interactively; BLOCK when PREFLIGHT_HEADLESS=1.
+# Worst-verdict-wins across segments: a BLOCK anywhere wins; else a CONFIRM; else fall through to policy.
+# Builtins only (no spawn on this pre-pass). Bounded peel depth. Only touches segments the router flagged.
+_PFG_TAX_TRANSPARENT=" env sudo doas nice ionice chrt taskset flock command builtin nohup setsid timeout exec stdbuf setpriority eatmydata proot catchsegv unbuffer faketime torsocks "
+_PFG_TAX_REMOTE=" ssh docker podman kubectl nsenter chroot rlogin rsh slogin "
+_PFG_TAX_DATA=" echo printf grep egrep fgrep cat sed awk head tail cut tr wc sort uniq ls find test [ true false : dirname basename realpath readlink stat file wc "
+
+# Peel a TRANSPARENT wrapper's own options/args off the front of a token array, in place, so the wrapped
+# program becomes the head. Sets _PFG_PEELED (the remaining "$@"-style array via _PFG_PEEL_OUT) and returns:
+#   0 = peeled one wrapper (caller re-loops), 1 = head is not a transparent wrapper (stop),
+#   2 = ambiguous (a value-option had no following token / ran out) → caller treats as UNKNOWN.
+_pfg_tax_peel_one() {  # operates on the positional params; returns remaining tokens via _PFG_PEEL_OUT
+  local head="${1#\\}"; _PFG_PEEL_OUT=()
+  case "$_PFG_TAX_TRANSPARENT" in *" ${head##*/} "*) : ;; *) return 1 ;; esac
+  local w="${head##*/}"; shift
+  case "$w" in
+    command|builtin|nohup|eatmydata|catchsegv|unbuffer|torsocks|proot) : ;;   # no consumed options before cmd
+    setsid) case "${1:-}" in -f|--fork|-w|--wait) shift ;; esac ;;
+    exec)   while [ "$#" -gt 0 ]; do case "$1" in -a) shift; [ "$#" -gt 0 ] && shift || return 2 ;; -a*|-cl|-lc|-c|-l) shift ;; --) shift; break ;; -*) return 2 ;; *) break ;; esac; done ;;
+    nice)   while [ "$#" -gt 0 ]; do case "$1" in -n) shift; [ "$#" -gt 0 ] && shift || return 2 ;; -n*|--adjustment=*|-[0-9]*) shift ;; --) shift; break ;; -*) return 2 ;; *) break ;; esac; done ;;
+    ionice) while [ "$#" -gt 0 ]; do case "$1" in -c|-n|-p|--class|--classdata|--pid) shift; [ "$#" -gt 0 ] && shift || return 2 ;; -c*|-n*|-p*|-t|--ignore) shift ;; --) shift; break ;; -*) return 2 ;; *) break ;; esac; done ;;
+    chrt)   while [ "$#" -gt 0 ]; do case "$1" in -f|-b|-o|-r|-i|--fifo|--batch|--other|--rr|--idle|-a|--all-tasks|-R|--reset-on-fork) shift ;; -p|--pid) shift; [ "$#" -gt 0 ] && shift || return 2 ;; --) shift; break ;; -*) shift ;; *) break ;; esac; done
+            # chrt takes a mandatory PRIORITY positional before the command (unless -p PID form)
+            [ "$#" -gt 0 ] && case "$1" in [0-9]*) shift ;; esac ;;
+    taskset) while [ "$#" -gt 0 ]; do case "$1" in -p|--pid) shift; [ "$#" -gt 0 ] && shift || return 2 ;; -c|--cpu-list) shift ;; -a|--all-tasks) shift ;; --) shift; break ;; -*) shift ;; *) break ;; esac; done
+            # taskset takes a mandatory MASK/CPU-LIST positional before the command
+            [ "$#" -gt 0 ] && case "$1" in -*) : ;; *) shift ;; esac ;;
+    flock)  while [ "$#" -gt 0 ]; do case "$1" in -w|-E|--timeout|--conflict-exit-code) shift; [ "$#" -gt 0 ] && shift || return 2 ;; -s|-x|-n|-u|-o|--shared|--exclusive|--nonblock|--unlock|--close|--no-fork|-F) shift ;; --) shift; break ;; -*) shift ;; *) break ;; esac; done
+            # flock takes a mandatory LOCKFILE/FD positional before the command
+            [ "$#" -gt 0 ] && case "$1" in -*) : ;; *) shift ;; esac ;;
+    setpriority) [ "$#" -gt 0 ] && shift ;;
+    timeout) while [ "$#" -gt 0 ]; do case "$1" in -k|-s|--kill-after|--signal) shift; [ "$#" -gt 0 ] && shift || return 2 ;; -k*|-s*|--kill-after=*|--signal=*) shift ;; --preserve-status|--foreground|-v|--verbose) shift ;; --) shift; break ;; -*) return 2 ;; *) break ;; esac; done
+            [ "$#" -gt 0 ] && shift || return 2 ;;   # DURATION positional
+    faketime) [ "$#" -gt 0 ] && shift || return 2 ;; # faketime '<spec>' cmd — consume the time spec
+    env)    # env [-i] [-u NAME] [-C DIR] [-S 'str'] [VAR=val]... cmd — note -S RE-SPLITS its arg into argv.
+            while [ "$#" -gt 0 ]; do
+              case "$1" in
+                -S|--split-string)
+                  # env -S '<cmdline>' : the argument is a whole command line that env re-splits into argv.
+                  # The caller ALREADY unquoted+word-split the segment, so `-S`'s quoted string is now spread
+                  # across the REMAINING tokens ($2..). Hand back ALL of them (not just $2) so the wrapped
+                  # program is the head. (If the arg was genuinely a single token it is $2 alone — still correct.)
+                  shift; [ "$#" -gt 0 ] || return 2; _PFG_PEEL_OUT=("$@"); return 0 ;;
+                -S*) _PFG_PEEL_OUT=("${1#-S}"); shift; [ "$#" -gt 0 ] && _PFG_PEEL_OUT+=("$@"); return 0 ;;
+                --split-string=*) _PFG_PEEL_OUT=("${1#--split-string=}"); shift; [ "$#" -gt 0 ] && _PFG_PEEL_OUT+=("$@"); return 0 ;;
+                -u|-C|--unset|--chdir) shift; [ "$#" -gt 0 ] && shift || return 2 ;;
+                -u*|-C*|--unset=*|--chdir=*) shift ;;
+                -i|--ignore-environment|-0|--null|-v|--debug) shift ;;
+                --) shift; break ;;
+                [A-Za-z_]*=*) shift ;;
+                -*) return 2 ;;
+                *) break ;;
+              esac
+            done ;;
+    sudo)   while [ "$#" -gt 0 ]; do
+              case "$1" in
+                -u|-g|-h|-p|-C|-r|-t|-T|--user|--group|--host|--prompt|--close-from|--role|--type|--command-timeout)
+                  shift; [ "$#" -gt 0 ] && shift || return 2 ;;
+                -u*|-g*) shift ;;
+                -E|-H|-S|-b|-i|-n|-s|--preserve-env|--set-home|--stdin|--background|--login|--non-interactive|--shell) shift ;;
+                --preserve-env=*) shift ;;
+                --) shift; break ;;
+                -*) return 2 ;;
+                *) break ;;
+              esac
+            done ;;
+    doas)   while [ "$#" -gt 0 ]; do case "$1" in -u|-C) shift; [ "$#" -gt 0 ] && shift || return 2 ;; -n|-s|-L) shift ;; --) shift; break ;; -*) return 2 ;; *) break ;; esac; done ;;
+  esac
+  _PFG_PEEL_OUT=("$@"); return 0
+}
+
+# Classify + (worst-verdict-wins) act on the command. Sets _PFG_TAX_ACTION = peel|remote|unknown|passthrough
+# and, for peel, _PFG_TAX_PEELED_CMD (the wrapped command line to re-drive). Runs per top-level segment.
+_pfg_wrapper_taxonomy() {  # $1 = the raw command string. Builtins only; bounded.
+  local cmd="$1" _lf=$'\n' _cr=$'\r' seg
+  # join line-continuations so a wrapped push split across lines is one segment (same as the router).
+  cmd="${cmd//$'\\'"$_cr$_lf"/ }"; cmd="${cmd//$'\\'"$_lf"/ }"
+  # segment on the separators visible without executing (mirror the router's coarse split).
+  local _s="$cmd"
+  _s="${_s//&&/$_lf}"; _s="${_s//||/$_lf}"; _s="${_s//|/$_lf}"; _s="${_s//;/$_lf}"; _s="${_s//&/$_lf}"
+  _s="${_s//(/$_lf}"; _s="${_s//)/$_lf}"; _s="${_s//\{/$_lf}"; _s="${_s//\}/$_lf}"; _s="${_s//\`/$_lf}"
+  local _oldifs="$IFS" worst="passthrough" peeled_for_policy=""
+  while IFS= read -r seg; do
+    [ -n "$seg" ] || continue
+    set -f; # shellcheck disable=SC2086
+    set -- $seg; set +f
+    [ "$#" -gt 0 ] || continue
+    # unquote every token (bash strips quotes at runtime); mirror the router.
+    { local _uq _ua=(); for _uq in "$@"; do _uq="${_uq//\"/}"; _uq="${_uq//\'/}"; _ua+=("$_uq"); done; set -- "${_ua[@]}"; }
+    # strip leading VAR=val assignments (not a program).
+    while [ "$#" -gt 0 ]; do case "$1" in [A-Za-z_]*=*) shift ;; *) break ;; esac; done
+    [ "$#" -gt 0 ] || continue
+    # PEEL transparent wrappers (bounded, cycle-safe via the iteration cap).
+    local _iter=0 _prc
+    while [ "$#" -gt 0 ] && [ "$_iter" -lt 16 ]; do
+      _iter=$((_iter+1))
+      # capture status WITHOUT tripping `set -e` (a non-zero return is an expected control signal here).
+      _prc=0; _pfg_tax_peel_one "$@" || _prc=$?
+      case "$_prc" in
+        0) set -- "${_PFG_PEEL_OUT[@]}"; [ "$#" -gt 0 ] || break; continue ;;   # peeled → re-loop on wrapped
+        3) # env -S / --split-string handed back a single string that is a whole command LINE — RE-SPLIT it
+           # into words (env -S does its own whitespace split), then re-loop so the wrapped program is the head.
+           { set -f; local _es="${_PFG_PEEL_OUT[0]:-}"; # shellcheck disable=SC2086
+             set -- $_es; set +f; }
+           { local _uq2 _ua2=(); for _uq2 in "$@"; do _uq2="${_uq2//\"/}"; _uq2="${_uq2//\'/}"; _ua2+=("$_uq2"); done; [ "${#_ua2[@]}" -gt 0 ] && set -- "${_ua2[@]}" || set --; }
+           [ "$#" -gt 0 ] || break; continue ;;
+        2) # ambiguous wrapper argument structure → treat this segment as UNKNOWN-governed (never silent-allow)
+           worst="unknown"; break ;;
+        1) break ;;   # head is not a transparent wrapper — classify it below
+      esac
+    done
+    [ "$#" -gt 0 ] || continue
+    [ "$worst" = "unknown" ] && continue
+    local prog="${1#\\}"; local base="${prog##*/}"; base="${base%.exe}"
+    case " $base " in
+      *" git "*|*" gh "*)
+        # the wrapped/leading program IS the governed program → let the existing authoritative policy decide.
+        # Record the peeled command so we can re-drive policy on the wrapped form if a wrapper was stripped.
+        [ -z "$peeled_for_policy" ] && peeled_for_policy="$*" ;;
+      *)
+        # not git/gh at the head. Is it a remote executor, data-only, or unknown — with a governed token later?
+        local _has_gov=0 tok
+        for tok in "$@"; do case "${tok#\\}" in git|git.exe|*/git|*/git.exe|gh|gh.exe|*/gh|*/gh.exe) _has_gov=1; break ;; esac; done
+        if [ "$_has_gov" = 1 ]; then
+          case "$_PFG_TAX_REMOTE" in
+            *" $base "*) [ "$worst" = "block" ] || worst="remote" ;;    # ssh/docker/… governed op runs elsewhere → CONFIRM
+            *) case "$_PFG_TAX_DATA" in
+                 *" $base "*) : ;;                                       # echo/grep/… → literal arg, ALLOW (no action)
+                 *) worst="unknown" ;;                                   # unknown prog + governed token → CONFIRM/BLOCK
+               esac ;;
+          esac
+        fi ;;
+    esac
+  done <<< "$_s"
+  IFS="$_oldifs"
+  _PFG_TAX_ACTION="$worst"
+  _PFG_TAX_PEELED_CMD="$peeled_for_policy"
+  return 0
+}
+
+# Run the taxonomy and act. A BLOCK/CONFIRM here is emitted immediately (worst-verdict-wins already applied);
+# a transparent-wrapper-over-git rewrites $COMMAND to the peeled form so the policy below sees `git … push …`.
+# Emit a CONFIRM (permissionDecision:ask) with a STATIC reason. Inlined here (not via _fast_emit_confirm,
+# which is defined later in the file and would be unavailable at this early execution point) — the reason is
+# a fixed literal with no JSON-critical characters, so it needs no dynamic escaping. Exits 0 after emitting.
+_pfg_tax_confirm() {  # $1 = static reason (no ", \, tab, or newline)
+  _pfg_stage "wrapper-taxonomy:CONFIRM"
+  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"CONSEQUENTIAL PUSH — confirm to proceed. %s"}}\n' "$1"
+  exit 0
+}
+_pfg_wrapper_taxonomy "$COMMAND"
+case "$_PFG_TAX_ACTION" in
+  remote)
+    _pfg_tax_confirm "A governed git/gh command is invoked through a REMOTE/ISOLATED executor (ssh/docker/podman/kubectl). Preflight cannot statically confirm the destination or that this is a local governed op, so a human must confirm. If this is a local push, re-express it as a plain git push <remote> <refspec>. (Agent Bash-tool guard only; not server-side protection.)" ;;
+  unknown)
+    if [ "${PREFLIGHT_HEADLESS:-0}" = 1 ]; then
+      _pfg_stage "wrapper-taxonomy:UNKNOWN-block(headless)"
+      echo "BLOCKED: AMBIGUOUS_WRAPPED_GOVERNED_COMMAND — an unrecognized leading program is followed by a governed" >&2
+      echo "  git/gh command, and this is a headless/non-interactive context (PREFLIGHT_HEADLESS=1). Preflight cannot" >&2
+      echo "  statically confirm the program is a transparent wrapper (vs a remote/isolated executor), so it fails" >&2
+      echo "  CLOSED. Re-express the operation as a plain, directly-inspectable 'git push <remote> <refspec>' (or run" >&2
+      echo "  it without the wrapper) so the gate can adjudicate the real destination." >&2
+      echo "  (Agent Bash-tool guard only; not server-side protection.)" >&2
+      exit 2
+    fi
+    _pfg_tax_confirm "AMBIGUOUS_WRAPPED_GOVERNED_COMMAND — an unrecognized leading program is followed by a governed git/gh command. Preflight cannot statically confirm it is a transparent wrapper (vs a remote/isolated executor or a coincidental argument), so a human must confirm. If this is a local push, re-express it as a plain git push <remote> <refspec>. (Agent Bash-tool guard only; not server-side protection.)" ;;
+esac
+# TRANSPARENT wrapper over a governed program: rewrite $COMMAND to the peeled `git … push …` so the
+# authoritative push policy below runs on the real op (env/sudo/nice/… all exec it in the same local context).
+if [ "$_PFG_TAX_ACTION" = "passthrough" ] && [ -n "$_PFG_TAX_PEELED_CMD" ] && [ "$_PFG_TAX_PEELED_CMD" != "$COMMAND" ]; then
+  COMMAND="$_PFG_TAX_PEELED_CMD"
+  _pfg_stage "wrapper-taxonomy:peeled-to-governed"
+fi
+
 # ── (STAGE 2A) NON-AUTHORITATIVE PUSH SHADOW — completely isolated, cannot alter policy ─────────────────
 # The shared shell-structure parser (lib/shell-structure.sh, AWK-backed) is run in SHADOW mode to compare
 # its IR git-push facts against the legacy authoritative parser, so we can build confidence before ever

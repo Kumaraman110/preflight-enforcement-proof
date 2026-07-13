@@ -269,6 +269,25 @@ _rtr_structural() {  # $1 = command string (raw, JSON-escaped — we operate ZER
         shift; [ "$#" -gt 0 ] && { IFS="$_oldifs"; CANDIDATE=1; return; } ;;   # source/dot inclusion of a path
       eval|xargs)
         IFS="$_oldifs"; CANDIDATE=1; return ;;   # indirection — a push/sentinel may be assembled at runtime
+      *)
+        # ── STRUCTURAL WRAPPER CATCH-ALL (closes the wrapper-enumeration class) ──────────────────────────────
+        # The named-wrapper peel above is a FAST PATH for the common wrappers, but enumerating every command
+        # wrapper is unwinnable: ionice/chrt/taskset/flock/faketime/catchsegv/unbuffer/torsocks/sudo/doas/…,
+        # `env -S 'git push'`, and future wrappers all take the shape `<wrapper> [opts/args] git|gh …`. If the
+        # leading program is UNRECOGNIZED (not git/gh/a shell/source/eval/xargs and not a peeled wrapper), it
+        # MIGHT be an unknown wrapper — so if a bare `git` or `gh` program token appears LATER in this segment,
+        # route to the engine. The engine is authoritative and fail-closed; the router only decides whether to
+        # ASK it. Over-routing is SAFE (a benign `echo git push` / `grep gh file` reaches the engine, which
+        # then ALLOWs it — costing only latency); UNDER-routing is the fail-open we must never do. We match a
+        # STANDALONE git/gh token (a whole word), not a substring, so `legit`/`ghost`/`--gh-token` do not trip
+        # it — over-routing is bounded to segments that literally contain the governed program as a word.
+        for tok in "$@"; do
+          case "${tok#\\}" in
+            git|git.exe|*/git|*/git.exe|gh|gh.exe|*/gh|*/gh.exe)
+              IFS="$_oldifs"; CANDIDATE=1; return ;;
+          esac
+        done
+        ;;
     esac
   done <<< "$_seg"
   IFS="$_oldifs"
