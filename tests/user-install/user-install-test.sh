@@ -63,7 +63,9 @@ RC="$(fire "$DISP" "git push origin main" "$BAD")"
 #    correctly STALE, not a project owner — see the hook-arbitration suite).
 PROJ="$(mktemp -d)/proj"; mkdir -p "$PROJ/.preflight" "$PROJ/.claude/hooks"; ( cd "$PROJ" && git init -q )
 echo '{"mode":"generic"}' > "$PROJ/.preflight/config.json"; printf '#stub\n' > "$PROJ/.claude/hooks/pre-bash-risk-router"
-printf '{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"\"%s/.claude/hooks/pre-bash-risk-router\" pre-bash-risk-router \"$TOOL_INPUT\""}]}]}}' "$PROJ" > "$PROJ/.claude/settings.json"
+# build valid JSON via jq (embedded quotes in the command must be JSON-escaped, not printf-injected)
+jq -n --arg cmd "\"$PROJ/.claude/hooks/pre-bash-risk-router\" pre-bash-risk-router \"\$TOOL_INPUT\"" \
+  '{hooks:{PreToolUse:[{matcher:"Bash",hooks:[{type:"command",command:$cmd}]}]}}' > "$PROJ/.claude/settings.json"
 [ "$(fire "$DISP" "git push origin main" "$PROJ")" = 0 ] && ok "8 project-local Preflight present → user router yields (no double-exec)" || bad "8 double-exec not prevented"
 
 # ── 9. Git worktree using a common git directory ───────────────────────────────────────────────────────
