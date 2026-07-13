@@ -33,7 +33,7 @@ trap 'rm -rf "$(dirname "$R")" 2>/dev/null || true' EXIT
 run(){ local cmd="$1" hdl="${2:-0}"
   local out rc
   out="$(printf '{"tool_name":"Bash","tool_input":{"command":"%s"},"cwd":"%s"}' "$cmd" "$R" \
-        | ( cd "$R" && PF_USER_LEVEL=1 PF_REPO_ROOT="$R" PFG_SS_IR_TIMEOUT=40 PREFLIGHT_HEADLESS="$hdl" bash "$ENGINE" 2>/tmp/.wtax.$$ ))"
+        | ( cd "$R" && PF_USER_LEVEL=1 PF_REPO_ROOT="$R" PFG_SS_IR_TIMEOUT="${PFG_SS_IR_TIMEOUT:-90}" PREFLIGHT_HEADLESS="$hdl" bash "$ENGINE" 2>/tmp/.wtax.$$ ))"
   rc=$?
   local dec; dec="$(printf '%s' "$out" | grep -o '"permissionDecision":"[a-z]*"' | head -1)"
   if [ -n "$dec" ]; then echo "ask"; elif [ "$rc" -eq 2 ]; then echo "block"; elif [ "$rc" -eq 0 ]; then echo "allow"; else echo "err$rc"; fi
