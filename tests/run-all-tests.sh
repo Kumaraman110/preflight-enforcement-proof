@@ -1588,6 +1588,21 @@ run_behavioral_tests() {
   else
     yellow "SKIP: wrapper-prefix-failopen-test.sh not found"
   fi
+
+  # ── v0.10.0 release-version coupling — the compiled RELEASE_VERSION constant (which every git-object
+  # install stamps into the runtime) must equal the CHANGELOG's top entry, so a release cut without bumping
+  # the constant fails CI before the runtime self-reports the wrong version (adversarial-review P1 guard). ──
+  local rv_test="$SCRIPT_DIR/behavioral/release-version-coupling-test.sh"
+  if [ -f "$rv_test" ]; then
+    if bash "$rv_test"; then
+      PASSES=$((PASSES + 3))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: release-version-coupling tests failed (RELEASE_VERSION must be well-formed and equal the CHANGELOG top entry; the builder must take the version as an argument — an un-bumped constant makes every install self-report the wrong version)"
+    fi
+  else
+    yellow "SKIP: release-version-coupling-test.sh not found"
+  fi
 }
 
 # ═══════════════════════════════════════════════════════════════
