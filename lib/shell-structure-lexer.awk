@@ -227,6 +227,46 @@ function analyze_simple(parent, ctx, start, end, depth,
     eq = index(t, "=")
     if (eq > 1 && isident(substr(t, 1, eq-1))) { env_pfx = (env_pfx=="" ? t : env_pfx " " t); ti++; continue }
     if (t == "command" || t == "builtin" || t == "exec") { ti++; continue }
+    # No-argument command wrappers (or wrappers whose only options are simple flags): peel the wrapper and,
+    # for setsid/time, an optional leading flag, so the WRAPPED program token is reached. WITHOUT this a
+    # `nohup git push` / `setsid git push` / `time git push` lexes with prog=nohup/setsid/time (a non-git
+    # node) → the engine identifies NO push → a governed push escapes gating (FAIL-OPEN). Peeling more
+    # wrappers only ever EXPOSES the real program for gating — the safe direction for an authoritative parser.
+    if (t == "nohup") { ti++; continue }
+    if (t == "setsid") { ti++; if (ti <= TN) { t = substr(SB, TS[ti]+1, TE[ti]-TS[ti]); if (t == "-f" || t == "--fork" || t == "-w" || t == "--wait") ti++ } continue }
+    if (t == "time") { ti++; if (ti <= TN) { t = substr(SB, TS[ti]+1, TE[ti]-TS[ti]); if (t == "-p") ti++ } continue }
+    # Argument-consuming wrappers: nice ([-n N]|[-N]), stdbuf (-i/-o/-e MODE), timeout ([-k D][-s S] DURATION).
+    if (t == "nice") {
+      ti++
+      while (ti <= TN) {
+        t = substr(SB, TS[ti]+1, TE[ti]-TS[ti])
+        if (t == "-n") { ti++; if (ti <= TN) ti++ }
+        else if (substr(t, 1, 1) == "-") { ti++ }        # -N / -n5 / --adjustment=N (self-contained)
+        else break
+      }
+      continue
+    }
+    if (t == "stdbuf") {
+      ti++
+      while (ti <= TN) {
+        t = substr(SB, TS[ti]+1, TE[ti]-TS[ti])
+        if (t == "-i" || t == "-o" || t == "-e") { ti++; if (ti <= TN) ti++ }
+        else if (substr(t, 1, 1) == "-") { ti++ }        # -oL / -o0 (attached value)
+        else break
+      }
+      continue
+    }
+    if (t == "timeout") {
+      ti++
+      while (ti <= TN) {
+        t = substr(SB, TS[ti]+1, TE[ti]-TS[ti])
+        if (t == "-k" || t == "-s" || t == "--kill-after" || t == "--signal") { ti++; if (ti <= TN) ti++ }
+        else if (substr(t, 1, 1) == "-") { ti++ }
+        else break                                        # this positional is the DURATION
+      }
+      if (ti <= TN) ti++                                  # consume the DURATION positional; program follows
+      continue
+    }
     if (t == "env") {
       ti++
       while (ti <= TN) {
@@ -444,7 +484,21 @@ function handle_heredoc(parent, ctx, seg_start, oppos, depth,
   tokenize(headtext_s, headtext_e); ti = 1
   while (ti <= TN) {
     t = substr(SB, TS[ti]+1, TE[ti]-TS[ti])
-    if (t ~ /^[A-Za-z_][A-Za-z0-9_]*=/ || t == "command" || t == "builtin" || t == "exec" || t == "env") { ti++; continue }
+    # Peel env-assignments + command wrappers so a `env bash <<EOF` / `nohup sh <<EOF` still classifies the
+    # WRAPPED shell for heredoc detection. env consumes its options; nice/stdbuf/timeout arg-consuming
+    # wrappers are left to analyze_simple (the generic path) which peels them fully. No-arg wrappers are safe.
+    if (t ~ /^[A-Za-z_][A-Za-z0-9_]*=/ || t == "command" || t == "builtin" || t == "exec" || t == "nohup" || t == "setsid" || t == "time") { ti++; continue }
+    if (t == "env") {
+      ti++
+      while (ti <= TN) {
+        t = substr(SB, TS[ti]+1, TE[ti]-TS[ti])
+        if (t == "-u") { ti++; if (ti <= TN) ti++ }
+        else if (substr(t, 1, 1) == "-") { ti++ }
+        else if (t ~ /^[A-Za-z_][A-Za-z0-9_]*=/) { ti++ }
+        else break
+      }
+      continue
+    }
     break
   }
   base = ""

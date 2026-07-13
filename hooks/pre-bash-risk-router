@@ -131,11 +131,94 @@ _rtr_structural() {  # $1 = command string (raw, JSON-escaped — we operate ZER
     # quote-aware decision), never hide one — the fail-safe direction. Strip " and ' from all positional
     # params up front so every match below sees the executed token.
     { local _uq _ua=(); for _uq in "$@"; do _uq="${_uq//\"/}"; _uq="${_uq//\'/}"; _ua+=("$_uq"); done; set -- "${_ua[@]}"; }
-    # Strip leading env-assignments (VAR=val) and a `command` / `\command` prefix (repeatable).
-    while [ "$#" -gt 0 ]; do
-      case "$1" in [A-Za-z_]*=*) shift ;; command|\\command) shift ;; *) break ;; esac
+    # Strip leading env-assignments (VAR=val) and COMMAND-WRAPPER prefixes so the real program token is
+    # reached. WITHOUT this, `env git push`, `exec git push`, `builtin git push`, `nice git push`,
+    # `nohup git push`, `time git push`, `stdbuf -oL git push`, `setsid git push`, `command git push` all
+    # word-split with prog=env/exec/… (a non-candidate) → the engine never runs → a governed push silently
+    # allowed (a FAIL-OPEN). We consume each recognized wrapper AND its own options/args, then re-derive prog.
+    # Fail-safe by construction: if a wrapper's argument structure is ambiguous (an unknown option, or a
+    # value-consuming option with no following token), we CANDIDATE-route (the engine then makes the real
+    # decision) rather than guess — over-routing is safe, under-routing is the bug. Repeatable (wrappers nest:
+    # `env exec git push`). Bounded to 12 iterations so a pathological prefix cannot loop unboundedly.
+    local _wrap_iter=0
+    while [ "$#" -gt 0 ] && [ "$_wrap_iter" -lt 12 ]; do
+      _wrap_iter=$((_wrap_iter+1))
+      case "${1#\\}" in
+        [A-Za-z_]*=*) shift ;;                     # leading VAR=val environment assignment
+        command) shift ;;                          # `command git push` — plain prefix, no options we honor here
+        builtin) shift ;;                          # `builtin git push` — bash builtin dispatcher, no options
+        nohup)   shift ;;                          # `nohup git push` — no option before the command
+        setsid)  shift; case "${1:-}" in -f|--fork) shift ;; esac ;;   # `setsid [-f] git push`
+        time)    shift; case "${1:-}" in -p) shift ;; esac ;;          # `time [-p] git push` — keyword/coreutil
+        exec)    shift
+                 # `exec [-cl] [-a name] cmd` — consume exec's own options (and -a's value) before the program.
+                 while [ "$#" -gt 0 ]; do
+                   case "$1" in
+                     -a) shift; [ "$#" -gt 0 ] && shift || { IFS="$_oldifs"; CANDIDATE=1; return; } ;;
+                     -a*) shift ;;
+                     -cl|-lc|-c|-l) shift ;;
+                     --) shift; break ;;
+                     -*) IFS="$_oldifs"; CANDIDATE=1; return ;;   # unknown exec option → route conservatively
+                     *) break ;;
+                   esac
+                 done ;;
+        env)     shift
+                 # `env [-i] [-u NAME]... [-C DIR] [-S str] [--] [VAR=val]... cmd` — consume env's options,
+                 # separate-value options (-u/-C/-S take the next token), and VAR=val pairs, up to the program.
+                 while [ "$#" -gt 0 ]; do
+                   case "$1" in
+                     -u|-C|-S|--unset|--chdir|--split-string|--block-signal|--default-signal|--ignore-signal)
+                       shift; [ "$#" -gt 0 ] && shift || { IFS="$_oldifs"; CANDIDATE=1; return; } ;;
+                     -u*|-C*|-S*|--unset=*|--chdir=*|--split-string=*) shift ;;
+                     -i|--ignore-environment|-0|--null|-v|--debug|-P*|--argv0*) shift ;;
+                     --) shift; break ;;
+                     [A-Za-z_]*=*) shift ;;                       # VAR=val
+                     -*) IFS="$_oldifs"; CANDIDATE=1; return ;;   # unknown env option → route conservatively
+                     *) break ;;
+                   esac
+                 done ;;
+        nice)    shift
+                 # `nice [-n N] [-N] cmd`
+                 while [ "$#" -gt 0 ]; do
+                   case "$1" in
+                     -n) shift; [ "$#" -gt 0 ] && shift || { IFS="$_oldifs"; CANDIDATE=1; return; } ;;
+                     -n*|--adjustment=*|-[0-9]*|--[0-9]*) shift ;;
+                     --) shift; break ;;
+                     -*) IFS="$_oldifs"; CANDIDATE=1; return ;;
+                     *) break ;;
+                   esac
+                 done ;;
+        stdbuf)  shift
+                 # `stdbuf -oL -eL -i MODE cmd`
+                 while [ "$#" -gt 0 ]; do
+                   case "$1" in
+                     -i|-o|-e) shift; [ "$#" -gt 0 ] && shift || { IFS="$_oldifs"; CANDIDATE=1; return; } ;;
+                     -i*|-o*|-e*|--input=*|--output=*|--error=*) shift ;;
+                     --) shift; break ;;
+                     -*) IFS="$_oldifs"; CANDIDATE=1; return ;;
+                     *) break ;;
+                   esac
+                 done ;;
+        timeout) shift
+                 # `timeout [-k DUR] [-s SIG] [--preserve-status] [--foreground] DURATION cmd` — consume its
+                 # options AND the mandatory DURATION positional, then the program follows.
+                 while [ "$#" -gt 0 ]; do
+                   case "$1" in
+                     -k|-s|--kill-after|--signal) shift; [ "$#" -gt 0 ] && shift || { IFS="$_oldifs"; CANDIDATE=1; return; } ;;
+                     -k*|-s*|--kill-after=*|--signal=*) shift ;;
+                     --preserve-status|--foreground|-v|--verbose) shift ;;
+                     --) shift; break ;;
+                     -*) IFS="$_oldifs"; CANDIDATE=1; return ;;
+                     *) break ;;   # this positional is the DURATION
+                   esac
+                 done
+                 [ "$#" -gt 0 ] && shift || { IFS="$_oldifs"; CANDIDATE=1; return; } ;;  # consume DURATION
+        *) break ;;                                # not a wrapper → $1 is the real program
+      esac
     done
     [ "$#" -gt 0 ] || continue
+    # A prefix that nested past the iteration bound is pathological → route conservatively rather than miss it.
+    [ "$_wrap_iter" -ge 12 ] && { IFS="$_oldifs"; CANDIDATE=1; return; }
     prog="$1"
     case "${prog#\\}" in
       git|git.exe|*/git|*/git.exe)

@@ -244,6 +244,43 @@ _pfg_ss_analyze_simple() {  # $1 parent  $2 ctx  $3 start  $4 end  $5 raw-text  
         case "$nm" in *[!A-Za-z0-9_]*) break ;; esac
         env_pfx="${env_pfx:+$env_pfx }$1"; shift; continue ;;
       command|builtin|exec) shift; continue ;;
+      # Command-wrapper prefixes that must be peeled so the WRAPPED program is classified (mirrors the AWK
+      # lexer's wrapper-peel — kept field-identical so the equivalence gate holds). These close a fail-open
+      # where a governed push prefixed with nohup/nice/time/setsid/stdbuf/timeout escaped identification.
+      nohup) shift; continue ;;
+      setsid) shift; case "${1:-}" in -f|--fork|-w|--wait) shift ;; esac; continue ;;
+      time) shift; case "${1:-}" in -p) shift ;; esac; continue ;;
+      nice)
+        shift
+        while [ "$#" -gt 0 ]; do
+          case "$1" in
+            -n) shift; [ "$#" -gt 0 ] && shift ;;
+            -*) shift ;;
+            *) break ;;
+          esac
+        done
+        continue ;;
+      stdbuf)
+        shift
+        while [ "$#" -gt 0 ]; do
+          case "$1" in
+            -i|-o|-e) shift; [ "$#" -gt 0 ] && shift ;;
+            -*) shift ;;
+            *) break ;;
+          esac
+        done
+        continue ;;
+      timeout)
+        shift
+        while [ "$#" -gt 0 ]; do
+          case "$1" in
+            -k|-s|--kill-after|--signal) shift; [ "$#" -gt 0 ] && shift ;;
+            -*) shift ;;
+            *) break ;;
+          esac
+        done
+        [ "$#" -gt 0 ] && shift   # consume the DURATION positional
+        continue ;;
       env)
         shift
         # env [-i] [-u NAME] [VAR=val]... cmd : peel its own option/assignment run.
@@ -326,12 +363,36 @@ _pfg_ss_analyze_simple() {  # $1 parent  $2 ctx  $3 start  $4 end  $5 raw-text  
   # structurally governed (gh/git). For any other program, later arguments — including a `$(…)` value like
   # `echo "$(date)"` — are ordinary data and must NOT flag the node (that was the false-positive class).
   if _pfg_ss_subcmd_governed_basename "$prog_lit"; then
+    local _base_g0; _base_g0="${prog_lit##*/}"; _base_g0="${_base_g0%.exe}"
+    # For GIT, skip the global-option run before the subcommand (mirrors the live lexer's git option grammar).
+    # WITHOUT this, `git -c http.x=y push origin main` read the subcommand as "-c" instead of "push" (the
+    # pre-existing Z-git-c-url equivalence divergence). Separate-value opts consume the NEXT token; =-joined
+    # and bare flags are single tokens. gh has no comparable pre-subcommand global-option run we model here.
+    if [ "$_base_g0" = "git" ]; then
+      while [ "$#" -gt 0 ]; do
+        case "$1" in
+          -C|--git-dir|--work-tree|--namespace|--super-prefix|--exec-path|-c|--config-env)
+            shift; [ "$#" -gt 0 ] && shift || break ;;
+          --git-dir=*|--work-tree=*|--namespace=*|--super-prefix=*|--exec-path=*|--config-env=*|-c=*)
+            shift ;;
+          -p|--paginate|-P|--no-pager|--bare|--no-replace-objects|--no-lazy-fetch|--no-optional-locks|--no-advice|--literal-pathspecs|--glob-pathspecs|--noglob-pathspecs|--icase-pathspecs|--html-path|--man-path|--info-path|--no-renames)
+            shift ;;
+          -[A-Za-z]*|--*) break ;;   # unknown global option — stop; the subcommand analysis sees it as-is
+          *) break ;;
+        esac
+      done
+    fi
     local sub1="" sub2="" a1="$1" a2="$2"
+    # The 2-token subcommand window (sub1 sub2) is GH-ONLY (`gh pr create|merge`). For git the subcommand is
+    # a SINGLE token: a 2-token git window mis-joined `git stash push` → "stash push" and flagged it as a
+    # push (false-positive fixed in the live lexer at rc.2/rc.3). Kept identical here so the equivalence gate
+    # holds (this closes the pre-existing A1 `git push origin main` / Z-git-c-url stale-fixture divergences —
+    # the live lexer emits SUBCMD="push", the frozen fixture previously still emitted "push origin").
     if [ -n "$a1" ]; then
       _pfg_ss_token_is_computed "$a1"
       if [ "$_PFG_SS_R_COMPUTED" = 1 ]; then subcmd_computed=1; else _pfg_ss_unquote "$a1"; sub1="$_PFG_SS_R_LIT"; fi
     fi
-    if [ "$subcmd_computed" = 0 ] && [ -n "$a2" ]; then
+    if [ "$_base_g0" = "gh" ] && [ "$subcmd_computed" = 0 ] && [ -n "$a2" ]; then
       _pfg_ss_token_is_computed "$a2"
       if [ "$_PFG_SS_R_COMPUTED" = 1 ]; then subcmd_computed=1; else _pfg_ss_unquote "$a2"; sub2="$_PFG_SS_R_LIT"; fi
     fi
@@ -734,8 +795,25 @@ _pfg_ss_handle_heredoc() {  # $1 parent  $2 ctx  $3 seg_start  $4 op_pos  $5 thi
   # peel env/command/exec and find the program basename of this segment's head (quote-aware tokenize).
   _pfg_ss_tokenize "$headtext"
   set -- "${_PFG_SS_TOK[@]}"
+  # Peel env-assignments + command wrappers so `env bash <<EOF` / `nohup sh <<EOF` still classifies the
+  # wrapped shell for heredoc detection (mirrors the AWK lexer's handle_heredoc peel — kept identical for the
+  # equivalence gate). env consumes its options; nice/stdbuf/timeout are left to the generic path.
   while [ "$#" -gt 0 ]; do
-    case "$1" in [A-Za-z_]*=*) shift ;; command|builtin|exec|env) shift ;; *) break ;; esac
+    case "$1" in
+      [A-Za-z_]*=*) shift ;;
+      command|builtin|exec|nohup|setsid|time) shift ;;
+      env)
+        shift
+        while [ "$#" -gt 0 ]; do
+          case "$1" in
+            -u) shift; [ "$#" -gt 0 ] && shift ;;
+            -*) shift ;;
+            [A-Za-z_]*=*) shift ;;
+            *) break ;;
+          esac
+        done ;;
+      *) break ;;
+    esac
   done
   local prog="${1:-}" base=""
   if [ -n "$prog" ]; then

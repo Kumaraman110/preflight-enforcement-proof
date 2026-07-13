@@ -1572,6 +1572,22 @@ run_behavioral_tests() {
   else
     yellow "SKIP: cli-usability-test.sh not found"
   fi
+
+  # ── v0.10.0 command-wrapper fail-open (adversarial-review P0). A governed `git push` / `gh pr create|merge`
+  # prefixed with env/exec/builtin/nohup/nice/time/setsid/stdbuf/timeout must STILL be routed to the engine
+  # (the router peels the wrapper), IDENTIFIED by the IR parser (subcmd), and never reach the tool ungated —
+  # while ordinary wrapper-prefixed commands (`env FOO=bar ls`, `nice make`) stay on the fast-allow path. ──
+  local wrap_test="$SCRIPT_DIR/behavioral/wrapper-prefix-failopen-test.sh"
+  if [ -f "$wrap_test" ]; then
+    if bash "$wrap_test"; then
+      PASSES=$((PASSES + 32))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: wrapper-prefix-failopen tests failed (a governed push/PR behind env/exec/nohup/nice/time/setsid/stdbuf/timeout must route to the engine and be IR-identified — never reach the tool ungated — while ordinary wrapped commands stay fast-allow)"
+    fi
+  else
+    yellow "SKIP: wrapper-prefix-failopen-test.sh not found"
+  fi
 }
 
 # ═══════════════════════════════════════════════════════════════

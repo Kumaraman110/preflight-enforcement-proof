@@ -967,15 +967,70 @@ _pfg_fast_parse_remote() {  # $1 = the raw command string. Builtins only. Always
   # shellcheck disable=SC2086
   set -- $cmd
   set +f; IFS="$_oldifs"
-  # (c) Strip env-assignment prefixes (VAR=val) and a `command` prefix (repeatable).
-  while [ "$#" -gt 0 ]; do
-    case "$1" in
+  # (c) Strip env-assignment prefixes (VAR=val) and COMMAND-WRAPPER prefixes (command/env/exec/builtin/
+  #     nohup/nice/time/stdbuf/setsid/timeout), consuming each wrapper's own options/args, so the real git
+  #     program token is reached. WITHOUT this, `nohup git push` / `nice -n 10 git push` / `env git push`
+  #     parse with prog!=git → _FAST_PARSED stays 0 → the fast decision is skipped. The IR fallback catches
+  #     env/exec but NOT nohup/nice/…, so a wrapper-prefixed push could reach the tool ungated (FAIL-OPEN).
+  #     Fail-safe: an ambiguous wrapper option (value-opt with no following token) → return 0 (bail to the
+  #     full parser, which fails closed). Bounded to 12 iterations. Mirrors hooks/pre-bash-risk-router.
+  local _wi=0
+  while [ "$#" -gt 0 ] && [ "$_wi" -lt 12 ]; do
+    _wi=$((_wi+1))
+    case "${1#\\}" in
       [A-Za-z_]*=*) shift ;;
-      command) shift ;;
+      command|builtin|nohup) shift ;;
+      setsid) shift; case "${1:-}" in -f|--fork|-w|--wait) shift ;; esac ;;
+      time)   shift; case "${1:-}" in -p) shift ;; esac ;;
+      exec)   shift
+              while [ "$#" -gt 0 ]; do case "$1" in
+                -a) shift; [ "$#" -gt 0 ] && shift || return 0 ;;
+                -a*|-cl|-lc|-c|-l) shift ;;
+                --) shift; break ;;
+                -*) return 0 ;;
+                *) break ;;
+              esac; done ;;
+      env)    shift
+              while [ "$#" -gt 0 ]; do case "$1" in
+                -u|-C|-S|--unset|--chdir|--split-string) shift; [ "$#" -gt 0 ] && shift || return 0 ;;
+                -u*|-C*|-S*|--unset=*|--chdir=*|--split-string=*) shift ;;
+                -i|--ignore-environment|-0|--null|-v|--debug) shift ;;
+                --) shift; break ;;
+                [A-Za-z_]*=*) shift ;;
+                -*) return 0 ;;
+                *) break ;;
+              esac; done ;;
+      nice)   shift
+              while [ "$#" -gt 0 ]; do case "$1" in
+                -n) shift; [ "$#" -gt 0 ] && shift || return 0 ;;
+                -n*|--adjustment=*|-[0-9]*) shift ;;
+                --) shift; break ;;
+                -*) return 0 ;;
+                *) break ;;
+              esac; done ;;
+      stdbuf) shift
+              while [ "$#" -gt 0 ]; do case "$1" in
+                -i|-o|-e) shift; [ "$#" -gt 0 ] && shift || return 0 ;;
+                -i*|-o*|-e*|--input=*|--output=*|--error=*) shift ;;
+                --) shift; break ;;
+                -*) return 0 ;;
+                *) break ;;
+              esac; done ;;
+      timeout) shift
+              while [ "$#" -gt 0 ]; do case "$1" in
+                -k|-s|--kill-after|--signal) shift; [ "$#" -gt 0 ] && shift || return 0 ;;
+                -k*|-s*|--kill-after=*|--signal=*) shift ;;
+                --preserve-status|--foreground|-v|--verbose) shift ;;
+                --) shift; break ;;
+                -*) return 0 ;;
+                *) break ;;
+              esac; done
+              [ "$#" -gt 0 ] && shift || return 0 ;;   # consume the DURATION positional
       *) break ;;
     esac
   done
   [ "$#" -gt 0 ] || return 0
+  [ "$_wi" -ge 12 ] && return 0                       # pathological nesting → bail to the full (fail-closed) parser
   # (d) Program token must be a git program form (optional one leading backslash for `\git`).
   case "${1#\\}" in
     git|git.exe|*/git|*/git.exe) ;;
