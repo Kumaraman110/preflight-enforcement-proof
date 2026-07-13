@@ -231,6 +231,7 @@ _pfg_tax_peel_one() {  # operates on the positional params; returns remaining to
             # flock takes a mandatory LOCKFILE/FD positional before the command
             [ "$#" -gt 0 ] && case "$1" in -*) : ;; *) shift ;; esac ;;
     setpriority) [ "$#" -gt 0 ] && shift ;;
+    stdbuf) while [ "$#" -gt 0 ]; do case "$1" in -i|-o|-e|--input|--output|--error) shift; [ "$#" -gt 0 ] && shift || return 2 ;; -i*|-o*|-e*|--input=*|--output=*|--error=*) shift ;; --) shift; break ;; -*) return 2 ;; *) break ;; esac; done ;;
     watch)  while [ "$#" -gt 0 ]; do case "$1" in -n|--interval|-p|--precise) shift; [ "$#" -gt 0 ] && shift || return 2 ;; -n*|--interval=*) shift ;; -d|--differences|-t|--no-title|-b|--beep|-e|--errexit|-g|--chgexit|-c|--color|-x|--exec|-h|--help) shift ;; --) shift; break ;; -*) shift ;; *) break ;; esac; done ;;
     timeout) while [ "$#" -gt 0 ]; do case "$1" in -k|-s|--kill-after|--signal) shift; [ "$#" -gt 0 ] && shift || return 2 ;; -k*|-s*|--kill-after=*|--signal=*) shift ;; --preserve-status|--foreground|-v|--verbose) shift ;; --) shift; break ;; -*) return 2 ;; *) break ;; esac; done
             [ "$#" -gt 0 ] && shift || return 2 ;;   # DURATION positional
