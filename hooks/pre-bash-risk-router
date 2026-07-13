@@ -167,9 +167,15 @@ _rtr_structural() {  # $1 = command string (raw, JSON-escaped — we operate ZER
                  # separate-value options (-u/-C/-S take the next token), and VAR=val pairs, up to the program.
                  while [ "$#" -gt 0 ]; do
                    case "$1" in
-                     -u|-C|-S|--unset|--chdir|--split-string|--block-signal|--default-signal|--ignore-signal)
+                     -S|--split-string|-S*|--split-string=*)
+                       # env -S '<cmdline>' RE-SPLITS its argument into a fresh argv and execs it — the wrapped
+                       # PROGRAM lives inside that argument. The router already word-split the segment, so the
+                       # program is smeared across later tokens; rather than guess, ROUTE conservatively and let
+                       # the engine's wrapper taxonomy re-split + classify. (Closes the env -S router bypass.)
+                       IFS="$_oldifs"; CANDIDATE=1; return ;;
+                     -u|-C|--unset|--chdir|--block-signal|--default-signal|--ignore-signal)
                        shift; [ "$#" -gt 0 ] && shift || { IFS="$_oldifs"; CANDIDATE=1; return; } ;;
-                     -u*|-C*|-S*|--unset=*|--chdir=*|--split-string=*) shift ;;
+                     -u*|-C*|--unset=*|--chdir=*) shift ;;
                      -i|--ignore-environment|-0|--null|-v|--debug|-P*|--argv0*) shift ;;
                      --) shift; break ;;
                      [A-Za-z_]*=*) shift ;;                       # VAR=val

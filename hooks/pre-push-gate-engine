@@ -203,7 +203,7 @@ fi
 #     CONFIRM (AMBIGUOUS_WRAPPED_GOVERNED_COMMAND) interactively; BLOCK when PREFLIGHT_HEADLESS=1.
 # Worst-verdict-wins across segments: a BLOCK anywhere wins; else a CONFIRM; else fall through to policy.
 # Builtins only (no spawn on this pre-pass). Bounded peel depth. Only touches segments the router flagged.
-_PFG_TAX_TRANSPARENT=" env sudo doas nice ionice chrt taskset flock command builtin nohup setsid timeout exec stdbuf setpriority eatmydata proot catchsegv unbuffer faketime torsocks "
+_PFG_TAX_TRANSPARENT=" env sudo doas nice ionice chrt taskset flock command builtin nohup setsid timeout exec stdbuf setpriority eatmydata proot catchsegv unbuffer faketime torsocks watch "
 _PFG_TAX_REMOTE=" ssh docker podman kubectl nsenter chroot rlogin rsh slogin "
 _PFG_TAX_DATA=" echo printf grep egrep fgrep cat sed awk head tail cut tr wc sort uniq ls find test [ true false : dirname basename realpath readlink stat file wc "
 
@@ -231,6 +231,7 @@ _pfg_tax_peel_one() {  # operates on the positional params; returns remaining to
             # flock takes a mandatory LOCKFILE/FD positional before the command
             [ "$#" -gt 0 ] && case "$1" in -*) : ;; *) shift ;; esac ;;
     setpriority) [ "$#" -gt 0 ] && shift ;;
+    watch)  while [ "$#" -gt 0 ]; do case "$1" in -n|--interval|-p|--precise) shift; [ "$#" -gt 0 ] && shift || return 2 ;; -n*|--interval=*) shift ;; -d|--differences|-t|--no-title|-b|--beep|-e|--errexit|-g|--chgexit|-c|--color|-x|--exec|-h|--help) shift ;; --) shift; break ;; -*) shift ;; *) break ;; esac; done ;;
     timeout) while [ "$#" -gt 0 ]; do case "$1" in -k|-s|--kill-after|--signal) shift; [ "$#" -gt 0 ] && shift || return 2 ;; -k*|-s*|--kill-after=*|--signal=*) shift ;; --preserve-status|--foreground|-v|--verbose) shift ;; --) shift; break ;; -*) return 2 ;; *) break ;; esac; done
             [ "$#" -gt 0 ] && shift || return 2 ;;   # DURATION positional
     faketime) [ "$#" -gt 0 ] && shift || return 2 ;; # faketime '<spec>' cmd — consume the time spec
