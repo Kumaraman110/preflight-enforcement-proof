@@ -1,29 +1,46 @@
 #!/usr/bin/env bash
 # Behavioral PERFORMANCE test: Stage-2B authoritative git-push path must retain SAFE MARGIN under the
-# router's 23s candidate deadline. The IR parser may no longer skip, so this measures the COMPLETE candidate
+# router's candidate deadline. The IR parser may no longer skip, so this measures the COMPLETE candidate
 # processing (awk spawn + scan + protocol validation + IR construction + operation extraction + push policy
 # + diagnostics) per case and asserts the Phase-7 disposition:
-#   • a supported AUTO/CONFIRM case must complete with MEANINGFUL MARGIN below 23s (PASS);
-#     timing out / engine-failure / racing immediately below 23s → FAIL (AUTHORITATIVE PERFORMANCE INSUFFICIENT);
+#   • a supported AUTO/CONFIRM case must complete with MEANINGFUL MARGIN below the deadline (PASS);
+#     timing out / engine-failure / racing immediately below it → FAIL (AUTHORITATIVE PERFORMANCE INSUFFICIENT);
 #   • a forbidden case blocking early → PASS (provided no represented push executes);
 #   • parser/AWK failure → deterministic BLOCK (a timeout that merely fails-closed is NOT an acceptable PASS).
 #
-# "Safe margin" gate: MARGIN_MS below the deadline. Default deadline 23000ms; a supported AUTO/CONFIRM case
-# must finish under PFG_PERF_SAFE_MS (default 18000 — i.e. >=5s margin). Tunable via env for a fast CI host.
-# Records per case: total wall ms, parser (IR) ms, decision, and margin. Emits a machine-readable EVIDENCE
-# block so CI logs carry the Phase-7 numbers explicitly (not just pass/fail).
+# "Safe margin" gate: MARGIN_MS below the deadline. The deadline is DERIVED from the router's OWN constants
+# (SINGLE SOURCE — no hardcoded copy to drift): ceiling = _RTR_PLATFORM_TIMEOUT_S - kill_grace - overhead.
+# A supported AUTO/CONFIRM case must finish under PFG_PERF_SAFE_MS (default = deadline - 5000, i.e. >=5s
+# margin). Tunable via env for a fast CI host. Records per case: total wall ms, parser (IR) ms, decision,
+# and margin. Emits a machine-readable EVIDENCE block so CI logs carry the numbers explicitly.
+#
+# NOTE (heavy scan-on-exec hosts): the wall time is dominated by per-spawn endpoint-security scanning, not
+# the engine's algorithm. The deadline widening (35s->60s platform, 48s ceiling) exists precisely so a
+# CORRECT verdict on such a host is not killed mid-decision; this test's margin gate rides the derived value.
 #
 # Exit 0 = all pass. Isolated mktemp repos, string-only remotes, no network, no consumer.
 set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 HOOK="$ROOT/hooks/pre-push-gate-engine"
+ROUTER="$ROOT/hooks/pre-bash-risk-router"
 [ -f "$HOOK" ] || { echo "FAIL: engine not found ($HOOK)" >&2; exit 1; }
 command -v jq >/dev/null 2>&1 || { echo "SKIP: jq unavailable"; echo "ir-push-perf tests: 0 passed, 0 failed"; exit 0; }
 
-DEADLINE_MS="${PFG_PERF_DEADLINE_MS:-23000}"     # the router candidate deadline
-SAFE_MS="${PFG_PERF_SAFE_MS:-18000}"             # supported AUTO/CONFIRM must finish under this (>=5s margin)
-PROBE_TO="${PFG_PERF_PROBE_TO:-40}"              # hard probe cap (s); a run reaching this is a timeout
+# ── Derive the router candidate deadline from the router's OWN constants (single source of truth). This
+# tracks the timeout-budget automatically: if the platform timeout / ceiling changes, this test follows
+# without a manual edit (no dual-source drift the way a hardcoded 23000 would). Fallback keeps the test
+# runnable if the constants can't be read. ──
+_rtr_const(){ grep -E "^$1=" "$ROUTER" 2>/dev/null | head -1 | sed -E "s/^$1=([0-9]+).*/\1/"; }
+_PLAT_S="$(_rtr_const _RTR_PLATFORM_TIMEOUT_S)"; _KG_S="$(_rtr_const _RTR_KILL_GRACE_S)"; _OV_S="$(_rtr_const _RTR_OVERHEAD_MARGIN_S)"
+if [ -n "$_PLAT_S" ] && [ -n "$_KG_S" ] && [ -n "$_OV_S" ]; then
+  _CEIL_S=$(( _PLAT_S - _KG_S - _OV_S )); [ "$_CEIL_S" -lt 10 ] && _CEIL_S=10
+else
+  _CEIL_S=48   # fallback matching the shipped 60s-platform derivation
+fi
+DEADLINE_MS="${PFG_PERF_DEADLINE_MS:-$(( _CEIL_S * 1000 ))}"   # the router candidate deadline (derived)
+SAFE_MS="${PFG_PERF_SAFE_MS:-$(( DEADLINE_MS - 5000 ))}"       # supported AUTO/CONFIRM must finish >=5s under it
+PROBE_TO="${PFG_PERF_PROBE_TO:-$(( _CEIL_S + 17 ))}"           # hard probe cap (s); a run reaching this is a timeout
 
 PASS=0; FAIL=0
 ok()  { echo "PASS: $1"; PASS=$((PASS+1)); }
