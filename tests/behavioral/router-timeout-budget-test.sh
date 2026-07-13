@@ -64,11 +64,16 @@ if [ -n "${HJ_TIMEOUT_MS:-}" ]; then
   for pair in "user-installer:$ROOT/tools/preflight-user.sh" "runtime-installer:$ROOT/tools/preflight-runtime-install.sh"; do
     lbl="${pair%%:*}"; f="${pair#*:}"
     [ -f "$f" ] || { bad "missing $lbl ($f)"; continue; }
-    # the registration line builds a jq object with `timeout:<ms>` for the Bash PreToolUse hook
-    got="$(grep -oE 'timeout:[0-9]+' "$f" | head -1 | sed -E 's/timeout://')"
-    if [ -z "$got" ]; then bad "$lbl: could not find a 'timeout:<ms>' registration literal in $f"
-    elif [ "$got" -eq "$HJ_TIMEOUT_MS" ]; then ok "$lbl registers timeout:${got} == hooks.json (${HJ_TIMEOUT_MS}ms)"
-    else bad "DUAL-SOURCE DRIFT: $lbl registers timeout:${got}ms but hooks.json is ${HJ_TIMEOUT_MS}ms — an install from this source would run the WRONG platform timeout. Re-sync it with hooks.json."
+    # Collect EVERY `timeout:<ms>` jq-registration literal in the installer. Requiring uniqueness (rather than
+    # head -1) is the robust check: it catches both DRIFT from hooks.json AND a second, differing literal that
+    # a `head -1` would silently mask (the reviewer's latent-fragility note). If more than one distinct value
+    # appears, that is itself a dual-source bug inside the installer.
+    local_vals="$(grep -oE 'timeout:[0-9]+' "$f" | sed -E 's/timeout://' | sort -u)"
+    nvals="$(printf '%s\n' "$local_vals" | grep -c . )"
+    if [ -z "$local_vals" ]; then bad "$lbl: could not find a 'timeout:<ms>' registration literal in $f"
+    elif [ "$nvals" -gt 1 ]; then bad "$lbl: MULTIPLE distinct timeout literals present ($(echo $local_vals | tr '\n' ' ')) — ambiguous registration; all must equal hooks.json (${HJ_TIMEOUT_MS}ms)"
+    elif [ "$local_vals" -eq "$HJ_TIMEOUT_MS" ]; then ok "$lbl registers timeout:${local_vals} == hooks.json (${HJ_TIMEOUT_MS}ms)"
+    else bad "DUAL-SOURCE DRIFT: $lbl registers timeout:${local_vals}ms but hooks.json is ${HJ_TIMEOUT_MS}ms — an install from this source would run the WRONG platform timeout. Re-sync it with hooks.json."
     fi
   done
 fi
@@ -111,7 +116,7 @@ sleep 999
 EOF
 chmod +x "$T/hooks/pre-push-gate-engine"
 
-PLAT="${RTR_PLATFORM_S:-35}"
+PLAT="${RTR_PLATFORM_S:-60}"   # fallback = the shipped platform timeout (dead unless extraction fails)
 s="$EPOCHREALTIME"
 printf '%s' "$PUSH" | timeout -s KILL "$PLAT" bash "$T/hooks/pre-bash-risk-router" "$PUSH" >/dev/null 2>"$T/err"; rc=$?
 e="$EPOCHREALTIME"

@@ -159,7 +159,15 @@ cmd_install(){
   chmod +x "$PF_DISPATCH" 2>/dev/null || true
 
   # stable management CLI + the `preflight` launcher on PATH (version-independent, like the dispatcher).
-  _install_cli_and_launcher || _err "warning: CLI/launcher install incomplete (runtime is still active)"
+  # Stage the CLI from the INSTALL SOURCE so an upgrade propagates the ref's CLI (review D4). For a git
+  # install, extract the ref's tools/preflight-user.sh; for an artifact/no-source install, fall back to the
+  # running script (the self-copy guard in _install_cli_and_launcher makes a launcher-driven re-run safe).
+  local _cli_src=""
+  if [ -z "$ARTIFACT" ] && [ -n "${SRC_REPO:-}" ] && git -C "$SRC_REPO" cat-file -e "${RESOLVED_SHA}:tools/preflight-user.sh" 2>/dev/null; then
+    _cli_src="$STAGE_PARENT/preflight-user.cli.sh"
+    git -C "$SRC_REPO" show "${RESOLVED_SHA}:tools/preflight-user.sh" > "$_cli_src" 2>/dev/null || _cli_src=""
+  fi
+  _install_cli_and_launcher "$_cli_src" || _err "warning: CLI/launcher install incomplete (runtime is still active)"
 
   # ---- Pointer swap = the commit point. PREVIOUS <- old ACTIVE ; ACTIVE <- new sha ----
   if [ -n "$PRIOR_ACTIVE" ] && [ "$PRIOR_ACTIVE" != "$RESOLVED_SHA" ]; then printf '%s\n' "$PRIOR_ACTIVE" > "$PF_PREVIOUS.tmp"; mv "$PF_PREVIOUS.tmp" "$PF_PREVIOUS"; fi
@@ -325,15 +333,30 @@ _register_settings(){ # $1 py
 }
 
 # ═══════════════════════════════ CLI + LAUNCHER ════════════════════════════════════════════════════════
-# Install a STABLE copy of this script at $PF_CLI and a thin `preflight` launcher on PATH that execs it.
-# The launcher path never changes across upgrades; only $PF_CLI's contents refresh. Best-effort: a failure
-# here never aborts a successful runtime activation (the runtime is what governs; the launcher is UX sugar).
+# Install a STABLE copy of the management CLI at $PF_CLI and a thin `preflight` launcher on PATH that execs
+# it. The launcher path never changes across upgrades; only $PF_CLI's contents refresh. Best-effort: a
+# failure here never aborts a successful runtime activation (the runtime is what governs; the launcher is UX).
+#
+# $1 (optional) = the CLI script to stage into $PF_CLI. cmd_install passes the CLI from the INSTALL SOURCE
+# (the ref's committed tools/preflight-user.sh) so an UPGRADE actually propagates new CLI code (review D4:
+# when invoked via the launcher, BASH_SOURCE is the OLD installed $PF_CLI, so copying "self" would stage the
+# old CLI onto itself — new CLI bugfixes would never land, and `cp self self` errored out with a scary
+# "install incomplete" warning). If no source is given, fall back to the running script, but NEVER cp a file
+# onto itself (skip the copy when it already IS $PF_CLI).
 _install_cli_and_launcher(){
-  local self bindir launcher
+  local cli_src="${1:-}" self bindir launcher
   self="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
+  [ -n "$cli_src" ] && [ -f "$cli_src" ] || cli_src="$self"
   mkdir -p "$(dirname "$PF_CLI")" || return 1
-  # Copy THIS script verbatim to the stable location (idempotent overwrite).
-  cp "$self" "$PF_CLI" 2>/dev/null || return 1
+  # Stage the CLI into the stable location. Resolve both sides to absolute real paths so a self-copy is
+  # detected regardless of symlinks/relative spelling; skip the copy (not an error) when they are the SAME
+  # file (launcher re-running the already-installed CLI with no distinct source).
+  local src_abs dst_abs
+  src_abs="$(cd "$(dirname "$cli_src")" 2>/dev/null && pwd)/$(basename "$cli_src")"
+  dst_abs="$(cd "$(dirname "$PF_CLI")" 2>/dev/null && pwd)/$(basename "$PF_CLI")"
+  if [ "$src_abs" != "$dst_abs" ]; then
+    cp "$cli_src" "$PF_CLI" 2>/dev/null || return 1
+  fi
   chmod +x "$PF_CLI" 2>/dev/null || true
   bindir="$(_pf_bin_dir)"; mkdir -p "$bindir" || return 1
   launcher="$bindir/preflight"
@@ -377,16 +400,33 @@ _pf_repo_root(){  # $1 = start dir
 # The opt-in config path for a repo root (active form), and its disabled sibling.
 _pf_active_config(){ echo "$1/.preflight/config.json"; }
 _pf_disabled_config(){ echo "$1/.preflight/config.json.disabled"; }
-# Add a line to .git/info/exclude if the repo is a git repo and the line is not already present. This keeps
-# Preflight-owned local config UNTRACKED without touching the tracked .gitignore (no tracked change).
+# Ensure a line is present in .git/info/exclude so Preflight-owned local config stays UNTRACKED without
+# touching the tracked .gitignore. Returns a STATUS the caller reports HONESTLY (review D3: the old version
+# swallowed every failure and the caller unconditionally claimed success, so a read-only exclude / a non-git
+# dir printed "ensured" while .preflight/ was actually committable). Contract:
+#   0 = the pattern is now present in .git/info/exclude (or already was)
+#   3 = not a git repo (nothing to exclude into — .git/info/exclude does not apply)
+#   4 = git repo but the exclude write FAILED (dir uncreatable or file not writable) — caller must warn
 _pf_exclude_local(){  # $1 = repo root ; $2 = pattern (e.g. /.preflight/)
   local root="$1" pat="$2" gd exf
-  gd="$(cd "$root" 2>/dev/null && git rev-parse --git-dir 2>/dev/null)" || return 0
+  gd="$(cd "$root" 2>/dev/null && git rev-parse --git-dir 2>/dev/null)" || return 3
+  [ -n "$gd" ] || return 3
   case "$gd" in /*|[A-Za-z]:*) : ;; *) gd="$root/$gd" ;; esac
-  exf="$gd/info/exclude"; mkdir -p "$gd/info" 2>/dev/null || return 0
-  [ -f "$exf" ] && grep -qxF "$pat" "$exf" 2>/dev/null && return 0
-  printf '%s\n' "$pat" >> "$exf" 2>/dev/null || return 0
+  exf="$gd/info/exclude"
+  [ -f "$exf" ] && grep -qxF "$pat" "$exf" 2>/dev/null && return 0   # already excluded
+  mkdir -p "$gd/info" 2>/dev/null || return 4
+  printf '%s\n' "$pat" >> "$exf" 2>/dev/null || return 4
+  # confirm it actually landed (a silent partial write / RO fs must not read as success)
+  grep -qxF "$pat" "$exf" 2>/dev/null || return 4
   return 0
+}
+# Emit the honest exclude-status line for init, given _pf_exclude_local's return code and the repo root.
+_pf_report_exclude(){  # $1 = rc from _pf_exclude_local ; $2 = repo root
+  case "$1" in
+    0) echo "  exclude:  '/.preflight/' is in .git/info/exclude (untracked — no tracked file changed)" ;;
+    3) echo "  exclude:  (not a git repo — no .git/info/exclude; .preflight/ is not tracked because there is no index here)" ;;
+    4) echo "  WARNING:  could NOT write .git/info/exclude (read-only?). .preflight/ is NOT excluded — do NOT 'git add' it, or add '/.preflight/' to your ignore rules manually." ;;
+  esac
 }
 
 # ═══════════════════════════════ INIT --local ══════════════════════════════════════════════════════════
@@ -396,11 +436,16 @@ cmd_init_local(){
   local start="${OPT_DIR:-$PWD}" root cfg dis created="" reactivated="no"
   root="$(_pf_repo_root "$start")"
   cfg="$(_pf_active_config "$root")"; dis="$(_pf_disabled_config "$root")"
+  local exrc
   echo "preflight init --local"
   echo "  repo:     $root"
   if [ -f "$cfg" ]; then
     echo "  config:   already present at $cfg (repo already opted in) — no change"
-    _pf_exclude_local "$root" "/.preflight/"
+    # An orphaned .disabled alongside an active config is stale — note it so the user isn't misled into
+    # thinking `disable` would restore THAT one (review D1 init-side: don't leave it silently orphaned).
+    [ -f "$dis" ] && echo "  note:     a stale $dis also exists (a prior disabled config). The ACTIVE config above governs; the .disabled copy is ignored."
+    _pf_exclude_local "$root" "/.preflight/"; exrc=$?
+    _pf_report_exclude "$exrc" "$root"
     echo "  status:   ACTIVE"
     return 0
   fi
@@ -427,8 +472,8 @@ CFG
     created="yes"
     echo "  config:   created $cfg  (mode=generic, base=main, remote=origin)"
   fi
-  _pf_exclude_local "$root" "/.preflight/"
-  echo "  exclude:  ensured '/.preflight/' in .git/info/exclude (untracked — no tracked file changed)"
+  _pf_exclude_local "$root" "/.preflight/"; exrc=$?
+  _pf_report_exclude "$exrc" "$root"
   echo "  owner:    $(_pf_owner_for_repo "$root")"
   echo "  status:   ACTIVE"
   echo ""
@@ -449,8 +494,18 @@ cmd_disable(){
     if [ -f "$dis" ]; then echo "  status:   already INACTIVE (config disabled at $dis)"; return 0; fi
     echo "  status:   INACTIVE (no opt-in config present) — nothing to disable"; return 0
   fi
-  mv "$cfg" "$dis" || _die "cannot disable $cfg"
-  echo "  config:   $cfg → $dis (preserved; re-enable with 'preflight init --local')"
+  # COLLISION GUARD (review D1): never clobber an existing .disabled — that silently destroys a prior saved
+  # config. If the default .disabled slot is taken, move to a unique timestamped sibling instead.
+  local target="$dis"
+  if [ -e "$dis" ]; then
+    local ts; ts="$(_py 2>/dev/null && "$(_py)" -c 'import time;print(time.strftime("%Y%m%dT%H%M%S"))' 2>/dev/null)"; [ -n "$ts" ] || ts="prev"
+    target="${dis}.${ts}"
+    # extremely unlikely, but guarantee uniqueness
+    local i=1; while [ -e "$target" ]; do target="${dis}.${ts}.${i}"; i=$((i+1)); done
+    echo "  note:     $dis already exists (a prior disabled config) — preserving it; this one goes to $(basename "$target")"
+  fi
+  mv "$cfg" "$target" || _die "cannot disable $cfg"
+  echo "  config:   $cfg → $target (preserved; re-enable with 'preflight init --local')"
   echo "  status:   INACTIVE (router now fast-exits for this repo)"
   return 0
 }
@@ -540,19 +595,30 @@ _pf_runtime_health(){
 }
 
 cmd_status(){
-  local start="${OPT_DIR:-$PWD}" root owner active_sha ver
+  local start="${OPT_DIR:-$PWD}" root owner active_sha ver health
   root="$(_pf_repo_root "$start")"
   owner="$(_pf_owner_for_repo "$root")"
   [ -f "$PF_ACTIVE" ] && active_sha="$(tr -d ' \t\r\n' < "$PF_ACTIVE" 2>/dev/null)"
   [ -n "${active_sha:-}" ] && [ -f "$PF_RUNTIME/$active_sha/RELEASE_VERSION" ] && ver="$(tr -d ' \t\r\n' < "$PF_RUNTIME/$active_sha/RELEASE_VERSION")"
+  health="$(_pf_runtime_health)"
+  # Does a HEALTHY, registered user runtime actually exist to enforce the decision here? (review D2: config
+  # presence ALONE must NOT read as "governed" — a fail-closed guard must never tell a user they are
+  # protected when nothing is installed/registered to gate a push. "governed" requires BOTH opt-in AND a
+  # live runtime that owns this repo.) A PROJECT owner is enforced by the project runtime, so it also counts.
+  local runtime_live="no"
+  case "$health" in HEALTHY*) runtime_live="yes" ;; esac
 
   echo "preflight status"
   # ── this repo ──
   echo "  repo:              $root"
   if [ "$owner" = "NONE" ]; then
     echo "  active here:       NO — this repo has NOT opted in (run: preflight init --local)"
+  elif [ "$owner" = "PROJECT" ]; then
+    echo "  active here:       YES — a PROJECT-level runtime governs this repo"
+  elif [ "$runtime_live" = "yes" ]; then
+    echo "  active here:       YES — Preflight governs this repo (opted in + healthy user runtime)"
   else
-    echo "  active here:       YES — Preflight governs this repo"
+    echo "  active here:       OPTED IN, but NOT ENFORCED — no healthy/registered user runtime is installed to gate pushes here (run: preflight install --user; then preflight doctor)"
   fi
   echo "  ownership:         $owner$( [ "$owner" = NONE ] && echo '  (no governing runtime)')"
   echo "  policy:            $(_pf_policy_summary "$root")"
@@ -560,7 +626,7 @@ cmd_status(){
   # ── the user-level install ──
   echo "  --- user install ---"
   echo "  version:           ${ver:-（none active)}"
-  echo "  runtime health:    $(_pf_runtime_health)"
+  echo "  runtime health:    $health"
   echo "  ACTIVE:            $( [ -f "$PF_ACTIVE" ] && cat "$PF_ACTIVE" || echo '(none)')"
   echo "  PREVIOUS:          $( [ -f "$PF_PREVIOUS" ] && cat "$PF_PREVIOUS" || echo '(none)')"
   echo "  registered (user): $( _is_registered && echo yes || echo no)"

@@ -154,18 +154,18 @@ jobs:
         env:
           # Inject a per-spawn tax via a PATH shim (below) so the perf test's wall-time reflects the taxed
           # candidate path, not a fast shared runner. THRESHOLD RELATIONSHIP (documented per Phase 9):
-          #   • The Windows/CrowdStrike PILOT threshold is the PRODUCT contract: every supported AUTO/CONFIRM
-          #     run <= 18s (>=5s margin under the 23s router deadline), settled ~0.43s/spawn floor.
-          #   • This CI lane uses a SMALLER injected tax (0.2s/spawn) on a fast ubuntu runner, so absolute
-          #     wall-times are NOT comparable to Windows; instead we assert a CI-scaled ceiling that the
-          #     OPTIMIZED path (≈20 taxed spawns → ≈4s of tax over a ~1s base) clears with wide margin, while
-          #     the pre-2C path (≈28 spawns) would be ≈1.6s slower — plus the DEADLINE itself (23s) still
-          #     bounds every case. The spawn-budget step above is the precise, jitter-free regression gate;
-          #     this step is the end-to-end wall-time confirmation that a supported push COMPLETES (does not
-          #     time out / engine-fail) under a real per-spawn tax — the thing the fail-closed harness cannot show.
-          PFG_PERF_DEADLINE_MS: "23000"
-          PFG_PERF_SAFE_MS: "18000"
-          PFG_PERF_PROBE_TO: "40"
+          #   • The DEADLINE + SAFE margin are NOT hardcoded here anymore — the perf test DERIVES them from the
+          #     router's own constants (_RTR_PLATFORM_TIMEOUT_S/kill-grace/overhead → the shipped 48s ceiling,
+          #     43s safe). Overriding them here re-introduced the dual-source drift the derivation was added to
+          #     kill (they were left at the old 23s/18s after the platform timeout moved 35s→60s). We let the
+          #     single source flow through so this lane always tests against the ACTUAL shipped deadline.
+          #   • This CI lane uses a SMALL injected tax (0.2s/spawn) on a fast ubuntu runner, so absolute
+          #     wall-times are NOT comparable to the Windows/scan-on-exec pilot; the OPTIMIZED path (≈20 taxed
+          #     spawns → ≈4s of tax over a ~1s base) clears the derived deadline with wide margin, while the
+          #     pre-2C path (≈28 spawns) would be ≈1.6s slower. The spawn-budget step above is the precise,
+          #     jitter-free regression gate; this step is the end-to-end wall-time confirmation that a supported
+          #     push COMPLETES (does not time out / engine-fail) under a real per-spawn tax.
+          # PROBE_TO is derived by the test too (ceiling + 17 = 65s); we leave it unset so the derivation applies.
           PFG_CI_SPAWN_TAX: "0.2"
         run: |
           set -o pipefail
