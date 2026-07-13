@@ -47,11 +47,21 @@ done
 # A8: plain unquoted push still routes (control)
 [ "$(routed 'git push origin main')" = 2 ] && ok "A plain git push routes (control)" || bad "A plain git push not routed"
 
-# A9-A13: non-candidates MUST stay fast-allow (rc 0) — no over-block from the unquote change
-for c in 'echo hello' 'git status' 'ls -la' 'grep -C 3 push file' 'echo git push'; do
+# A9-A12: true non-candidates MUST stay fast-allow (rc 0) — no over-route from the unquote/wrapper changes.
+# NOTE: these contain NO bare `git`/`gh` program WORD (grep's arg is `push`, not `git`), so the wrapper
+# structural catch-all does not route them. `echo git push` is handled separately below — it DOES contain a
+# bare `git` word, so the catch-all now (by design) routes it to the engine, which classifies `echo` as
+# DATA-ONLY and ALLOWs it. That over-route is SAFE (latency only); the router is a pre-filter, the engine is
+# authoritative. Asserting the router fast-exits `echo git push` would encode the OLD (fail-open-adjacent)
+# behavior where a bare governed word behind an unknown program was NOT inspected.
+for c in 'echo hello' 'git status' 'ls -la' 'grep -C 3 push file'; do
   rc="$(routed "$c")"
-  [ "$rc" = 0 ] && ok "A non-candidate stays fast-allow: $c" || bad "A over-blocked a non-candidate: $c (rc=$rc)"
+  [ "$rc" = 0 ] && ok "A non-candidate stays fast-allow: $c" || bad "A over-routed a true non-candidate: $c (rc=$rc)"
 done
+# A13: `echo git push` contains a bare `git push` — the wrapper structural catch-all ROUTES it to the engine
+# (rc 2 against the stub engine), which is correct: the engine's DATA-ONLY taxonomy then ALLOWs it. We assert
+# it ROUTES (the safe direction) rather than silently fast-exits, matching the closed-wrapper-fail-open design.
+[ "$(routed 'echo git push')" = 2 ] && ok "A 'echo git push' (bare governed word) routes to the engine (DATA-ONLY→allow there)" || bad "A 'echo git push' not routed — a bare governed word behind an unknown program must reach the engine"
 
 # ── Layer B: IR lexer git subcommand (single-token for git; 2-token only for gh) ───────────────────────
 . "$REPO/lib/shell-structure.sh"
