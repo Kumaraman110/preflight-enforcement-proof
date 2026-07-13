@@ -38,7 +38,7 @@ PF_BACKUPS="$PF_USER_HOME/settings-backup"
 
 # The runtime closure: exactly what the user-level Bash gate needs (kept in lockstep with the engine deps).
 RUNTIME_HOOKS="run-hook.cmd user-preflight-router pre-bash-risk-router pre-push-gate-engine pre-push-gate session-start"
-RUNTIME_LIBS="config-overlay.sh heartbeat.sh shell-structure.sh shell-structure-lexer.awk"
+RUNTIME_LIBS="config-overlay.sh heartbeat.sh shell-structure.sh shell-structure-lexer.awk hook-arbitration.sh"
 
 # Preflight-owned hook registration marker (command identity, never position — for idempotent merge).
 PF_OWN_RE='preflight/dispatcher\.cmd'
@@ -386,7 +386,98 @@ _originally_absent(){
 }
 
 # ═══════════════════════════════ DOCTOR ════════════════════════════════════════════════════════════════
+# Resolve the active user-runtime version + commit (READ-ONLY). Echoes "version|commit" or "none|none".
+_doctor_user_gen(){
+  local sha ver="unknown"
+  [ -r "$PF_ACTIVE" ] || { echo "none|none"; return 0; }
+  sha="$(tr -d ' \t\r\n' < "$PF_ACTIVE" 2>/dev/null)"
+  [ -n "$sha" ] || { echo "none|none"; return 0; }
+  local rv="$PF_RUNTIME/$sha/RELEASE_VERSION"
+  [ -r "$rv" ] && ver="$(tr -d ' \t\r\n' < "$rv" 2>/dev/null)"
+  echo "${ver}|${sha}"
+}
+
+# READ-ONLY hook-ownership report for a project path. Never writes; never mutates the target repo.
+# Effective owner is derived from the SINGLE shared rule (lib/hook-arbitration.sh) — no second source.
+cmd_doctor_project(){
+  local proj="$1"
+  echo "preflight hook-arbitration doctor  (READ-ONLY)"
+  echo "  project:  $proj"
+  if [ ! -d "$proj" ]; then echo "  ERROR: not a directory"; return 1; fi
+
+  # ---- user side ----
+  local ug uver usha; ug="$(_doctor_user_gen)"; uver="${ug%%|*}"; usha="${ug##*|}"
+  if [ "$usha" = "none" ]; then
+    echo "  user runtime:    NOT INSTALLED (no ACTIVE generation)"
+  else
+    echo "  user runtime:    version $uver  commit $usha"
+    case "$(cat "$PF_SETTINGS" 2>/dev/null)" in
+      *preflight/dispatcher.cmd*) echo "  user registration: PRESENT in $PF_SETTINGS (PreToolUse Bash → dispatcher.cmd)" ;;
+      *) echo "  user registration: ABSENT from $PF_SETTINGS (user runtime staged but not registered)" ;;
+    esac
+  fi
+
+  # ---- find the repo root at/above the given path (read-only) ----
+  local root="" d="$proj" i=0
+  while [ -n "$d" ] && [ "$i" -lt 40 ]; do
+    if [ -e "$d/.git" ] || [ -f "$d/.preflight/config.json" ] || [ -f "$d/.cpsl/config.json" ] || [ -f "$d/.forge.json" ]; then root="$d"; break; fi
+    local p; p="$(dirname "$d")"; [ "$p" = "$d" ] && break; d="$p"; i=$((i+1))
+  done
+  [ -n "$root" ] || root="$proj"
+  echo "  repo root:       $root"
+
+  # opt-in status
+  local optin="no"
+  for c in "$root/.preflight/config.json" "$root/.cpsl/config.json" "$root/.forge.json"; do
+    [ -f "$c" ] && { optin="yes"; echo "  opt-in config:   $c"; break; }
+  done
+  [ "$optin" = "yes" ] || echo "  opt-in config:   NONE (repo not opted in → user router exits immediately; effective owner NONE)"
+
+  # ---- effective owner via the SHARED rule ----
+  local arb; arb="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../lib/hook-arbitration.sh"
+  [ -f "$arb" ] || arb="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/../.claude/lib/hook-arbitration.sh"
+  # in an installed user runtime the lib is under runtime/<sha>/lib
+  [ -f "$arb" ] || arb="$PF_RUNTIME/$usha/lib/hook-arbitration.sh"
+  if [ ! -f "$arb" ]; then echo "  ERROR: hook-arbitration.sh not found (cannot classify owner)"; return 1; fi
+  # shellcheck source=/dev/null
+  . "$arb"
+
+  if [ "$optin" != "yes" ]; then
+    echo "  EFFECTIVE OWNER: NONE (not opted in)"
+    echo "  duplicate risk:  no"
+    echo "  remediation:     none — the repo is not governed by Preflight."
+    return 0
+  fi
+
+  pfa_classify_owner "$root" "$PF_DISPATCH"
+  echo "  project registrations found:"
+  if [ -n "$PFA_PROJECT_CMDS" ]; then
+    printf '%s' "$PFA_PROJECT_CMDS" | while IFS= read -r line; do [ -n "$line" ] && echo "    - $line"; done
+  else
+    echo "    (none)"
+  fi
+  # project runtime version/commit if a project install manifest exists (read-only, best-effort)
+  local pver="n/a"
+  [ -r "$root/.preflight/installed.lock" ] && pver="$(grep -m1 -iE 'ref|version|sha' "$root/.preflight/installed.lock" 2>/dev/null | tr -d '\r' | head -c 120)"
+  echo "  project runtime: ${pver:-n/a}"
+  echo "  EFFECTIVE OWNER: $PFA_OWNER"
+  echo "  duplicate risk:  $PFA_DUP_RISK$([ "$PFA_STALE" = yes ] && echo ' (stale project registration)')"
+  echo "  reason:          $PFA_REASON"
+  case "$PFA_OWNER" in
+    PROJECT)   echo "  remediation:     none — the project runtime owns this repo; the user router yields (writes nothing)." ;;
+    USER)      if [ "$PFA_DUP_RISK" = yes ]; then
+                 echo "  remediation:     remove the user-runtime reference from the project settings file (the user-level install already governs this repo; the project entry only re-invokes the same runtime)."
+               else
+                 echo "  remediation:     none — user runtime owns this repo (no project install present)."
+               fi ;;
+    AMBIGUOUS) echo "  remediation:     $([ "$PFA_STALE" = yes ] && echo 'reinstall the project runtime or remove the stale project registration' || echo 'fix or remove the malformed project settings file'); the user runtime is owning the decision safely in the meantime." ;;
+  esac
+  return 0
+}
+
 cmd_doctor(){
+  # doctor --project <path> → the read-only hook-arbitration report (does not require --user).
+  if [ -n "${OPT_PROJECT:-}" ]; then cmd_doctor_project "$OPT_PROJECT"; return $?; fi
   echo "preflight user-level doctor"
   local py; py="$(_py)" && echo "  python:   $py OK" || echo "  python:   MISSING (fatal)"
   command -v jq >/dev/null 2>&1 && echo "  jq:       $(jq --version)" || echo "  jq:       MISSING (settings merge needs it)"
@@ -400,13 +491,14 @@ cmd_doctor(){
 
 # ═══════════════════════════════ arg parse ═════════════════════════════════════════════════════════════
 SUB="${1:-}"; shift 2>/dev/null || true
-OPT_REF=""; OPT_ARTIFACT=""; OPT_SOURCE=""; OPT_USER=0
+OPT_REF=""; OPT_ARTIFACT=""; OPT_SOURCE=""; OPT_USER=0; OPT_PROJECT=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --user) OPT_USER=1; shift;;
     --ref) OPT_REF="${2:-}"; shift 2;;
     --from-artifact) OPT_ARTIFACT="${2:-}"; shift 2;;
     --source) OPT_SOURCE="${2:-}"; shift 2;;
+    --project) OPT_PROJECT="${2:-}"; shift 2;;
     *) _err "unknown arg: $1"; shift;;
   esac
 done
@@ -419,6 +511,6 @@ case "$SUB" in
   rollback)  [ "$OPT_USER" = 1 ] || _die "rollback requires --user"; cmd_rollback;;
   uninstall) [ "$OPT_USER" = 1 ] || _die "uninstall requires --user"; cmd_uninstall;;
   doctor)    cmd_doctor;;
-  ""|-h|--help|help) echo "usage: preflight-user.sh {install|verify|status|version|rollback|uninstall|doctor} [--user] [--ref R] [--from-artifact T] [--source DIR]";;
+  ""|-h|--help|help) echo "usage: preflight-user.sh {install|verify|status|version|rollback|uninstall|doctor} [--user] [--project DIR] [--ref R] [--from-artifact T] [--source DIR]";;
   *) _die "unknown subcommand: $SUB";;
 esac

@@ -114,37 +114,50 @@ if [ -z "$_URT_CONFIG" ]; then
   exit 0   # neither cwd nor an explicit command target is opted in → zero-friction fast path
 fi
 
-# ── INVARIANT 5: no double-exec. If the repo carries a PROJECT-level Preflight Bash registration, the
-#    project hook will run for this same tool call (Claude Code hooks are additive/union across scopes).
-#    Yield to it (exit 0) so the decision is made exactly once, by the project-pinned runtime. ──────────
-#    FIX for the review's F3: require a REAL registration — a non-empty project router file AND a settings
-#    file that actually registers a PreToolUse Bash hook whose command references the router (parsed with
-#    jq when available; a hardened non-jq fallback still requires the command-shaped substring, not any
-#    incidental occurrence). A bare stub + an incidental substring in a note field no longer yields. ────
-_urt_project_owns() {  # returns 0 iff a project-level Bash Preflight hook is really registered
-  local root="$1" hookf="" s
-  for hookf in "$root/.claude/hooks/pre-bash-risk-router" "$root/.claude/hooks/run-hook.cmd"; do
-    [ -s "$hookf" ] && break || hookf=""      # -s: exists AND non-empty (a bare stub does not count)
-  done
-  [ -n "$hookf" ] || return 1
-  for s in "$root/.claude/settings.json" "$root/.claude/settings.local.json"; do
-    [ -f "$s" ] || continue
-    if command -v jq >/dev/null 2>&1 && jq empty "$s" 2>/dev/null; then
-      # parsed: a PreToolUse Bash hook whose command references the project router
-      local n
-      n="$(jq -r '[(.hooks.PreToolUse // [])[] | select(.matcher=="Bash") | (.hooks // [])[] | select((.command // "") | test("pre-bash-risk-router|pre-push-gate-check|run-hook"))] | length' "$s" 2>/dev/null || echo 0)"
-      [ "${n:-0}" -ge 1 ] && return 0
-    else
-      # no jq: require the registration SHAPE (command + router token), not any incidental substring
+# ── INVARIANT 5: no double-exec. The SINGLE deterministic ownership rule lives in lib/hook-arbitration.sh
+#    (one source of truth, shared with `doctor --project`). If it classifies this repo as PROJECT-owned,
+#    the project-pinned runtime will adjudicate this same tool call (Claude Code hooks union across scopes),
+#    so the user router yields (exit 0, writes nothing). AMBIGUOUS (malformed/stale project registration) or
+#    USER → the user runtime owns it — the safe direction is to NEVER stand down for an unverifiable or
+#    broken project install. See lib/hook-arbitration.sh for the full rule (config-alone is insufficient;
+#    a project registration that merely re-invokes the USER runtime is a duplicate, not a project owner). ─
+# The stable user dispatcher path (…/preflight/dispatcher.cmd). This hook runs from
+# …/preflight/runtime/<sha>/hooks/user-preflight-router → the stable dispatcher is three levels up.
+# Used only to help the classifier recognise a project settings entry that re-invokes THIS user runtime.
+PF_USER_DISPATCH=""
+case "$_URT_DIR" in
+  */preflight/runtime/*/hooks) PF_USER_DISPATCH="${_URT_DIR%/runtime/*/hooks}/dispatcher.cmd" ;;
+esac
+_URT_ARB="$_URT_DIR/../lib/hook-arbitration.sh"
+if [ -f "$_URT_ARB" ]; then
+  # shellcheck source=/dev/null
+  . "$_URT_ARB"
+  pfa_classify_owner "$_URT_ROOT" "$PF_USER_DISPATCH"
+  if [ "$PFA_OWNER" = "PROJECT" ]; then
+    exit 0   # a valid project-level Preflight owns this repo → do not double-gate
+  fi
+  # USER / AMBIGUOUS → user runtime owns it (fall through to the delegate). No repo write occurs here.
+else
+  # Arbitration lib unresolved (relocated/pruned install) → fall back to the conservative inline check:
+  # only yield for a REAL project registration (non-empty router file AND a command-shaped settings entry).
+  _urt_project_owns_fallback() {
+    local root="$1" hookf="" s
+    for hookf in "$root/.claude/hooks/pre-bash-risk-router" "$root/.claude/hooks/run-hook.cmd"; do
+      [ -s "$hookf" ] && break || hookf=""
+    done
+    [ -n "$hookf" ] || return 1
+    for s in "$root/.claude/settings.json" "$root/.claude/settings.local.json"; do
+      [ -f "$s" ] || continue
       case "$(cat "$s" 2>/dev/null)" in
+        *'"command"'*preflight/dispatcher.cmd*|*'"command"'*preflight/runtime/*) continue ;;  # user runtime dup, not project
         *'"command"'*pre-bash-risk-router*|*'"command"'*pre-push-gate-check*|*'"command"'*run-hook*) return 0 ;;
       esac
-    fi
-  done
-  return 1
-}
-if _urt_project_owns "$_URT_ROOT"; then
-  exit 0   # project-level Preflight really owns this repo → do not double-gate
+    done
+    return 1
+  }
+  if _urt_project_owns_fallback "$_URT_ROOT"; then
+    exit 0
+  fi
 fi
 
 # ── INVARIANT 3+4: opted-in, user-level-owned → delegate to the builtins-only risk router, which keeps the

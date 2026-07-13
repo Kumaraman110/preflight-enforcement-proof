@@ -1473,6 +1473,55 @@ run_behavioral_tests() {
   else
     yellow "SKIP: pre-push-crlf-denylist-test.sh not found"
   fi
+
+  # ── v0.10.0 alt-git-context push bypass (the rc.1→rc.2 stable blocker). git -C/--git-dir[=]/--work-tree/
+  # -c/GIT_DIR=/GIT_WORK_TREE=/nested bash -c/quoted space-paths/multi-push must be DETECTED as pushes (the
+  # IR lexer must skip git's global options before the subcommand); a governed alt-context push must BLOCK
+  # or fail-closed, NEVER silently allow. Non-push -C substrings (echo -C, grep -C, git status) unaffected. ─
+  local alt_git_test="$SCRIPT_DIR/behavioral/alt-git-context-push-test.sh"
+  if [ -f "$alt_git_test" ]; then
+    if bash "$alt_git_test"; then
+      PASSES=$((PASSES + 16))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: alt-git-context-push tests failed (git -C <dir> push and the other alternate-git-context forms must be classified as pushes and gated/fail-closed, never silently allowed; non-push -C substrings must stay allowed)"
+    fi
+  else
+    yellow "SKIP: alt-git-context-push-test.sh not found"
+  fi
+
+  # ── v0.10.0 hook arbitration — the SINGLE deterministic ownership rule (lib/hook-arbitration.sh). A valid
+  # project-level registration wins (PROJECT); config-alone / unrelated hooks → USER; malformed or stale
+  # project registration → AMBIGUOUS with the user runtime owning safely; a project entry that re-invokes the
+  # USER runtime is a duplicate (USER + dup-risk), never a project owner; the branch-stable project runtime
+  # under .git/preflight/runtime/<sha>/ is a PROJECT owner, NOT a user-runtime duplicate. ──
+  local arb_test="$SCRIPT_DIR/behavioral/hook-arbitration-test.sh"
+  if [ -f "$arb_test" ]; then
+    if bash "$arb_test"; then
+      PASSES=$((PASSES + 11))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: hook-arbitration tests failed (the single ownership rule must classify PROJECT/USER/AMBIGUOUS deterministically; config-alone is not project ownership; a stale/malformed project registration must not make the user runtime stand down; the .git/preflight/runtime branch-stable project install must classify PROJECT, not user-duplicate)"
+    fi
+  else
+    yellow "SKIP: hook-arbitration-test.sh not found"
+  fi
+
+  # ── v0.10.0 no-duplicate-execution proof — through the real user dispatcher chain with invocation
+  # counters. Exactly ONE authoritative runtime adjudicates a single PreToolUse Bash event across the mixed
+  # user/project matrix (user-only, project-owned, stale, malformed, duplicated, worktree, space-path,
+  # unrelated, non-opted-in); the user dispatcher writes NO .preflight file while deferring. ──
+  local nodup_test="$SCRIPT_DIR/behavioral/no-duplicate-exec-test.sh"
+  if [ -f "$nodup_test" ]; then
+    if bash "$nodup_test"; then
+      PASSES=$((PASSES + 11))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: no-duplicate-exec tests failed (exactly one authoritative Preflight runtime must adjudicate a single Bash event; the user runtime must yield for a project-owned repo and write nothing while deferring; a stale/malformed project registration must not drop the count to zero)"
+    fi
+  else
+    yellow "SKIP: no-duplicate-exec-test.sh not found"
+  fi
 }
 
 # ═══════════════════════════════════════════════════════════════
