@@ -138,20 +138,24 @@ if [ -f "$_URT_ARB" ]; then
   fi
   # USER / AMBIGUOUS → user runtime owns it (fall through to the delegate). No repo write occurs here.
 else
-  # Arbitration lib unresolved (relocated/pruned install) → fall back to the conservative inline check:
-  # only yield for a REAL project registration (non-empty router file AND a command-shaped settings entry).
+  # Arbitration lib unresolved (relocated/pruned install) → conservative inline fallback. Yield ONLY for a
+  # project registration that references a project router (pre-bash-risk-router / pre-push-gate-check / a
+  # run-hook.cmd NOT under the user home) — matching the lib's disambiguation. A settings entry that names
+  # the USER runtime (dispatcher.cmd or a .claude/preflight path) is a duplicate, NOT a project owner, and
+  # must not cause a yield. This intentionally does NOT special-skip the bare "preflight/runtime/" segment
+  # (the branch-stable project runtime lives at .git/preflight/runtime/ and IS a project owner). The lib
+  # ships in RUNTIME_LIBS, so this fallback runs only on a broken/relocated install; it errs toward yielding
+  # for a real project registration (safe: the project gate then owns it — never a silent double-decision).
   _urt_project_owns_fallback() {
-    local root="$1" hookf="" s
-    for hookf in "$root/.claude/hooks/pre-bash-risk-router" "$root/.claude/hooks/run-hook.cmd"; do
-      [ -s "$hookf" ] && break || hookf=""
-    done
-    [ -n "$hookf" ] || return 1
+    local root="$1" s line
     for s in "$root/.claude/settings.json" "$root/.claude/settings.local.json"; do
       [ -f "$s" ] || continue
-      case "$(cat "$s" 2>/dev/null)" in
-        *'"command"'*preflight/dispatcher.cmd*|*'"command"'*preflight/runtime/*) continue ;;  # user runtime dup, not project
-        *'"command"'*pre-bash-risk-router*|*'"command"'*pre-push-gate-check*|*'"command"'*run-hook*) return 0 ;;
-      esac
+      while IFS= read -r line; do
+        case "$line" in
+          *'"command"'*preflight/dispatcher.cmd*|*'"command"'*.claude/preflight/*) continue ;;  # user-runtime dup
+          *'"command"'*pre-bash-risk-router*|*'"command"'*pre-push-gate-check*) return 0 ;;
+        esac
+      done < "$s"
     done
     return 1
   }

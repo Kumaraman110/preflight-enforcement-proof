@@ -73,21 +73,41 @@ _pfa_is_project_router_cmd() {  # $1 = command string ; 0 = names a project rout
   return 1
 }
 
-# Is there a physical, non-empty project hook file backing a project registration under this root?
-# (A registration with no runtime file behind it is STALE, not a valid owner.)
-_pfa_project_hook_present() {  # $1 = repo root ; 0 = a real project hook file exists non-empty
-  local root="$1" h
-  for h in "$root/.claude/hooks/pre-bash-risk-router" "$root/.claude/hooks/run-hook.cmd" \
-           "$root/.claude/hooks/pre-push-gate-check" "$root/.claude/hooks/pre-push-gate-engine"; do
-    [ -s "$h" ] && return 0
-  done
-  return 1
+# Resolve the FILE a registered project-hook command actually invokes, and report whether it exists
+# non-empty. This is the CORRECT staleness check: a branch-stable project install registers an ABSOLUTE
+# path to <repo>/.git/preflight/runtime/<sha>/hooks/run-hook.cmd (with .claude/hooks/ deliberately EMPTY),
+# so guessing .claude/hooks/<name> is wrong. We validate the ACTUAL registered target instead.
+# Handles: a leading interpreter (bash/sh/env), a quoted or bare first token, ${CLAUDE_PROJECT_DIR} /
+# $CLAUDE_PROJECT_DIR expansion, and relative-to-root resolution.
+_pfa_registered_target_exists() {  # $1 = command string ; $2 = repo root ; 0 = target file exists non-empty
+  local c="$1" root="$2" t rest
+  # strip leading whitespace
+  c="${c#"${c%%[![:space:]]*}"}"
+  # skip a leading interpreter token (bash / sh / env) so we validate the SCRIPT, not the shell
+  case "$c" in
+    bash\ *|sh\ *|env\ *) c="${c#* }"; c="${c#"${c%%[![:space:]]*}"}" ;;
+  esac
+  # first token = the script/shim path, honoring surrounding quotes (path may contain spaces)
+  case "$c" in
+    \"*) t="${c#\"}"; t="${t%%\"*}" ;;
+    \'*) t="${c#\'}"; t="${t%%\'*}" ;;
+    *)   t="${c%%[[:space:]]*}" ;;
+  esac
+  # expand ${CLAUDE_PROJECT_DIR} / $CLAUDE_PROJECT_DIR (Claude Code injects the repo root here)
+  t="${t//\$\{CLAUDE_PROJECT_DIR\}/$root}"
+  t="${t//\$CLAUDE_PROJECT_DIR/$root}"
+  # resolve relative to the repo root if not absolute (drive-letter or leading-slash = absolute)
+  case "$t" in /*|[A-Za-z]:*|\\\\*) : ;; *) [ -n "$t" ] && t="$root/$t" ;; esac
+  [ -n "$t" ] && [ -s "$t" ]
 }
 
 # Extract every PreToolUse Bash hook command from a settings file into the GLOBAL _PFA_CMDS (one command
-# per line), and set the GLOBAL _PFA_PARSE=ok|malformed|absent|raw. Sets globals (NOT stdout) so the caller
-# does not lose the parse state to a command-substitution subshell. (malformed = present but not valid JSON;
-# raw = no jq available, _PFA_CMDS holds the raw file content for a conservative SHAPE match.)
+# per line), and set the GLOBAL _PFA_PARSE=ok|malformed|absent|noparser. Sets globals (NOT stdout) so the
+# caller does not lose the parse state to a command-substitution subshell. Parser preference: jq → python
+# (a documented framework dependency) → noparser. MATCHER-AWARE in BOTH parser paths: only commands under a
+# PreToolUse entry whose matcher is exactly "Bash" are returned — a Write/Edit/Agent gate is never mistaken
+# for a Bash owner (that was the no-jq raw-fallback silent-allow bug). With NO parser at all we cannot make
+# a matcher-aware decision, so we report noparser and the caller resolves to the SAFE side (user owns).
 _pfa_settings_bash_cmds() {  # $1 = settings file path
   local s="$1"
   _PFA_PARSE=absent; _PFA_CMDS=""
@@ -101,10 +121,31 @@ _pfa_settings_bash_cmds() {  # $1 = settings file path
     fi
     return 0
   fi
-  # No jq: cannot structurally parse. Hold the raw content for a SHAPE match (still requires the command
-  # token, never an incidental substring).
-  _PFA_PARSE=raw
-  _PFA_CMDS="$(cat "$s" 2>/dev/null)"
+  local py=""
+  command -v python3 >/dev/null 2>&1 && py=python3 || { command -v python >/dev/null 2>&1 && py=python; }
+  if [ -n "$py" ]; then
+    _PFA_CMDS="$("$py" - "$s" <<'PY' 2>/dev/null
+import json,sys
+try:
+    d=json.load(open(sys.argv[1],encoding="utf-8"))
+except Exception:
+    print("__PFA_MALFORMED__"); sys.exit(0)
+pre=(d.get("hooks",{}) or {}).get("PreToolUse",[]) or []
+for e in pre:
+    if isinstance(e,dict) and e.get("matcher")=="Bash":
+        for h in (e.get("hooks",[]) or []):
+            if isinstance(h,dict):
+                c=h.get("command","")
+                if c: print(c)
+PY
+)"
+    if [ "$_PFA_CMDS" = "__PFA_MALFORMED__" ]; then _PFA_PARSE=malformed; _PFA_CMDS="";
+    else _PFA_PARSE=ok; fi
+    return 0
+  fi
+  # No jq AND no python: cannot make a matcher-aware decision. Fail to the SAFE side (caller → user owns).
+  _PFA_PARSE=noparser
+  _PFA_CMDS=""
   return 0
 }
 
@@ -113,38 +154,24 @@ pfa_classify_owner() {  # $1 = repo root ; $2 = optional user-dispatcher path
   local root="$1" udisp="${2:-}"
   PFA_OWNER="USER"; PFA_REASON=""; PFA_PROJECT_CMDS=""; PFA_DUP_RISK="no"; PFA_STALE="no"
 
-  local s parse_any="absent" saw_malformed="no"
-  local n_project_distinct=0 n_user_dup=0
-  local hookfile_present="no"
-  _pfa_project_hook_present "$root" && hookfile_present="yes"
+  local s saw_malformed="no" saw_noparser="no"
+  local n_project_live=0 n_project_stale=0 n_user_dup=0
 
   local _PFA_PARSE="" _PFA_CMDS=""
   for s in "$root/.claude/settings.json" "$root/.claude/settings.local.json"; do
     [ -f "$s" ] || continue
     _pfa_settings_bash_cmds "$s"
-    local cmds="$_PFA_CMDS"
     case "$_PFA_PARSE" in
-      malformed) saw_malformed="yes"; parse_any="present"; continue ;;
+      malformed) saw_malformed="yes"; continue ;;
+      noparser)  saw_noparser="yes"; continue ;;
       absent)    continue ;;
-      ok)        parse_any="present" ;;
-      raw)       parse_any="present" ;;
+      ok)        : ;;
     esac
 
-    if [ "$_PFA_PARSE" = "raw" ]; then
-      # No-jq SHAPE fallback: require the registration SHAPE (a "command" key AND a project router token,
-      # NOT an incidental substring in a note field). Mirrors the historical hardened fallback.
-      case "$cmds" in
-        *'"command"'*pre-bash-risk-router*|*'"command"'*pre-push-gate-check*|*'"command"'*run-hook*)
-          PFA_PROJECT_CMDS="${PFA_PROJECT_CMDS}[raw-shape-match in $(basename "$s")]"$'\n'
-          # In raw mode we cannot dedup user-vs-project reliably; treat a project-router shape match as a
-          # project registration ONLY if a project hook file is actually present (stale check still applies).
-          if [ "$hookfile_present" = "yes" ]; then n_project_distinct=$((n_project_distinct+1)); fi
-          ;;
-      esac
-      continue
-    fi
-
-    # Parsed (jq) path: classify each command precisely.
+    # Matcher-aware (Bash-only) commands. Classify each: USER-runtime dup, or PROJECT router. A PROJECT
+    # router registration is LIVE only if its ACTUAL registered target file exists non-empty; otherwise it
+    # is STALE. This validates the real command target (e.g. an absolute .git/preflight/runtime/<sha>/hooks/
+    # run-hook.cmd from a branch-stable install), not a guessed .claude/hooks/ path.
     local c
     while IFS= read -r c; do
       [ -n "$c" ] || continue
@@ -152,44 +179,58 @@ pfa_classify_owner() {  # $1 = repo root ; $2 = optional user-dispatcher path
         n_user_dup=$((n_user_dup+1))
         PFA_PROJECT_CMDS="${PFA_PROJECT_CMDS}${c}"$'\n'
       elif _pfa_is_project_router_cmd "$c"; then
-        n_project_distinct=$((n_project_distinct+1))
+        if _pfa_registered_target_exists "$c" "$root"; then
+          n_project_live=$((n_project_live+1))
+        else
+          n_project_stale=$((n_project_stale+1))
+        fi
         PFA_PROJECT_CMDS="${PFA_PROJECT_CMDS}${c}"$'\n'
       fi
     done <<EOF
-$cmds
+$_PFA_CMDS
 EOF
   done
 
   # ── Decide ────────────────────────────────────────────────────────────────────────────────────────────
-  # Malformed settings that we could not parse, with no confirmable valid project registration → AMBIGUOUS,
-  # and the SAFE side is USER-owns (never defer to an unverifiable project runtime).
-  if [ "$saw_malformed" = "yes" ] && [ "$n_project_distinct" -eq 0 ]; then
+  # A LIVE project registration (target file exists) wins → PROJECT; the user router yields.
+  if [ "$n_project_live" -gt 0 ]; then
+    PFA_OWNER="PROJECT"
+    PFA_REASON="a valid project-level Preflight Bash registration whose runtime file exists owns this repo; the user router yields (writes nothing)."
+    { [ "$n_project_live" -gt 1 ] || [ "$n_project_stale" -gt 0 ] || [ "$n_user_dup" -gt 0 ]; } && PFA_DUP_RISK="yes"
+    return 0
+  fi
+
+  # A project router is registered but its target file is missing/empty → STALE project install → AMBIGUOUS,
+  # user runtime owns SAFELY (never stand down for a broken project install).
+  if [ "$n_project_stale" -gt 0 ]; then
+    PFA_OWNER="AMBIGUOUS"; PFA_STALE="yes"
+    PFA_REASON="a project settings file registers a project Preflight hook, but the referenced runtime file is missing/empty (stale install) — user runtime owns the decision (safe). Reinstall the project runtime or remove the stale registration."
+    [ "$n_user_dup" -gt 0 ] && PFA_DUP_RISK="yes"
+    return 0
+  fi
+
+  # Malformed settings we could not parse, with no confirmable live project registration → AMBIGUOUS (user
+  # owns safely; never defer to an unverifiable project runtime).
+  if [ "$saw_malformed" = "yes" ]; then
     PFA_OWNER="AMBIGUOUS"
     PFA_REASON="a project settings file is present but is not valid JSON; cannot confirm a project registration — user runtime owns the decision (safe). Fix or remove the malformed settings file."
     [ "$n_user_dup" -gt 0 ] && PFA_DUP_RISK="yes"
     return 0
   fi
 
-  if [ "$n_project_distinct" -gt 0 ]; then
-    if [ "$hookfile_present" = "yes" ]; then
-      PFA_OWNER="PROJECT"
-      PFA_REASON="a valid project-level Preflight Bash registration with a present runtime file owns this repo; the user router yields (writes nothing)."
-      [ "$n_project_distinct" -gt 1 ] && PFA_DUP_RISK="yes"
-      [ "$n_user_dup" -gt 0 ] && PFA_DUP_RISK="yes"
-      return 0
-    fi
-    # Registration names a project router but NO project hook file is present → STALE project install.
-    PFA_OWNER="AMBIGUOUS"; PFA_STALE="yes"
-    PFA_REASON="a project settings file registers a project Preflight hook, but the referenced project hook file is missing/empty (stale install) — user runtime owns the decision (safe). Reinstall the project runtime or remove the stale registration."
-    [ "$n_user_dup" -gt 0 ] && PFA_DUP_RISK="yes"
+  # No parser available (no jq AND no python) → cannot make a matcher-aware ownership decision → AMBIGUOUS,
+  # user owns SAFELY. (install/verify already require a parser; this only affects passive routing on a host
+  # that somehow lacks both, and it fails to the safe side — the user gate runs, never stands down.)
+  if [ "$saw_noparser" = "yes" ]; then
+    PFA_OWNER="AMBIGUOUS"
+    PFA_REASON="no JSON parser (jq/python) available to read project settings matcher-aware — user runtime owns the decision (safe). Install jq or python for project-ownership detection."
     return 0
   fi
 
-  # No distinct project registration. If the project references the USER runtime, ownership is USER but a
-  # duplicate physical runtime is registered → flag it.
+  # No distinct project registration. A project entry that only re-invokes the USER runtime is a duplicate.
   if [ "$n_user_dup" -gt 0 ]; then
     PFA_OWNER="USER"; PFA_DUP_RISK="yes"
-    PFA_REASON="project settings register the USER runtime (dispatcher/runtime path) — the same physical runtime would run twice per event; user runtime owns it once. Remove the user-runtime reference from project settings (the user-level install already covers this repo)."
+    PFA_REASON="project settings register the USER runtime (dispatcher/user-home path) — the same physical runtime would run twice per event; user runtime owns it once. Remove the user-runtime reference from project settings (the user-level install already covers this repo)."
     return 0
   fi
 
