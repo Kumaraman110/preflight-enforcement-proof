@@ -292,6 +292,25 @@ function analyze_simple(parent, ctx, start, end, depth,
   # ── governed leading-argument (subcommand) analysis: ONLY for gh/git (family-neutral structural fact) ──
   subcmd = ""; subcomp = 0; opacity = "NONE"; rcode = 0; sub1 = ""; sub2 = ""
   if (gov_basename(prog_lit)) {
+    # v0.10.0-rc.2 FIX: for `git`, SKIP the global-option run before reading the subcommand, mirroring
+    # git's option grammar (and the engine's own _pfg_seg_push_args table). Without this, `git -C <dir>
+    # push` recorded subcmd="-C <dir>" (never "push") → the IR reported ZERO push nodes → the engine
+    # treated a real governed push as a non-push → silent ALLOW (the confirmed local-policy bypass).
+    # Separate-value options (-C/--git-dir/--work-tree/--namespace/--super-prefix/--exec-path/-c/
+    # --config-env) consume the NEXT token; =-joined and value-less flags are single tokens. An UNKNOWN
+    # option (starts with '-') is skipped conservatively (advances past it), so the FIRST non-option
+    # token becomes the subcommand. `-C<glued>` is invalid git (rejected by git itself) so it is left
+    # as-is (the resulting non-"push" subcmd fails closed downstream). gh has no such global options → skip.
+    if (basename(prog_lit) == "git") {
+      while (ti <= TN) {
+        gt = substr(SB, TS[ti]+1, TE[ti]-TS[ti])
+        if (gt == "-C" || gt == "--git-dir" || gt == "--work-tree" || gt == "--namespace" || gt == "--super-prefix" || gt == "--exec-path" || gt == "-c" || gt == "--config-env") { ti++; if (ti <= TN) ti++; continue }
+        if (gt ~ /^--git-dir=/ || gt ~ /^--work-tree=/ || gt ~ /^--namespace=/ || gt ~ /^--super-prefix=/ || gt ~ /^--exec-path=/ || gt ~ /^--config-env=/ || gt ~ /^-c=/) { ti++; continue }
+        if (gt == "-p" || gt == "--paginate" || gt == "-P" || gt == "--no-pager" || gt == "--bare" || gt == "--no-replace-objects" || gt == "--no-lazy-fetch" || gt == "--no-optional-locks" || gt == "--no-advice" || gt == "--literal-pathspecs" || gt == "--glob-pathspecs" || gt == "--noglob-pathspecs" || gt == "--icase-pathspecs" || gt == "--html-path" || gt == "--man-path" || gt == "--info-path" || gt == "--no-renames") { ti++; continue }
+        if (substr(gt, 1, 1) == "-") { ti++; continue }   # unknown option → skip conservatively
+        break
+      }
+    }
     if (ti <= TN) { a1s = TS[ti]; a1e = TE[ti]; if (tok_computed(a1s, a1e)) subcomp = 1; else sub1 = unquote(a1s, a1e) }
     if (subcomp == 0 && ti+1 <= TN) { a2s = TS[ti+1]; a2e = TE[ti+1]; if (tok_computed(a2s, a2e)) subcomp = 1; else sub2 = unquote(a2s, a2e) }
     subcmd = sub1; if (sub2 != "") subcmd = sub1 " " sub2
