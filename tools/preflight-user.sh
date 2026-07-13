@@ -24,7 +24,7 @@
 #   preflight-user.sh doctor   --user
 set -uo pipefail
 
-RELEASE_VERSION="v0.10.0-rc.2"
+RELEASE_VERSION="v0.10.0-rc.3"
 
 # ── Resolvable roots (overridable for isolated testing) ──────────────────────────────────────────────────
 PF_CLAUDE_HOME="${PREFLIGHT_CLAUDE_HOME:-$HOME/.claude}"

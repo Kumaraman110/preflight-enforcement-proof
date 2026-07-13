@@ -3,6 +3,55 @@
 All notable changes to Preflight are recorded here. This project uses annotated tags on the
 `feature/preflight-framework` line; releases are cut as tags (see `docs/`).
 
+## v0.10.0-rc.3 — hook-arbitration release candidate
+
+**Release candidate — not GA, not `latest`/`stable`.** Supersedes `v0.10.0-rc.2` for evaluation;
+the `v0.10.0-rc.1` and `v0.10.0-rc.2` tags remain immutable and in place. rc.3 is cut on top of the
+rc.2 commit (`7e30c51`), which is itself on top of the rc.1 commit (`6eaff61`) — a linear descendant.
+
+### Added — deterministic hook arbitration + `doctor --project`
+- **One deterministic user/project hook-ownership rule** (`lib/hook-arbitration.sh`, the single source of
+  truth for both the user router and `doctor`). Because Claude Code merges PreToolUse hooks as a UNION
+  across the user and project scopes, a repo with BOTH a user-level and a project-level Preflight install
+  would otherwise adjudicate the same Bash event twice. The rule resolves ownership so **exactly one**
+  authoritative runtime decides each event:
+  - **PROJECT** — a valid project-level Preflight Bash registration (settings names a project router AND
+    the referenced project hook file exists non-empty) owns the repo; the user router yields (exit 0) and
+    writes nothing.
+  - **USER** — opted-in with no distinct project registration (a config file ALONE is never project
+    ownership); the user runtime owns it.
+  - **AMBIGUOUS** — a project registration is present but untrustworthy (malformed settings, or a stale
+    registration whose hook file is missing/empty); the user runtime owns the decision **safely** (it
+    never stands down for an unverifiable or broken project install), and `doctor` reports remediation.
+  - A project entry that merely re-invokes the USER runtime (`dispatcher.cmd` / a `~/.claude/preflight`
+    path) is a **duplicate**, not a project owner — ownership stays USER, the duplicate is flagged. The
+    branch-stable project runtime under `<repo>/.git/preflight/runtime/<sha>/` is a PROJECT owner (not a
+    user-runtime duplicate) even though its path contains `preflight/runtime/`.
+- **`tools/preflight-user.sh doctor --user --project <path>`** (READ-ONLY): reports the effective owner
+  (USER / PROJECT / AMBIGUOUS), the user version + commit, the project registrations found, the project
+  runtime, duplicate-execution risk, and remediation. It never writes to or mutates the inspected repo.
+- New tests: `tests/behavioral/hook-arbitration-test.sh` (11/0 — the ownership rule incl. the real
+  branch-stable pilot shape) and `tests/behavioral/no-duplicate-exec-test.sh` (11/0 — exactly-one
+  authoritative runtime per event through the real dispatcher chain with invocation counters, and the
+  user dispatcher writes no `.preflight` file while deferring). Both wired into `run-all-tests.sh`.
+
+### Fixed (carried forward from the rc.2 work + this candidate)
+- **`verify --user` accepts a legitimately rolled-back older generation** whose recorded `RELEASE_VERSION`
+  differs from the CLI's compiled-in version (previously a hard version-equality check failed after a
+  rollback). Integrity is still enforced by the manifest sha256 re-check + the registration + a
+  well-formed version string. (This fix and the arbitration work are why rc.3 exists — the published
+  rc.2 tag is immutable and predates both.)
+- Carries the rc.2 fixes: the **alternate git-context push bypass** (`git -C <dir> push` and the other
+  alt-context forms are detected as pushes via the shell-structure lexer skipping git's global options,
+  then gated or fail-closed — never silently allowed) and **byte-for-byte uninstall settings restore**.
+
+### Known limitations (carried from rc.2/rc.1)
+- Local user-level gate is advisory/agent-resistant; the **remote required-check remains the final
+  authority** and is not deployed/configured by this release.
+- Windows/Git-Bash on-access-AV per-spawn latency is a host cost; the `ir-push-perf` matrix is
+  timing-sensitive on such hosts (wall-clock only, functionally correct, reproduces on a pristine
+  baseline). No functional failure is waived.
+
 ## v0.10.0-rc.2 — burn-in fix release candidate
 
 **Release candidate — not GA, not `latest`/`stable`.** Supersedes `v0.10.0-rc.1` for evaluation;

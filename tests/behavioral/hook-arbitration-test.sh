@@ -87,10 +87,10 @@ proj_settings "$SP" '{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":
 classify "$SP"
 [ "$PFA_OWNER" = PROJECT ] && ok "10 space-path repo + valid registration → PROJECT" || bad "10 got $PFA_OWNER"
 
-# ── 11. PILOT-SHAPED: branch-stable PROJECT runtime under .git/preflight/runtime/<sha>/ → PROJECT ───────
+# ── 11. BRANCH-STABLE-SHAPED: PROJECT runtime under .git/preflight/runtime/<sha>/ → PROJECT ────────────
 #    Regression lock: a project install can register run-hook.cmd from <repo>/.git/preflight/runtime/<sha>/
 #    — that path contains "preflight/runtime/" but is a PROJECT owner, NOT the user runtime. It must NOT be
-#    misclassified as a duplicate user-runtime (the real CPSL pilot has exactly this shape).
+#    misclassified as a duplicate user-runtime (a real branch-stable project install has exactly this shape).
 R="$(new_root)"; proj_hookfile "$R"
 proj_settings "$R" '{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"\"C:/Users/x/Source_Code/.git/preflight/runtime/727cda207f4c61c970ef0fc3c6bc4f835286b763/hooks/run-hook.cmd\" pre-bash-risk-router \"$TOOL_INPUT\""}]}]}}'
 classify "$R"
