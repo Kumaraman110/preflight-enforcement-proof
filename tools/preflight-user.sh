@@ -456,10 +456,18 @@ cmd_doctor_project(){
   else
     echo "    (none)"
   fi
-  # project runtime version/commit if a project install manifest exists (read-only, best-effort)
+  # project runtime pinned ref if a project install manifest exists (read-only, best-effort). Prefer a jq
+  # read of resolvedSha/pinnedRef; fall back to a scrubbed grep. Never dumps a raw JSON fragment.
   local pver="n/a"
-  [ -r "$root/.preflight/installed.lock" ] && pver="$(grep -m1 -iE 'ref|version|sha' "$root/.preflight/installed.lock" 2>/dev/null | tr -d '\r' | head -c 120)"
-  echo "  project runtime: ${pver:-n/a}"
+  if [ -r "$root/.preflight/installed.lock" ]; then
+    if command -v jq >/dev/null 2>&1 && jq empty "$root/.preflight/installed.lock" >/dev/null 2>&1; then
+      pver="$(jq -r '(.resolvedSha // .pinnedRef // .ref // .version // "n/a")' "$root/.preflight/installed.lock" 2>/dev/null)"
+    else
+      pver="$(grep -m1 -oE '"(resolvedSha|pinnedRef|ref|version)"[[:space:]]*:[[:space:]]*"[^"]*"' "$root/.preflight/installed.lock" 2>/dev/null | tr -d '\r' | head -c 120)"
+    fi
+    [ -n "$pver" ] || pver="n/a"
+  fi
+  echo "  project runtime: $pver"
   echo "  EFFECTIVE OWNER: $PFA_OWNER"
   echo "  duplicate risk:  $PFA_DUP_RISK$([ "$PFA_STALE" = yes ] && echo ' (stale project registration)')"
   echo "  reason:          $PFA_REASON"
