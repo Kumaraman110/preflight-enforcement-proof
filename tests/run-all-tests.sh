@@ -1539,6 +1539,22 @@ run_behavioral_tests() {
   else
     yellow "SKIP: router-quoting-and-subcmd-test.sh not found"
   fi
+
+  # ── v0.10.0-rc.3 runtime-closure lockstep: the installer (preflight-user.sh RUNTIME_HOOKS/LIBS) and the
+  # artifact builder (build-artifact.sh HOOKS/LIBS) must declare the SAME runtime closure. A divergence
+  # ships a from-artifact install missing a file the installer expects (the builder shipped WITHOUT
+  # hook-arbitration.sh — a dual-source/dead-gate bug). ──
+  local lockstep_test="$SCRIPT_DIR/behavioral/runtime-closure-lockstep-test.sh"
+  if [ -f "$lockstep_test" ]; then
+    if bash "$lockstep_test"; then
+      PASSES=$((PASSES + 15))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: runtime-closure-lockstep tests failed (the installer's RUNTIME_HOOKS/RUNTIME_LIBS and the artifact builder's HOOKS/LIBS must be identical, and every declared member must exist — a divergence ships a broken from-artifact install)"
+    fi
+  else
+    yellow "SKIP: runtime-closure-lockstep-test.sh not found"
+  fi
 }
 
 # ═══════════════════════════════════════════════════════════════

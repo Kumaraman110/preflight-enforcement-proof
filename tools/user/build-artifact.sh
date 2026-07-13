@@ -18,7 +18,9 @@ mkdir -p "$OUT"
 
 # Runtime closure (kept in lockstep with tools/preflight-user.sh RUNTIME_HOOKS/LIBS).
 HOOKS="run-hook.cmd user-preflight-router pre-bash-risk-router pre-push-gate-engine pre-push-gate session-start"
-LIBS="config-overlay.sh heartbeat.sh shell-structure.sh shell-structure-lexer.awk"
+# MUST stay in lockstep with tools/preflight-user.sh RUNTIME_LIBS — a lib missing here ships a broken
+# artifact (e.g. hook-arbitration.sh absent → the user router can't classify ownership).
+LIBS="config-overlay.sh heartbeat.sh shell-structure.sh shell-structure-lexer.awk hook-arbitration.sh"
 
 STAGE="$(mktemp -d)/preflight-user"; mkdir -p "$STAGE/hooks" "$STAGE/lib"
 for h in $HOOKS; do git -C "$SRC" show "${SHA}:hooks/${h}" > "$STAGE/hooks/${h}"; done
