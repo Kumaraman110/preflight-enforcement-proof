@@ -3,6 +3,50 @@
 All notable changes to Preflight are recorded here. This project uses annotated tags on the
 `feature/preflight-framework` line; releases are cut as tags (see `docs/`).
 
+## v0.10.0-rc.4 — final hardening release candidate
+
+**Release candidate — the final hardening RC before stable v0.10.0.** Linear descendant of `v0.10.0-rc.3`
+(`a3ff584`); the rc.1/rc.2/rc.3 tags remain immutable and in place. No new features, protocols, or
+architecture — rc.4 contains only the security/usability fixes below plus their tests and version metadata.
+
+### Fixed — command-wrapper fail-open (P0)
+- A governed `git push` / `gh pr create|merge` prefixed with a command WRAPPER bypassed the push gate
+  entirely (the router classified it a non-candidate, the engine was never invoked, and the push reached the
+  tool UNGATED). Present since rc.3. The class is unbounded (env, `env -S`/`--split-string`, exec, builtin,
+  command, sudo, doas, nice, ionice, chrt, taskset, flock, nohup, setsid, timeout, stdbuf, setpriority,
+  eatmydata, proot, catchsegv, unbuffer, faketime, torsocks, watch — plus future wrappers), so it is closed
+  STRUCTURALLY, not by enumeration:
+  - **Router** (`hooks/pre-bash-risk-router`): a structural catch-all routes any segment with a bare
+    `git`/`gh` program WORD behind an unrecognized program to the engine. Over-routing is safe (latency
+    only; the engine allows a benign `echo git push`); under-routing was the fail-open.
+  - **Engine** (`hooks/pre-push-gate-engine`): a wrapper TAXONOMY pre-classifier — TRANSPARENT wrappers are
+    recursively peeled and the wrapped `git … push` is gated by the existing authoritative policy;
+    REMOTE/ISOLATED executors (ssh/docker/podman/kubectl/…) → CONFIRM; DATA-ONLY (echo/grep/…) → ALLOW;
+    an UNKNOWN leading program + a governed token → CONFIRM interactively, BLOCK when `PREFLIGHT_HEADLESS=1`.
+  - There is NO fail-open even on a wrapper-peel bug: the worst case is CONFIRM instead of BLOCK, never a
+    silent ALLOW. Regression tests: `wrapper-prefix-failopen-test.sh`, `wrapper-taxonomy-test.sh`.
+
+### Fixed — two P1s
+- `preflight init --local` in a LINKED WORKTREE wrote `/.preflight/` to the per-worktree git-dir's
+  `info/exclude`, which Git does not read — leaving `.preflight/config.json` committable while the CLI
+  claimed it was excluded. Now uses `git rev-parse --git-common-dir`.
+- A from-artifact install re-stamped the runtime with the CLI's compiled constant, discarding the artifact's
+  own `RELEASE_VERSION`. The from-artifact path now trusts the artifact's staged version; a coupling test
+  asserts the compiled constant equals the CHANGELOG top entry so an un-bumped constant fails CI.
+
+### Added — the usable `preflight` CLI
+- A single `preflight` command on PATH (stable launcher → versioned runtime): `init --local` (opt a repo in
+  with NO tracked change), `status` (active/inactive · USER/PROJECT owner · version · policy tier · runtime
+  health · remote-enforcement), `doctor` (deps, duplicate hooks, stale runtime, malformed config, git
+  context — with fixes), `verify`, `disable` (reversible), plus the existing install/rollback/uninstall.
+  `FIRST-USE.md` documents the minimal command set.
+
+### Fixed — scan-on-exec performance
+- The push-gate timeout budget is widened for heavy endpoint-security (scan-on-exec) hosts (platform
+  35s→60s, router ceiling 48s; engine internal subprocess 3s→8s and IR-parse 8s→20s), single-sourced and
+  coupling-tested, so a CORRECT verdict is not killed mid-decision and swallowed into a spurious fail-closed
+  BLOCK. Ordinary/inactive paths add no extra spawn; consequential paths stay bounded and fail closed.
+
 ## v0.10.0-rc.3 — hook-arbitration release candidate
 
 **Release candidate — not GA, not `latest`/`stable`.** Supersedes `v0.10.0-rc.2` for evaluation;
