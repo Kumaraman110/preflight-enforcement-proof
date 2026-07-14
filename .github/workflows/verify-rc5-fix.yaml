@@ -69,6 +69,10 @@ jobs:
           check 'single-quoted group literal'   'dec=ALLOW'
           check 'single-quoted subst literal'   'dec=ALLOW'
           check 'comment with subst text'       'dec=ALLOW'
+          # Multi-push (safe 1st + forbidden 2nd) and real subshell forbidden must BLOCK (S10/S11/S15 shape).
+          check 'multipush ; safe-then-forbidden'  'dec=BLOCK'
+          check 'multipush && safe-then-forbidden' 'dec=BLOCK'
+          check 'subshell forbidden push'          'dec=BLOCK'
           # Non-regression: the cases that already passed must STILL hold.
           check 'single-line forbidden push'    'dec=BLOCK'
           check 'LF continuation push'          'dec=BLOCK'

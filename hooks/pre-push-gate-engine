@@ -214,7 +214,13 @@ _PFG_TAX_DATA=" echo printf grep egrep fgrep cat sed awk head tail cut tr wc sor
 # structural parser + the semicolon/&&/|| segmentation, which BLOCK a forbidden 2nd-position push. If the
 # taxonomy classified these as UNKNOWN it would pre-empt those precise paths and DOWNGRADE a correct BLOCK to
 # CONFIRM. So a shell interpreter/keyword head → DEFER (no verdict); the authoritative path decides.
-_PFG_TAX_SHELL=" bash sh dash zsh ash ksh mksh pdksh rbash bash.exe sh.exe if then else elif fi while until do done for case esac select function coproc time { } ! [[ ]] "
+# The set ALSO includes shell GROUPING/subshell punctuation ( ) { } ` (rc.5 D4 completeness): a real subshell
+# `( git push evil )` / command-substitution / brace group is authoritatively handled by the IR structural
+# parser (real `( )`/`$( )` → git-push-node or HAS_COMPUTED/HAS_OPAQUE deterministic block). If a grouping
+# token reaches this classifier as a segment head (e.g. because we no longer SEGMENT on `(`/`)`), it must
+# DEFER — turning it into UNKNOWN→CONFIRM would BOTH over-block a benign quoted literal AND downgrade a real
+# subshell BLOCK to CONFIRM. (A `(` inside a single quote never becomes a head — the head is `echo`, DATA-ONLY.)
+_PFG_TAX_SHELL=" bash sh dash zsh ash ksh mksh pdksh rbash bash.exe sh.exe if then else elif fi while until do done for case esac select function coproc time { } ( ) ! [[ ]] "
 
 # Peel a TRANSPARENT wrapper's own options/args off the front of a token array, in place, so the wrapped
 # program becomes the head. Sets _PFG_PEELED (the remaining "$@"-style array via _PFG_PEEL_OUT) and returns:
