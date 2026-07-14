@@ -61,7 +61,9 @@ if ! PATH="$NOJQ_PATH" command -v bash >/dev/null 2>&1; then
   echo ""; echo "source-of-truth-jq-absent tests: ${PASS} passed, ${FAIL} failed"; exit 0
 fi
 
-T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
+# Normalize mktemp backslashes to '/' so the heredoc-built desc JSON is valid (cygwin runner returns a
+# D:\a\_temp\... path; '\' is an illegal JSON escape). Test-harness fix; product logic is correct.
+T="$(mktemp -d)"; T="${T//\\//}"; trap 'rm -rf "$T"' EXIT
 printf 'real present content\n' > "$T/present.txt"
 cat > "$T/desc.json" <<JSON
 { "agent":"spec-analyst", "required":[ {"kind":"file","label":"absent legacy baseline","path":"$T/ABSENT.json"} ] }

@@ -27,7 +27,12 @@ bad(){ echo "FAIL: $1" >&2; FAIL=$((FAIL+1)); }
 . "$LIB"
 
 # an opted-in repo root; .claude/hooks/ is created EMPTY (branch-stable installs never populate it)
-new_root(){ local d; d="$(mktemp -d)/repo"; mkdir -p "$d/.preflight" "$d/.claude/hooks"; echo '{"mode":"generic"}' > "$d/.preflight/config.json"; echo "$d"; }
+# Normalize the mktemp path to forward slashes: cygwin `mktemp -d` on the windows-latest runner returns a
+# BACKSLASH path (D:\a\_temp\...); when that root is interpolated into the project settings.json registrations
+# below, the '\' bytes make the settings file INVALID JSON, so arbitration deems it "not valid JSON" and can
+# never confirm a PROJECT registration (cases 2/3/6/8/10/11 wrongly AMBIGUOUS). '/' is JSON-safe and cygwin
+# resolves it identically. Test-harness fix; lib/hook-arbitration.sh is correct.
+new_root(){ local d; d="$(mktemp -d)"; d="${d//\\//}/repo"; mkdir -p "$d/.preflight" "$d/.claude/hooks"; echo '{"mode":"generic"}' > "$d/.preflight/config.json"; echo "$d"; }
 proj_settings(){ printf '%s' "$2" > "$1/.claude/settings.json"; }
 proj_settings_local(){ printf '%s' "$2" > "$1/.claude/settings.local.json"; }
 
@@ -101,7 +106,7 @@ classify "$R"
 [ "$PFA_OWNER" = USER ] && ok "9 incidental substring in a note → USER (no false PROJECT yield)" || bad "9 got $PFA_OWNER ($PFA_REASON)"
 
 # ── 10. space-path repo root with a valid branch-stable registration → PROJECT (path quoting safe) ─────
-SP="$(mktemp -d)/my repo"; mkdir -p "$SP/.preflight" "$SP/.claude/hooks"; echo '{"mode":"generic"}' > "$SP/.preflight/config.json"
+SP="$(mktemp -d)"; SP="${SP//\\//}/my repo"; mkdir -p "$SP/.preflight" "$SP/.claude/hooks"; echo '{"mode":"generic"}' > "$SP/.preflight/config.json"   # normalize backslashes; the SPACE in 'my repo' is intentional (space-path coverage)
 T="$(mk_runtime_target "$SP")"; branch_stable_reg "$SP" "$T"
 classify "$SP"
 [ "$PFA_OWNER" = PROJECT ] && ok "10 space-path repo + valid registration → PROJECT" || bad "10 got $PFA_OWNER ($PFA_REASON)"

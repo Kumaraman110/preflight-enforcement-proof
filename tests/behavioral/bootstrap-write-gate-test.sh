@@ -22,7 +22,11 @@ green() { printf "\033[32m%s\033[0m\n" "$1"; }
 run_write_hook() {
   local fp="$1"
   RC=0
-  OUT="$(printf '%s' "{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$fp\",\"content\":\"x\"}}" | bash "$HOOK" 2>&1)" || RC=$?
+  # Build the Write JSON with jq so a backslash Windows path ($fp = D:\a\_temp\... from cygwin mktemp on the
+  # runner) is escaped to VALID JSON. Raw interpolation made it invalid → the hook's `jq -r .tool_input.file_path`
+  # returned empty → not-protected → exit 0 (spurious "expected block got exit 0"). Product hook is correct.
+  local json; json="$(jq -n --arg fp "$fp" '{tool_name:"Write",tool_input:{file_path:$fp,content:"x"}}')"
+  OUT="$(printf '%s' "$json" | bash "$HOOK" 2>&1)" || RC=$?
 }
 
 # ─── Setup temp workspace ─────────────────────────────────────

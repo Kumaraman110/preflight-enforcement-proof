@@ -160,9 +160,18 @@ check_gate "pre-push-gate-check" \
 BOOT_WS="$WORK/bootstrap"
 mkdir -p "$BOOT_WS"
 printf '%s\n' '# existing build contract' > "$BOOT_WS/CLAUDE.md"
+# Build the probe JSON with jq (PRODUCT FIX): $BOOT_WS is a real filesystem path, and on Windows/Git-Bash/
+# MSYS/cygwin `mktemp -d` (the $WORK base) returns a BACKSLASH path (e.g. C:\Users\...\Temp\... or D:\a\...).
+# Raw-interpolated, those backslashes make the probe stdin INVALID JSON, so the gate's `jq -r
+# .tool_input.file_path` extraction returns empty → the gate exits 0 → this selfcheck FALSELY reports
+# bootstrap-write-gate as DEAD on every Windows user's machine (block=0 expected 2). jq -n --arg escapes any
+# path. (The other four gate probes use forward-slash relative literals / path-free commands, so only this
+# one embedded a mktemp path and was affected.)
+BOOT_BLOCK_JSON="$(jq -n --arg fp "$BOOT_WS/CLAUDE.md" '{tool_name:"Write",tool_input:{file_path:$fp,content:"# clobbered"}}')"
+BOOT_ALLOW_JSON="$(jq -n --arg fp "$BOOT_WS/notes.txt" '{tool_name:"Write",tool_input:{file_path:$fp,content:"hello"}}')"
 check_gate "bootstrap-write-gate" \
-  "$BOOT_WS" "{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$BOOT_WS/CLAUDE.md\",\"content\":\"# clobbered\"}}" \
-  "$BOOT_WS" "{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$BOOT_WS/notes.txt\",\"content\":\"hello\"}}"
+  "$BOOT_WS" "$BOOT_BLOCK_JSON" \
+  "$BOOT_WS" "$BOOT_ALLOW_JSON"
 
 # ══ 3. coupled-edit-gate ══════════════════════════════════════════════════════
 # Workspace: .preflight/gate/active-groups.json with ONE unacknowledged group

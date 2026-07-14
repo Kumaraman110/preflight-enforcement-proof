@@ -29,7 +29,7 @@ ok(){ echo "PASS: $1"; PASS=$((PASS+1)); }
 bad(){ echo "FAIL: $1" >&2; FAIL=$((FAIL+1)); }
 
 # ── Stand up an isolated USER runtime in the runtime/<sha>/ layout the dispatcher expects ───────────────
-UHOME="$(mktemp -d)/claude"; SHA="deadbeefcafe0000deadbeefcafe0000deadbeef"
+UHOME="$(mktemp -d)"; UHOME="${UHOME//\\//}/claude"; SHA="deadbeefcafe0000deadbeefcafe0000deadbeef"   # normalize cygwin backslash mktemp path (else the runtime/settings JSON built with it is invalid)
 GEN="$UHOME/preflight/runtime/$SHA"
 mkdir -p "$GEN/hooks" "$GEN/lib"
 cp "$REPO/hooks/user-preflight-router" "$GEN/hooks/"
@@ -59,7 +59,7 @@ fire_user(){ printf '%s' "$(jq -n --arg c "$1" --arg w "$2" '{tool_name:"Bash",t
 fire_proj(){ local h="$1"; [ -x "$h" ] || return 0; printf '%s' "$(jq -n --arg c "$2" --arg w "$3" '{tool_name:"Bash",tool_input:{command:$c},cwd:$w}')" | PF_TEST_CTR="$CTR" bash "$h" >/dev/null 2>&1; }
 
 # Build a repo root; .claude/hooks/ is created EMPTY (the real branch-stable layout never populates it).
-mk_optedin(){ local d; d="$(mktemp -d)/repo"; mkdir -p "$d/.preflight" "$d/.claude/hooks"; echo '{"mode":"generic"}' > "$d/.preflight/config.json"; echo "$d"; }
+mk_optedin(){ local d; d="$(mktemp -d)"; d="${d//\\//}/repo"; mkdir -p "$d/.preflight" "$d/.claude/hooks"; echo '{"mode":"generic"}' > "$d/.preflight/config.json"; echo "$d"; }   # normalize cygwin backslash mktemp path (JSON-safe)
 # Install a REAL branch-stable project registration: a runtime target that EXISTS under
 # <repo>/.git/preflight/runtime/<sha>/hooks/run-hook.cmd (the counter-appending PROJECT hook), registered
 # via settings.local.json with the ABSOLUTE path — .claude/hooks/ stays EMPTY. Echoes the target path.
@@ -137,7 +137,7 @@ fire_user "git push origin main" "$WT"
 [ "$(count)" = 1 ] && [ "$(owner)" = USER ] && ok "7 git worktree opted-in → user runs once" || bad "7 worktree count=$(count) owner=$(owner)"
 
 # ── 8. SPACE PATH repo, opted-in, branch-stable project-owned → user yields, project once ──────────────
-run_event; SP="$(mktemp -d)/my repo"; mkdir -p "$SP/.preflight" "$SP/.claude/hooks"; echo '{"mode":"generic"}' > "$SP/.preflight/config.json"
+run_event; SP="$(mktemp -d)"; SP="${SP//\\//}/my repo"; mkdir -p "$SP/.preflight" "$SP/.claude/hooks"; echo '{"mode":"generic"}' > "$SP/.preflight/config.json"   # normalize backslashes; SPACE in 'my repo' intentional
 STGT="$(add_project_reg "$SP")"
 fire_user "git push origin main" "$SP"
 fire_proj "$STGT" "git push origin main" "$SP"
@@ -178,7 +178,7 @@ fire_fb 'git push origin main' "$INC"
 CI="$(count)"
 # (b) genuine branch-stable project → fallback must YIELD (user runs 0 times = count 0).
 run_event
-BSF="$(mktemp -d)/bsf"; mkdir -p "$BSF/.preflight" "$BSF/.claude/hooks"; echo '{"mode":"generic"}' > "$BSF/.preflight/config.json"
+BSF="$(mktemp -d)"; BSF="${BSF//\\//}/bsf"; mkdir -p "$BSF/.preflight" "$BSF/.claude/hooks"; echo '{"mode":"generic"}' > "$BSF/.preflight/config.json"   # normalize cygwin backslash mktemp path (JSON-safe)
 TGF="$BSF/.git/preflight/runtime/aaa/hooks"; mkdir -p "$TGF"; printf '#stub\n' > "$TGF/run-hook.cmd"
 printf '{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"\\"%s/run-hook.cmd\\" pre-bash-risk-router"}]}]}}' "$TGF" > "$BSF/.claude/settings.local.json"
 fire_fb 'git push origin main' "$BSF"

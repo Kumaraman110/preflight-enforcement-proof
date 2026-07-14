@@ -79,9 +79,13 @@ fi
 
 echo ""
 if [ "$FAILURES" -eq 0 ]; then
-  green "install-prune-confinement: all $PASSES assertions passed"
+  # Emit the CANONICAL "<n> passed, <m> failed" trailer (the aggregate runner + verify-full-suite.sh parse
+  # exactly this shape). The old "all N assertions passed" wording lacked the trailer, so the sharded verifier
+  # recorded the shard FAIL (no canonical trailer + it treats a missing trailer as inconclusive) even though
+  # all assertions passed and the test exited 0.
+  green "install-prune-confinement: $PASSES passed, 0 failed"
   exit 0
 else
-  red "install-prune-confinement: $FAILURES failure(s), $PASSES passed"
+  red "install-prune-confinement: $PASSES passed, $FAILURES failed"
   exit 1
 fi

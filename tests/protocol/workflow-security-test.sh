@@ -44,8 +44,17 @@ PY
 }
 
 # ── 1. LEAST-PRIVILEGE: both workflow files contents:read; NO write scope anywhere ──────────────────
-TOPPERM="$(wf permissions)"
-case "$TOPPERM" in *"'contents': 'read'"*|*"contents.*read"*) ok "Stage-2 top-level permissions = contents:read";; *) bad "Stage-2 top-level permissions not contents:read: $TOPPERM";; esac
+# Scan the raw YAML with awk — NO PyYAML dependency. (PyYAML is absent on stock windows-latest, so the
+# python `wf()` helper returned empty and this assertion spuriously failed; the rest of this test is already
+# grep/behavioral.) A top-level `permissions:` block (column 0) whose immediate body has `contents: read`
+# satisfies least-privilege; also accept the inline-flow `permissions: { contents: read }` form.
+if awk '
+  /^permissions:[[:space:]]*[{]?[^}]*contents:[[:space:]]*read/ {found=1}
+  /^permissions:[[:space:]]*$/ {inperm=1; next}
+  inperm && /^[^[:space:]#]/ {inperm=0}
+  inperm && /^[[:space:]]+contents:[[:space:]]*read([[:space:]]|$)/ {found=1}
+  END{exit found?0:1}
+' "$WF"; then ok "Stage-2 top-level permissions = contents:read"; else bad "Stage-2 top-level permissions not contents:read (awk scan of $WF)"; fi
 # Flag only an ACTUAL write GRANT (a `<scope>: write` value on a non-comment line), not the
 # word "write" appearing in a comment. Check BOTH workflow files.
 if grep -vE '^\s*#' "$WF" "$WF_COLLECT" | grep -qE ':\s*write\b'; then bad "a workflow grants a 'write' permission scope"; else ok "no 'write' permission grant in either workflow file (comments aside)"; fi
@@ -53,8 +62,15 @@ grep -qE "contents: read" "$WF_COLLECT" && ok "Stage-1 (collect) declares conten
 
 # ── 2. TWO-STAGE TRUSTED SPLIT: Stage 1 on pull_request; Stage 2 on workflow_run of Stage 1 ─────────
 grep -qE "^  pull_request:" "$WF_COLLECT" && ok "STAGE 1 triggers on pull_request" || bad "STAGE 1 missing pull_request trigger"
-TRIG="$(wf on)"
-echo "$TRIG" | grep -q "workflow_run" && ok "STAGE 2 triggers on workflow_run" || bad "STAGE 2 missing workflow_run trigger: $TRIG"
+# awk block-scan (no PyYAML): a top-level `on:` block whose body contains `workflow_run:`. Also accept the
+# inline `on: { workflow_run: … }` and `on: [workflow_run]` flow forms.
+if awk '
+  /^on:[[:space:]]*[[{]?[^]}]*workflow_run/ {found=1}
+  /^on:[[:space:]]*$/ {inon=1; next}
+  inon && /^[^[:space:]#]/ {inon=0}
+  inon && /^[[:space:]]+workflow_run:/ {found=1}
+  END{exit found?0:1}
+' "$WF"; then ok "STAGE 2 triggers on workflow_run"; else bad "STAGE 2 missing workflow_run trigger (awk scan of $WF)"; fi
 # NO self-reference: Stage 2's workflow_run must name the COLLECT workflow, not its own name.
 grep -q 'workflows: \["Preflight Remote Gate — Collect"\]' "$WF" && ok "STAGE 2 workflow_run references the Collect workflow (no self-reference)" || bad "STAGE 2 workflow_run does not reference the Collect workflow (self-reference startup-failure risk)"
 grep -q "collect:" "$WF_COLLECT" && grep -q "decide:" "$WF" && ok "collect job (Stage 1 file) + decide job (Stage 2 file) present" || bad "missing collect/decide jobs across files"

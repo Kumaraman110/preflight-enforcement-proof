@@ -36,7 +36,12 @@ bad() { echo "FAIL: $1" >&2; FAIL=$((FAIL+1)); }
 
 [ -f "$SOT" ] || { bad "missing $SOT"; echo ""; echo "source-of-truth-check tests: ${PASS} passed, ${FAIL} failed"; exit 1; }
 
-T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
+# Normalize the mktemp path to forward slashes (cygwin `mktemp -d` on the windows-latest runner returns a
+# BACKSLASH path D:\a\_temp\... — cygwin resolves '\' and '/' identically for file ops, but '\' embedded in
+# the heredoc-built JSON claim files below is an illegal JSON escape → the claim JSON was malformed → the
+# check mis-read it and let agent CLAIM fields perturb the verdict (I2/I4 integrity failures). '/' is
+# JSON-safe. Test-harness fix; the product source-of-truth logic is correct.
+T="$(mktemp -d)"; T="${T//\\//}"; trap 'rm -rf "$T"' EXIT
 printf 'real baseline content\n' > "$T/baseline.json"
 mkdir -p "$T/legacy-src"; printf 'public class C {}\n' > "$T/legacy-src/Controller.cs"
 mkdir -p "$T/empty-dir"

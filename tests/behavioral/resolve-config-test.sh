@@ -37,7 +37,14 @@ assert_contains_stderr() {
 
 # ─── Setup ────────────────────────────────────────────────────
 
-TMPDIR=$(mktemp -d)
+TMPDIR=$(mktemp -d); TMPDIR="${TMPDIR//\\//}"
+# Normalize the cygwin mktemp BACKSLASH path (D:\a\_temp\... on the windows-latest runner) to forward
+# slashes. Two sub-tests depended on the override cache being "fresh": the test writes overrides.json with
+# CLAUDE_HASH=$(sha256sum "$TMPDIR/CLAUDE.md") and resolve-config.sh recomputes the same. GNU coreutils
+# sha256sum, given a filename ARG containing a backslash, ESCAPES+PREFIXES its output line ('\<hash>  \path'),
+# and other path handling diverged, so the override was wrongly deemed stale → fell through to derived/
+# unresolved (the two failing sub-tests). A forward-slash path avoids the escaping on BOTH sides identically.
+# Test-harness fix; resolve-config.sh is correct. (cygwin resolves '/' and '\' identically for file ops.)
 trap "rm -rf $TMPDIR" EXIT
 
 source "$LIB"

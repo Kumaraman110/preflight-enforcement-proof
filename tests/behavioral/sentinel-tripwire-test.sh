@@ -58,7 +58,10 @@ echo existing-content > "$TMP/CLAUDE.md"
 cd "$TMP"
 
 # G1 + G2: Write to existing CLAUDE.md → block, and block output is de-steered.
-WJSON="{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$TMP/CLAUDE.md\",\"content\":\"x\"}}"
+# Build the Write JSON with jq so $TMP (a cygwin backslash mktemp path on the runner) is escaped to VALID
+# JSON; raw interpolation made it invalid → bootstrap-write-gate's jq extract returned empty → not-protected
+# → exit 0 (the G1 'expected BLOCK got RC=0' spurious fail). Product gate is correct.
+WJSON="$(jq -n --arg fp "$TMP/CLAUDE.md" '{tool_name:"Write",tool_input:{file_path:$fp,content:"x"}}')"
 OUT="$(printf '%s' "$WJSON" | bash "$BOOT" 2>&1)"; RC=$?
 if [ "$RC" -eq 2 ] && printf '%s' "$OUT" | grep -qi 'BLOCKED'; then
   ok "G1 bootstrap-write-gate still blocks Write-to-existing-CLAUDE.md (exit 2)"

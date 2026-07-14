@@ -22,12 +22,14 @@ HOOK="${SCRIPT_DIR}/../../hooks/pre-push-gate-engine"
 PASS=0; FAIL=0
 ok()  { echo "PASS: $1"; PASS=$((PASS+1)); }
 bad() { echo "FAIL: $1" >&2; FAIL=$((FAIL+1)); }
-# Build the hook stdin JSON with jq so a command containing a Windows checkout path with BACKSLASHES
-# (e.g. `git -C D:\a\repo\repo\... push`, as on a windows-latest CI checkout) is correctly ESCAPED. Raw
-# "${cmd}" interpolation produced INVALID JSON there (\a \r are illegal JSON escapes) → the engine's
-# jq extraction failed → raw-blob fallback → the git-push was not recognized (a spurious test FAIL, not a
-# product defect). jq -n --arg is byte-safe for any path shape.
-run_hook() { local cmd="$1" json; json="$(jq -n --arg c "$cmd" '{tool_name:"Bash",tool_input:{command:$c}}')"; OUT="$(printf '%s' "$json" | _PFG_WATCHDOG_CHILD=1 bash "$HOOK" 2>&1)"; RC=$?; }
+# Build the hook stdin JSON by feeding the command to jq over STDIN (jq -Rs), NOT as an --arg. On
+# bash-5.3-cygwin jq is a native Windows exe, so MSYS applies POSIX->Windows argv PATH-CONVERSION to an
+# --arg value that looks like `NAME=/abs/path` (e.g. B3 `GIT_DIR=/no/such/dir/.git git push …` was rewritten
+# to `GIT_DIR=C:/Program Files/Git/no/such/dir/.git …`, INJECTING A SPACE → the engine then saw an unknown
+# leading program before `git push` → wrapper-taxonomy CONFIRM (RC=0) instead of BLOCK). Passing the command
+# on stdin (`printf '%s' "$cmd" | jq -Rs …`) bypasses argv conversion entirely and round-trips ANY path shape
+# (space paths, D:\a\repo backslash paths, nested bash -c) byte-identically. A test-harness fix; product is OK.
+run_hook() { local cmd="$1" json; json="$(printf '%s' "$cmd" | jq -Rs '{tool_name:"Bash",tool_input:{command:.}}')"; OUT="$(printf '%s' "$json" | _PFG_WATCHDOG_CHILD=1 bash "$HOOK" 2>&1)"; RC=$?; }
 
 # Governed repo: forbidden remote 'poc', protected base 'main', safe remote 'safe'. No fresh evidence →
 # a push to the SAFE remote on protected main is a governed decision (not a silent allow); a push to 'poc'

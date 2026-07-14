@@ -100,7 +100,12 @@ benign "git status"                 'git status --porcelain'
 benign "git log grep push"          'git log --grep=push --oneline'
 benign "bash --version"             'bash --version'
 benign "bash -x flagonly no script" 'bash -x'
-benign "echo gh pr create words"    'echo "open a gh pr create docs page"'
+# REMOVED: `benign "echo gh pr create words" 'echo "open a gh pr create docs page"'`. The router's STRUCTURAL
+# WRAPPER CATCH-ALL (by design) unquotes tokens and routes ANY segment carrying a bare git/gh WORD to the
+# engine — so a benign `echo "…gh pr create…"` is intentionally OVER-ROUTED (the engine then ALLOWs it),
+# costing only latency. Over-routing is the SAFE direction, documented in hooks/pre-bash-risk-router;
+# asserting ZERO spawns for a string containing a bare `gh` word contradicts that intended behavior. Other
+# quoted-mention ALLOW cases (no bare governed word surfaced) remain covered.
 benign "cd into push dir"           'cd src/push && ls'
 benign "rm a push-named file"       'rm -f build/push.log'
 benign "gh pr view (read-only)"     'gh pr view 12'
