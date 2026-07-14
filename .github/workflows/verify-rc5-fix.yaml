@@ -1,0 +1,150 @@
+---
+# verify-rc5-fix — proves the rc.5 candidate fixes on a QUIET windows-latest runner (bash 5.3.9-cygwin),
+# the same environment where the rc.4 full-suite certification surfaced the defects. Two jobs:
+#   • diagnose  — runs .release-audit/cert-diagnose.sh against the FIX-BRANCH tree and asserts the specific
+#                 BLOCK/ALLOW flips (CRLF continuation → BLOCK; bash -c / if-while forbidden → BLOCK; benign
+#                 single-quoted literal → ALLOW). This is the behavioral proof of the fix.
+#   • full-suite — the full 109-shard verifier against the FIX-BRANCH tree (must be 109/109 for rc.5 to cut).
+# Push-triggered on the fix branch only. permissions: contents:read. No continue-on-error. Uploads evidence.
+name: Verify rc.5 fix
+
+on:
+  push:
+    branches:
+      - fix/v0.10.0-rc.5
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verify-rc5-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  GIT_AUTHOR_NAME: Preflight Certify
+  GIT_AUTHOR_EMAIL: certify@preflight.test
+  GIT_COMMITTER_NAME: Preflight Certify
+  GIT_COMMITTER_EMAIL: certify@preflight.test
+
+jobs:
+  diagnose:
+    name: Behavioral proof of the fixes (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout fix branch
+        uses: actions/checkout@v4
+        with:
+          ref: fix/v0.10.0-rc.5
+          fetch-depth: 0
+      - name: Tooling
+        run: |
+          bash --version | head -1; jq --version; awk --version 2>/dev/null | head -1
+      - name: Run diagnose against the FIXED tree
+        run: |
+          set -uo pipefail
+          bash .release-audit/cert-diagnose.sh 2>&1 | tee "$GITHUB_WORKSPACE/rc5-diagnose.log"
+      - name: Assert the fix flips (fail the job if any regression remains)
+        run: |
+          set -uo pipefail
+          L="$GITHUB_WORKSPACE/rc5-diagnose.log"
+          fail=0
+          check() { # $1 = grep pattern for the line ; $2 = required decision substring
+            local line; line="$(grep -aE "$1" "$L" | head -1)"
+            if printf '%s' "$line" | grep -q "$2"; then echo "OK: [$1] → $2"; else echo "REGRESSION: [$1] expected $2 — got: $line"; fail=1; fi
+          }
+          # D1: CRLF continuation forbidden must BLOCK (was rc=0 ALLOW).
+          check 'CRLF continuation push'        'dec=BLOCK'
+          # D2: inline bash/sh -c forbidden must BLOCK (was CONFIRM).
+          check 'bash -c forbidden merge'       'dec=BLOCK'
+          check 'sh -c forbidden push'          'dec=BLOCK'
+          check 'bash -lc forbidden push'       'dec=BLOCK'
+          # D3: compound if forbidden must BLOCK (was CONFIRM).
+          check 'if forbidden'                  'dec=BLOCK'
+          # D4: benign single-quoted literal mentions must ALLOW (was BLOCK).
+          check 'single-quoted group literal'   'dec=ALLOW'
+          check 'single-quoted subst literal'   'dec=ALLOW'
+          check 'comment with subst text'       'dec=ALLOW'
+          # Non-regression: the cases that already passed must STILL hold.
+          check 'single-line forbidden push'    'dec=BLOCK'
+          check 'LF continuation push'          'dec=BLOCK'
+          check 'semicolon 2nd push'            'dec=BLOCK'
+          check '&& 2nd push'                   'dec=BLOCK'
+          [ "$fail" -eq 0 ] && echo "ALL FIX FLIPS + NON-REGRESSIONS HOLD" || { echo "ONE OR MORE REGRESSIONS REMAIN"; exit 1; }
+      - name: Upload diagnose log (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rc5-diagnose
+          path: rc5-diagnose.log
+          if-no-files-found: warn
+          retention-days: 90
+
+  full-suite:
+    name: Full-suite (109 shards) against the fixed tree
+    runs-on: windows-latest
+    timeout-minutes: 360
+    needs: diagnose        # only run the expensive full suite if the behavioral fix proof passed
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout fix branch
+        uses: actions/checkout@v4
+        with:
+          ref: fix/v0.10.0-rc.5
+          fetch-depth: 0
+      - name: Record env
+        run: |
+          {
+            echo "image_os=${ImageOS:-unknown} image_version=${ImageVersion:-unknown}"
+            echo "head=$(git rev-parse HEAD)"
+            echo "bash=$(bash --version | head -1)"; echo "jq=$(jq --version)"; echo "awk=$(awk --version 2>/dev/null | head -1)"
+          } | tee "$GITHUB_WORKSPACE/rc5-env.txt"
+      - name: Run full-suite verifier
+        env:
+          PF_HEAVY_TIMEOUT: "900"
+          PF_LIGHT_TIMEOUT: "300"
+        run: |
+          set -o pipefail
+          bash .release-audit/verify-full-suite.sh "$GITHUB_WORKSPACE/verify-out" 2>&1 | tee "$GITHUB_WORKSPACE/rc5-verify-driver.log"
+          exit "${PIPESTATUS[0]}"
+      - name: Independently adjudicate the manifest
+        if: always()
+        run: |
+          set -uo pipefail
+          MAN="$GITHUB_WORKSPACE/verify-out/MANIFEST.tsv"; RES="$GITHUB_WORKSPACE/verify-out/results"
+          [ -f "$MAN" ] || { echo "NO MANIFEST — not a pass"; exit 1; }
+          mapfile -t BEH < <(ls tests/behavioral/*-test.sh 2>/dev/null | sort)
+          INFILE=(stage1 operative coupling crosscheck scan-profiles dependency-map-validator protocol)
+          EXPECTED=$(( ${#BEH[@]} + ${#INFILE[@]} ))
+          PASSN=$(awk -F'\t' '$2=="PASS"{n++}END{print n+0}' "$RES"/*.result 2>/dev/null)
+          FAILN=$(awk -F'\t' '$2=="FAIL"{n++}END{print n+0}' "$RES"/*.result 2>/dev/null)
+          TON=$(awk -F'\t'  '$2=="TIMEOUT"{n++}END{print n+0}' "$RES"/*.result 2>/dev/null)
+          RECN=$(ls "$RES"/*.result 2>/dev/null | wc -l | tr -d ' ')
+          SUMF=$(awk -F'\t' '$4 ~ /^[0-9]+$/{f+=$4}END{print f+0}' "$RES"/*.result 2>/dev/null)
+          DUPS=$(awk -F'\t' '{c[$1]++}END{d=0;for(k in c)if(c[k]>1)d++;print d}' "$RES"/*.result 2>/dev/null)
+          echo "expected=$EXPECTED recorded=$RECN PASS=$PASSN FAIL=$FAILN TIMEOUT=$TON dups=$DUPS failedAssert=$SUMF" | tee "$GITHUB_WORKSPACE/rc5-adjudication.txt"
+          if [ "$EXPECTED" -eq 109 ] && [ "$RECN" -eq 109 ] && [ "$PASSN" -eq 109 ] && [ "$FAILN" -eq 0 ] && [ "$TON" -eq 0 ] && [ "$DUPS" -eq 0 ] && [ "$SUMF" -eq 0 ]; then
+            echo "GREEN — 109/109 unique PASS" | tee -a "$GITHUB_WORKSPACE/rc5-adjudication.txt"
+          else
+            echo "NOT GREEN" | tee -a "$GITHUB_WORKSPACE/rc5-adjudication.txt"; exit 1
+          fi
+      - name: Upload manifest + logs (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rc5-fullsuite
+          path: |
+            verify-out/MANIFEST.tsv
+            verify-out/results/**
+            verify-out/logs/**
+            rc5-verify-driver.log
+            rc5-env.txt
+            rc5-adjudication.txt
+          if-no-files-found: warn
+          retention-days: 90
