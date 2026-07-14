@@ -3,6 +3,19 @@
 All notable changes to Preflight are recorded here. This project uses annotated tags on the
 `feature/preflight-framework` line; releases are cut as tags (see `docs/`).
 
+## v0.10.0 — stable
+
+**Stable release.** Cut from the exact `v0.10.0-rc.5` product commit (`f8e63ff`) with **no code changes** —
+only this version/release metadata (`RELEASE_VERSION` `v0.10.0-rc.5`→`v0.10.0`, this entry, and the stable
+release notes). rc.1–rc.5 tags remain immutable. The release-candidate line closed, in order: the
+command-wrapper fail-open class (rc.4), then the cygwin-toolchain wrapper-taxonomy pre-emption defects — a
+CRLF-continuation push fail-open, a multi-push (`git push <safe>; git push <forbidden>`) fail-open, the
+`bash -c`/`if`/`while`/`eval` BLOCK→CONFIRM downgrades, a single-quoted-literal over-block, a spec-integrity
+space-path fail-open, and a false-DEAD in the shipped self-check (rc.5). The full framework test suite
+certifies **109/109** on a quiet ephemeral `windows-latest` runner (bash 5.3.9-cygwin, jq 1.8.1, gawk 5.4.0),
+independently re-derived per shard, against the immutable rc.5 tag this release is cut from. See
+`docs/release-notes-v0.10.0-rc.4.md` and `docs/release-notes-v0.10.0-rc.5.md` for the fix details.
+
 ## v0.10.0-rc.5 — cygwin-toolchain certification hardening
 
 **Release candidate.** Cut after a full-suite certification on a quiet ephemeral `windows-latest` runner
