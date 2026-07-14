@@ -1,0 +1,106 @@
+---
+# certify-rc5-tag — the AIRTIGHT certification of the IMMUTABLE v0.10.0-rc.5 tag on a quiet windows-latest
+# runner. Unlike verify-rc5-fix.yaml (which ran the branch tree), this checks out the exact rc.5 TAG, proves
+# HEAD == f8e63ff, and runs the full 109-shard verifier + the behavioral diagnose FROM THE TAG'S OWN TREE
+# (the verifier + cert-diagnose scripts are committed in the rc.5 tree, so no overlay is needed). Push-
+# triggered on the fix branch (which carries this workflow); it always checks out the tag, not the branch.
+# permissions: contents:read; no continue-on-error; a timeout/cancel/missing-output is never a pass; exits
+# success only for 109 unique PASS.
+name: Certify rc.5 tag
+
+on:
+  push:
+    branches:
+      - fix/v0.10.0-rc.5
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: certify-rc5-tag-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  GIT_AUTHOR_NAME: Preflight Certify
+  GIT_AUTHOR_EMAIL: certify@preflight.test
+  GIT_COMMITTER_NAME: Preflight Certify
+  GIT_COMMITTER_EMAIL: certify@preflight.test
+  RC5_COMMIT: f8e63ffd3a69d8b08bb86fa4e215308cb9cc31ae
+
+jobs:
+  full-suite:
+    name: Full-suite certification of the rc.5 TAG (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 360
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout immutable tag v0.10.0-rc.5
+        uses: actions/checkout@v4
+        with:
+          ref: refs/tags/v0.10.0-rc.5
+          fetch-depth: 0
+      - name: PROVE checked-out HEAD is the rc.5 commit f8e63ff, and it descends from rc.4
+        run: |
+          set -euo pipefail
+          HEAD_SHA="$(git rev-parse HEAD)"
+          echo "HEAD = $HEAD_SHA ; expected = $RC5_COMMIT"
+          [ "$HEAD_SHA" = "$RC5_COMMIT" ] || { echo "FATAL: HEAD is not the rc.5 commit" >&2; exit 1; }
+          [ "$(git rev-parse 'v0.10.0-rc.5^{commit}')" = "$RC5_COMMIT" ] || { echo "FATAL: tag does not resolve to $RC5_COMMIT" >&2; exit 1; }
+          git merge-base --is-ancestor v0.10.0-rc.4 HEAD || { echo "FATAL: rc.4 is not an ancestor of rc.5" >&2; exit 1; }
+          # PROVE the only functional delta from rc.4 is version/metadata + the fixes (no surprise product edit):
+          echo "product delta rc.4..rc.5 (excluding docs/CHANGELOG/harness):"
+          git diff --name-only v0.10.0-rc.4 HEAD -- hooks lib tools tests verifier protocol agents skills defaults examples | sort
+          echo "PROVEN: rc.5 tree = tag $RC5_COMMIT, descends from rc.4."
+      - name: Tooling
+        run: |
+          bash --version | head -1; jq --version; awk --version 2>/dev/null | head -1; git --version
+      - name: Behavioral push-gate proof (diagnose) from the tag tree
+        run: |
+          set -uo pipefail
+          bash .release-audit/cert-diagnose.sh 2>&1 | tee "$GITHUB_WORKSPACE/rc5tag-diagnose.log"
+      - name: Run full-suite verifier (109 shards) on the tag tree
+        env:
+          PF_HEAVY_TIMEOUT: "900"
+          PF_LIGHT_TIMEOUT: "300"
+        run: |
+          set -o pipefail
+          bash .release-audit/verify-full-suite.sh "$GITHUB_WORKSPACE/verify-out" 2>&1 | tee "$GITHUB_WORKSPACE/rc5tag-driver.log"
+          exit "${PIPESTATUS[0]}"
+      - name: Independently adjudicate the manifest (re-derive counts)
+        if: always()
+        run: |
+          set -uo pipefail
+          RES="$GITHUB_WORKSPACE/verify-out/results"
+          [ -d "$RES" ] || { echo "NO RESULTS — not a pass"; exit 1; }
+          mapfile -t BEH < <(ls tests/behavioral/*-test.sh 2>/dev/null | sort)
+          INFILE=(stage1 operative coupling crosscheck scan-profiles dependency-map-validator protocol)
+          EXPECTED=$(( ${#BEH[@]} + ${#INFILE[@]} ))
+          PASSN=$(awk -F'\t' '$2=="PASS"{n++}END{print n+0}' "$RES"/*.result 2>/dev/null)
+          FAILN=$(awk -F'\t' '$2=="FAIL"{n++}END{print n+0}' "$RES"/*.result 2>/dev/null)
+          TON=$(awk -F'\t'  '$2=="TIMEOUT"{n++}END{print n+0}' "$RES"/*.result 2>/dev/null)
+          RECN=$(ls "$RES"/*.result 2>/dev/null | wc -l | tr -d ' ')
+          SUMF=$(awk -F'\t' '$4 ~ /^[0-9]+$/{f+=$4}END{print f+0}' "$RES"/*.result 2>/dev/null)
+          DUPS=$(awk -F'\t' '{c[$1]++}END{d=0;for(k in c)if(c[k]>1)d++;print d}' "$RES"/*.result 2>/dev/null)
+          echo "expected=$EXPECTED recorded=$RECN PASS=$PASSN FAIL=$FAILN TIMEOUT=$TON dups=$DUPS failedAssert=$SUMF" | tee "$GITHUB_WORKSPACE/rc5tag-adjudication.txt"
+          if [ "$EXPECTED" -eq 109 ] && [ "$RECN" -eq 109 ] && [ "$PASSN" -eq 109 ] && [ "$FAILN" -eq 0 ] && [ "$TON" -eq 0 ] && [ "$DUPS" -eq 0 ] && [ "$SUMF" -eq 0 ]; then
+            echo "GREEN — rc.5 TAG certified 109/109 unique PASS" | tee -a "$GITHUB_WORKSPACE/rc5tag-adjudication.txt"
+          else
+            echo "NOT GREEN" | tee -a "$GITHUB_WORKSPACE/rc5tag-adjudication.txt"; exit 1
+          fi
+      - name: Upload manifest + logs + diagnose (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rc5tag-fullsuite
+          path: |
+            verify-out/MANIFEST.tsv
+            verify-out/results/**
+            verify-out/logs/**
+            rc5tag-driver.log
+            rc5tag-diagnose.log
+            rc5tag-adjudication.txt
+          if-no-files-found: warn
+          retention-days: 90
