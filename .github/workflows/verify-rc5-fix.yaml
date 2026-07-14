@@ -48,6 +48,11 @@ jobs:
         run: |
           set -uo pipefail
           bash .release-audit/cert-diagnose.sh 2>&1 | tee "$GITHUB_WORKSPACE/rc5-diagnose.log"
+      - name: Tail-diagnose the remaining failing tests (evidence only, non-gating)
+        if: always()
+        run: |
+          set -uo pipefail
+          bash .release-audit/cert-diagnose-tail.sh 2>&1 | tee "$GITHUB_WORKSPACE/rc5-diagnose-tail.log" || true
       - name: Assert the fix flips (fail the job if any regression remains)
         run: |
           set -uo pipefail
@@ -84,7 +89,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: rc5-diagnose
-          path: rc5-diagnose.log
+          path: |
+            rc5-diagnose.log
+            rc5-diagnose-tail.log
           if-no-files-found: warn
           retention-days: 90
 
