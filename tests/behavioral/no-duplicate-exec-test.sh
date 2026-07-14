@@ -51,9 +51,12 @@ printf '"'"'PROJECT\n'"'"' >> "$PF_TEST_CTR"
 exit 0'
 
 # Fire the USER dispatcher for a command in cwd. (Claude Code always fires the user hook.)
-fire_user(){ printf '{"tool_name":"Bash","tool_input":{"command":"%s"},"cwd":"%s"}' "$1" "$2" | PF_TEST_CTR="$CTR" bash "$DISP" user-preflight-router >/dev/null 2>&1; }
+# jq-build the JSON: the cwd is a mktemp path (BACKSLASH path D:\a\... on a windows-latest CI checkout);
+# raw %s interpolation made it invalid JSON there → the router mis-parsed → spurious ownership/count FAILs
+# (a test-fixture defect, not a product defect). --arg escapes any path shape.
+fire_user(){ printf '%s' "$(jq -n --arg c "$1" --arg w "$2" '{tool_name:"Bash",tool_input:{command:$c},cwd:$w}')" | PF_TEST_CTR="$CTR" bash "$DISP" user-preflight-router >/dev/null 2>&1; }
 # Fire the PROJECT hook directly (Claude Code fires it too, when the repo registers one).
-fire_proj(){ local h="$1"; [ -x "$h" ] || return 0; printf '{"tool_name":"Bash","tool_input":{"command":"%s"},"cwd":"%s"}' "$2" "$3" | PF_TEST_CTR="$CTR" bash "$h" >/dev/null 2>&1; }
+fire_proj(){ local h="$1"; [ -x "$h" ] || return 0; printf '%s' "$(jq -n --arg c "$2" --arg w "$3" '{tool_name:"Bash",tool_input:{command:$c},cwd:$w}')" | PF_TEST_CTR="$CTR" bash "$h" >/dev/null 2>&1; }
 
 # Build a repo root; .claude/hooks/ is created EMPTY (the real branch-stable layout never populates it).
 mk_optedin(){ local d; d="$(mktemp -d)/repo"; mkdir -p "$d/.preflight" "$d/.claude/hooks"; echo '{"mode":"generic"}' > "$d/.preflight/config.json"; echo "$d"; }

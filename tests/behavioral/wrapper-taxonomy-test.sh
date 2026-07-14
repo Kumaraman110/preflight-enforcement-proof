@@ -31,8 +31,13 @@ trap 'rm -rf "$(dirname "$R")" 2>/dev/null || true' EXIT
 
 # run the engine on a command; echo "<rc> <decision-or-firststderr>"
 run(){ local cmd="$1" hdl="${2:-0}"
-  local out rc
-  out="$(printf '{"tool_name":"Bash","tool_input":{"command":"%s"},"cwd":"%s"}' "$cmd" "$R" \
+  local out rc json
+  # jq-build the stdin JSON: the `cwd` field carries $R (a mktemp path), which on a windows-latest CI
+  # checkout is a BACKSLASH path (D:\a\...) — raw %s interpolation made the JSON invalid there → the engine
+  # could not locate the repo config → forbiddenRemotes not detected → a spurious "allow" (test FAIL, not a
+  # product defect). --arg escapes any path shape. (The command values here are path-free; the cwd was the bug.)
+  json="$(jq -n --arg c "$cmd" --arg w "$R" '{tool_name:"Bash",tool_input:{command:$c},cwd:$w}')"
+  out="$(printf '%s' "$json" \
         | ( cd "$R" && PF_USER_LEVEL=1 PF_REPO_ROOT="$R" PFG_SS_IR_TIMEOUT="${PFG_SS_IR_TIMEOUT:-90}" PREFLIGHT_HEADLESS="$hdl" bash "$ENGINE" 2>/tmp/.wtax.$$ ))"
   rc=$?
   local dec; dec="$(printf '%s' "$out" | grep -o '"permissionDecision":"[a-z]*"' | head -1)"

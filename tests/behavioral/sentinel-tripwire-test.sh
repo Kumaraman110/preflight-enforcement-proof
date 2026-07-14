@@ -40,7 +40,10 @@ bad() { echo "FAIL: $1" >&2; FAIL=$((FAIL+1)); }
 # encoder subprocesses that dominate wall-clock on Windows/Git-Bash).
 run_bash_hook() {
   local cmd="$1" json
-  json="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"${cmd}\"}}"
+  # jq-build so a command embedding a sentinel/gate path (which is a BACKSLASH path D:\a\... on a
+  # windows-latest CI checkout) is escaped correctly; raw "${cmd}" interpolation made it invalid JSON there
+  # → engine jq-extract failed → the tripwire write-shape was not recognized (spurious FAIL, not a defect).
+  json="$(jq -n --arg c "$cmd" '{tool_name:"Bash",tool_input:{command:$c}}')"
   # _PFG_WATCHDOG_CHILD=1 drives the hook BODY directly, bypassing the Layer-1 self-watchdog re-exec —
   # same posture as the sibling pre-push-*-test.sh helpers. This isolates the tripwire DECISION logic
   # (what is under test) from the watchdog's 8s deadline, which a normal full-body run exceeds on this

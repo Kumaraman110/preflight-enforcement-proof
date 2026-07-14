@@ -42,7 +42,11 @@ bad() { echo "FAIL: $1" >&2; FAIL=$((FAIL+1)); }
 # that runs AS the watchdog child on a production host. (Same posture as the other pre-push-* tests.)
 run_hook() {
   local cmd="$1" json
-  json="{\"tool_name\":\"Bash\",\"tool_input\":{\"command\":\"${cmd}\"}}"
+  # jq-build the stdin JSON so a command carrying a Windows checkout path with BACKSLASHES (git -C
+  # D:\a\repo\repo\... push, on a windows-latest CI checkout) is escaped correctly. Raw "${cmd}"
+  # interpolation yields invalid JSON there → engine jq-extract fails → raw-blob fallback → the governed
+  # push is missed (a spurious test FAIL, not a product defect). jq -n --arg is byte-safe for any path.
+  json="$(jq -n --arg c "$cmd" '{tool_name:"Bash",tool_input:{command:$c}}')"
   OUT="$(printf '%s' "$json" | _PFG_WATCHDOG_CHILD=1 bash "$HOOK" 2>&1)"; RC=$?
 }
 

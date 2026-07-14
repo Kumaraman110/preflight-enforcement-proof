@@ -27,7 +27,14 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(cd "$HERE/.." && pwd)"
 OUT="${1:-$HOME/.preflight-fullsuite-verify}"
 RES="$OUT/results"; LOGS="$OUT/logs"; mkdir -p "$RES" "$LOGS"
-export TMPDIR="$OUT/tmp"; mkdir -p "$TMPDIR"
+# TMPDIR must be OUTSIDE the git checkout. Several tests create a `mktemp -d` scratch dir and assert it is
+# NOT inside any git repo (install-cwd-independence's "scratch cwd must not be in a git repo" precondition;
+# rubric-source-check's "--added in a non-git dir must exit 2"). When OUT is inside the repo checkout (as in
+# CI, where OUT=$GITHUB_WORKSPACE/verify-out), a TMPDIR under OUT would make every mktemp scratch dir a
+# DESCENDANT of the repo, so `git rev-parse` walks up and finds .git → those tests spuriously FAIL. Anchor
+# TMPDIR under $RUNNER_TEMP (CI) or $HOME (local) — never under the repo — and confirm it is non-git.
+_PF_TMP_BASE="${RUNNER_TEMP:-$HOME}"
+export TMPDIR="$_PF_TMP_BASE/.pf-fullsuite-tmp"; mkdir -p "$TMPDIR"
 MANIFEST="$OUT/MANIFEST.tsv"
 HEAVY_TO="${PF_HEAVY_TIMEOUT:-900}"     # 15 min for heavy engine tests
 LIGHT_TO="${PF_LIGHT_TIMEOUT:-300}"     # 5 min otherwise
