@@ -604,8 +604,17 @@ _pfg_ir_identify() {
     _PFG_IR_STATUS="EMPTY"; _PFG_IR_FAILCLOSED=1; _PFG_IR_FAIL_REASON="IR produced no output"; return 0
   fi
   # Ingest the fact lines with `read` (never eval; values came from OUR bounded child, but validate anyway).
+  # (rc.5 multi-push fix) STRIP a trailing CR from every fact line FIRST. On a Git-Bash/MSYS/cygwin host the
+  # bounded child's stdout `printf "...\n"` can be text-mode-translated to CRLF, so a captured line arrives as
+  # `PUSH 0 18\r`. Without the strip, `set -- $_l` leaves the CR attached to the end field (`18\r`), the
+  # numeric span validation `*[!0-9]*` then matches the CR and REJECTS the node as "malformed" — so a
+  # legitimate 2nd (or later) push node silently vanished from the count and the authoritative worst-wins loop
+  # never saw it (a multi-push fail-open on cygwin: `git push safe …; git push forbidden …` under-counted to 1
+  # push → the forbidden node dropped → CONFIRM/ALLOW instead of BLOCK). Byte-exact on LF-only hosts (no CR to
+  # strip). Mirrors the engine's other CR-normalization (git remote get-url `tr -d '\r'`, join-continuations).
   local _l _s _e
   while IFS= read -r _l; do
+    _l="${_l%$'\r'}"
     case "$_l" in
       "PUSH "*)
         set -- $_l   # PUSH <start> <end>

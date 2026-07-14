@@ -121,6 +121,21 @@ bash -c '
   printf "  ST=%s OP=%s CP=%s IP=%s\n" "$PFG_SS_STATUS" "$op" "$cp" "$ip"
 ' _ "$ROOT/lib/shell-structure.sh" "git push safe main; git push origin main" 2>&1 | head -8
 
+# RAW _facts BYTES: capture the engine's facts sub-block output EXACTLY as the engine does ($()+timeout) and
+# hexdump it, to see whether cygwin text-mode CRLF-translated the PUSH lines (the multi-push under-count cause).
+echo "  --- raw _facts bytes as the engine captures them (look for 0d = CR) ---"
+_ff="$(timeout 60 bash -c '
+  set +e
+  source "$1" 2>/dev/null || { echo "ST=PROTO"; exit 0; }
+  pfg_ss_parse "$2"
+  for ((i=0; i<PFG_SS_NODE_COUNT; i++)); do
+    b="$(pfg_ss_exec_basename "$i")"
+    if [ "$b" = git ]; then case " ${PFG_SS_SUBCMD[$i]} " in *" push "*) printf "PUSH %s %s\n" "${PFG_SS_START[$i]}" "${PFG_SS_END[$i]}" ;; esac; fi
+  done
+  printf "ST=%s\n" "$PFG_SS_STATUS"
+' _ "$ROOT/lib/shell-structure.sh" "git push safe main; git push origin main" 2>/dev/null)"
+printf '%s' "$_ff" | od -An -c | head -6 | sed 's/^/  /'
+
 echo "───────── benign literal MENTIONS of gh/git (expect ALLOW — over-block check) ─────────"
 decide "single-quoted group literal" "echo '( gh pr merge 12 --repo $FORB --merge )'"
 decide "single-quoted subst literal" "echo '\$(gh pr merge 12 --repo $FORB --merge)'"
