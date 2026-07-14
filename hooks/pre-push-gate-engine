@@ -206,6 +206,15 @@ fi
 _PFG_TAX_TRANSPARENT=" env sudo doas nice ionice chrt taskset flock command builtin nohup setsid timeout exec stdbuf setpriority eatmydata proot catchsegv unbuffer faketime torsocks watch "
 _PFG_TAX_REMOTE=" ssh docker podman kubectl nsenter chroot rlogin rsh slogin "
 _PFG_TAX_DATA=" echo printf grep egrep fgrep cat sed awk head tail cut tr wc sort uniq ls find test [ true false : dirname basename realpath readlink stat file wc "
+# DEFER set (rc.5 D2/D3 fix): a segment head that is a shell INTERPRETER (bash/sh/… -c) or a shell KEYWORD
+# (if/then/while/for/…) must NOT be turned into an UNKNOWN→CONFIRM verdict by this coarse pre-pass. A `bash -c
+# '<payload>'` is authoritatively handled by the FAST-INLINE static-recovery stage (BLOCKER-E, ~line 660),
+# which recovers the inner payload and re-drives THE SAME policy (inner forbidden → BLOCK, not CONFIRM). A
+# compound statement (`if …; then git push …; fi`, `while …; do … done`) is authoritatively handled by the IR
+# structural parser + the semicolon/&&/|| segmentation, which BLOCK a forbidden 2nd-position push. If the
+# taxonomy classified these as UNKNOWN it would pre-empt those precise paths and DOWNGRADE a correct BLOCK to
+# CONFIRM. So a shell interpreter/keyword head → DEFER (no verdict); the authoritative path decides.
+_PFG_TAX_SHELL=" bash sh dash zsh ash ksh mksh pdksh rbash bash.exe sh.exe if then else elif fi while until do done for case esac select function coproc time { } ! [[ ]] "
 
 # Peel a TRANSPARENT wrapper's own options/args off the front of a token array, in place, so the wrapped
 # program becomes the head. Sets _PFG_PEELED (the remaining "$@"-style array via _PFG_PEEL_OUT) and returns:
@@ -278,11 +287,23 @@ _pfg_tax_peel_one() {  # operates on the positional params; returns remaining to
 _pfg_wrapper_taxonomy() {  # $1 = the raw command string. Builtins only; bounded.
   local cmd="$1" _lf=$'\n' _cr=$'\r' seg
   # join line-continuations so a wrapped push split across lines is one segment (same as the router).
-  cmd="${cmd//$'\\'"$_cr$_lf"/ }"; cmd="${cmd//$'\\'"$_lf"/ }"
-  # segment on the separators visible without executing (mirror the router's coarse split).
+  # ROBUST CR handling (rc.5 D1 fix): on Git-Bash/MSYS/cygwin, stdin CRLF translation can DOUBLE the CR, so
+  # a `\`+CR+LF continuation can arrive as `\`+CR+CR+LF (observed 5c 0d 0d 0a on the windows-latest runner).
+  # The old single-`\`+CR+LF pattern then no-op'd, the segmentation below split on the SURVIVING LF, and the
+  # passthrough rewrite clobbered COMMAND with a `git \<CR>` fragment — DROPPING `push …` → silent ALLOW
+  # (a forbidden push reached the tool UNGATED). So FIRST squeeze any run of CRs immediately before an LF to
+  # nothing (CR-before-LF is only ever a line-ending artifact in a command), matching _pfg_join_continuations,
+  # THEN collapse the normalized `\`+LF. Pure parameter expansion; double-quoted literal patterns.
+  local _crlf="$_cr$_lf"
+  while case "$cmd" in *"$_crlf"*) true ;; *) false ;; esac; do cmd="${cmd//"$_crlf"/$_lf}"; done
+  cmd="${cmd//$'\\'"$_lf"/ }"
+  # segment on the STATEMENT separators visible without executing (mirror the router's coarse split). We do
+  # NOT split on grouping/subshell/substitution punctuation ( ) { } ` (rc.5 D4 fix): those are handled by the
+  # authoritative IR (real subshell/subst → HAS_COMPUTED/HAS_OPAQUE deterministic block) and the gh-pr
+  # detectors, which are quote-aware. Splitting on them here — BEFORE quote removal — shattered a benign
+  # single-quoted literal like  echo '( gh pr merge … )'  into a phantom `gh pr merge` segment (over-block).
   local _s="$cmd"
   _s="${_s//&&/$_lf}"; _s="${_s//||/$_lf}"; _s="${_s//|/$_lf}"; _s="${_s//;/$_lf}"; _s="${_s//&/$_lf}"
-  _s="${_s//(/$_lf}"; _s="${_s//)/$_lf}"; _s="${_s//\{/$_lf}"; _s="${_s//\}/$_lf}"; _s="${_s//\`/$_lf}"
   local _oldifs="$IFS" worst="passthrough" peeled_for_policy=""
   while IFS= read -r seg; do
     [ -n "$seg" ] || continue
@@ -316,6 +337,11 @@ _pfg_wrapper_taxonomy() {  # $1 = the raw command string. Builtins only; bounded
     [ "$#" -gt 0 ] || continue
     [ "$worst" = "unknown" ] && continue
     local prog="${1#\\}"; local base="${prog##*/}"; base="${base%.exe}"
+    # DEFER (rc.5 D2/D3): a shell interpreter (`bash -c …`) or a shell keyword (`then`/`do`/`if`/…) head is
+    # authoritatively decided by the FAST-INLINE recovery stage / the IR structural parser downstream — NOT
+    # by this coarse pre-pass. Emitting UNKNOWN→CONFIRM here would pre-empt them and downgrade a correct BLOCK.
+    # Skip this segment (no verdict); the precise path below still runs on the full COMMAND.
+    case "$_PFG_TAX_SHELL" in *" $base "*) continue ;; esac
     case " $base " in
       *" git "*|*" gh "*)
         # the wrapped/leading program IS the governed program → let the existing authoritative policy decide.

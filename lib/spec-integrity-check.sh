@@ -179,7 +179,15 @@ if [ "$HAS_CS" = true ]; then
     # record, with optional modifiers). The trailing `\b` keeps a REAL field whose TYPE merely STARTS with
     # a keyword (`public ClassRoom Building {`, `public Record Recorder {`) — those survive and are still
     # checked. After M7, MODEL_FIELDS = exactly the real-property set, which is what H5 should police.
-    MODEL_FIELDS=$(echo "$MODEL_FILES" | xargs grep -hE 'public[[:space:]]+[A-Za-z<>?]+[[:space:]]+[A-Z][a-zA-Z]+[[:space:]]*\{' 2>/dev/null | \
+    # (rc.5 D5 fix) Iterate MODEL_FILES per-line with a QUOTED path, not `echo "$MODEL_FILES" | xargs grep`.
+    # The old pipeline word-split any SOURCE_DIR path containing a SPACE or backslash (common on Windows, e.g.
+    # `C:\Users\Name\My Project\…`), handing grep broken path fragments → grep found nothing → MODEL_FIELDS
+    # empty → the Direction-2 source→spec forge-catch below silently never fired (a fail-open in the wire-
+    # contract integrity check). `find` emits one path per line; reading each quoted path is space/backslash-
+    # proof. (A path containing a literal newline is not a real .cs source layout; not a concern here.)
+    MODEL_FIELDS=$(while IFS= read -r _mf; do
+        [ -n "$_mf" ] && grep -hE 'public[[:space:]]+[A-Za-z<>?]+[[:space:]]+[A-Z][a-zA-Z]+[[:space:]]*\{' "$_mf" 2>/dev/null
+      done <<< "$MODEL_FILES" | \
       grep -vE 'public[[:space:]]+(abstract[[:space:]]+|sealed[[:space:]]+|partial[[:space:]]+|static[[:space:]]+)*(class|interface|struct|enum|record)\b' | \
       sed -E 's/.*public[[:space:]]+[A-Za-z<>?]+[[:space:]]+([A-Z][a-zA-Z]+)[[:space:]]*\{.*/\1/' | \
       sort -u || true)
