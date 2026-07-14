@@ -27,7 +27,7 @@
 #   preflight doctor --project <path>       # read-only hook-ownership report for another repo
 set -uo pipefail
 
-RELEASE_VERSION="v0.10.0-rc.4"
+RELEASE_VERSION="v0.10.0-rc.5"
 
 # ── Resolvable roots (overridable for isolated testing) ──────────────────────────────────────────────────
 PF_CLAUDE_HOME="${PREFLIGHT_CLAUDE_HOME:-$HOME/.claude}"

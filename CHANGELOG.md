@@ -3,6 +3,39 @@
 All notable changes to Preflight are recorded here. This project uses annotated tags on the
 `feature/preflight-framework` line; releases are cut as tags (see `docs/`).
 
+## v0.10.0-rc.5 — cygwin-toolchain certification hardening
+
+**Release candidate.** Cut after a full-suite certification on a quiet ephemeral `windows-latest` runner
+(bash 5.3.9-cygwin, jq 1.8.1, gawk 5.4.0) exposed defects that the primary dev host had masked. Linear
+descendant of `v0.10.0-rc.4` (`0f6660c`); rc.1–rc.4 tags remain immutable. Certified **109/109** on that
+runner (independent per-shard re-derivation).
+
+### Fixed — wrapper-taxonomy pre-emption (engine)
+- The rc.4 wrapper-taxonomy pre-pass ran too early/coarse and PRE-EMPTED the engine's precise paths,
+  producing several wrong decisions on the cygwin toolchain:
+  - **CRLF line-continuation fail-open**: a `git \<CR><LF>push <forbidden>` (cygwin doubles the CR) was
+    truncated by the taxonomy's segmentation and reached the tool UNGATED. Now the robust CR-squeeze runs
+    inside the taxonomy before segmentation.
+  - **`bash -c`/`sh -c`, `if`/`while`/`for`, `eval`/`xargs`** governed ops were downgraded BLOCK→CONFIRM;
+    now DEFERRED to the authoritative inline-`-c` recovery / IR / opaque-block, which BLOCK correctly.
+  - **Multi-push fail-open**: `git push <safe>; git push <forbidden>` recorded only the first (safe) push and
+    dropped the forbidden one — the taxonomy rewrote `COMMAND` for a BARE git segment (no wrapper peeled).
+    Now it rewrites only when a wrapper was actually peeled, so the IR enumerates every push node.
+  - **Over-block**: a benign single-quoted `echo '( gh pr merge … )'` was wrongly BLOCKED; grouping tokens
+    now defer to the quote-aware IR/gh-pr detectors.
+- **spec-integrity-check** wire-contract model scan used `echo "$MODEL_FILES" | xargs grep`, which word-split
+  a SOURCE_DIR path containing a space/backslash → the source→spec forge-catch silently never fired. Now a
+  NUL-safe per-file iteration.
+- **preflight-selfcheck** built the bootstrap-write-gate probe by raw-interpolating a temp path, so on any
+  Windows user's machine the backslash path made the probe invalid JSON and the tool FALSELY reported the
+  gate DEAD. Now jq-encoded.
+
+### Changed — test-suite portability (no product behavior change)
+- Hardened 13 behavioral/protocol tests that were fragile to a Windows/cygwin checkout path (`D:\a\…`
+  backslashes): build hook stdin with `jq`, normalize `mktemp` roots to forward slashes, read hashes so
+  coreutils can't escape a filename arg, emit the canonical result trailer, and replace two PyYAML-dependent
+  assertions with awk block-scans (PyYAML is absent on stock `windows-latest`).
+
 ## v0.10.0-rc.4 — final hardening release candidate
 
 **Release candidate — the final hardening RC before stable v0.10.0.** Linear descendant of `v0.10.0-rc.3`
