@@ -321,16 +321,18 @@ _pfg_wrapper_taxonomy() {  # $1 = the raw command string. Builtins only; bounded
     # strip leading VAR=val assignments (not a program).
     while [ "$#" -gt 0 ]; do case "$1" in [A-Za-z_]*=*) shift ;; *) break ;; esac; done
     [ "$#" -gt 0 ] || continue
-    # PEEL transparent wrappers (bounded, cycle-safe via the iteration cap).
-    local _iter=0 _prc
+    # PEEL transparent wrappers (bounded, cycle-safe via the iteration cap). Track whether a wrapper was
+    # ACTUALLY stripped for THIS segment (rc.5 multi-push fix): _peeled_this_seg=1 iff a peel happened.
+    local _iter=0 _prc _peeled_this_seg=0
     while [ "$#" -gt 0 ] && [ "$_iter" -lt 16 ]; do
       _iter=$((_iter+1))
       # capture status WITHOUT tripping `set -e` (a non-zero return is an expected control signal here).
       _prc=0; _pfg_tax_peel_one "$@" || _prc=$?
       case "$_prc" in
-        0) set -- "${_PFG_PEEL_OUT[@]}"; [ "$#" -gt 0 ] || break; continue ;;   # peeled → re-loop on wrapped
+        0) _peeled_this_seg=1; set -- "${_PFG_PEEL_OUT[@]}"; [ "$#" -gt 0 ] || break; continue ;;   # peeled → re-loop on wrapped
         3) # env -S / --split-string handed back a single string that is a whole command LINE — RE-SPLIT it
            # into words (env -S does its own whitespace split), then re-loop so the wrapped program is the head.
+           _peeled_this_seg=1
            { set -f; local _es="${_PFG_PEEL_OUT[0]:-}"; # shellcheck disable=SC2086
              set -- $_es; set +f; }
            { local _uq2 _ua2=(); for _uq2 in "$@"; do _uq2="${_uq2//\"/}"; _uq2="${_uq2//\'/}"; _ua2+=("$_uq2"); done; [ "${#_ua2[@]}" -gt 0 ] && set -- "${_ua2[@]}" || set --; }
@@ -351,8 +353,15 @@ _pfg_wrapper_taxonomy() {  # $1 = the raw command string. Builtins only; bounded
     case " $base " in
       *" git "*|*" gh "*)
         # the wrapped/leading program IS the governed program → let the existing authoritative policy decide.
-        # Record the peeled command so we can re-drive policy on the wrapped form if a wrapper was stripped.
-        [ -z "$peeled_for_policy" ] && peeled_for_policy="$*" ;;
+        # Record the peeled command to re-drive policy on the wrapped form — but ONLY when a wrapper was
+        # ACTUALLY peeled off THIS segment (rc.5 multi-push fix). Previously this recorded the FIRST git
+        # segment's tokens even for a BARE `git push` (no wrapper), and the passthrough rewrite then clobbered
+        # the whole COMMAND with just that one segment — so a multi-statement list `git push <safe>;
+        # git push <forbidden>` had its 2nd (forbidden) push DROPPED before the IR saw it (a multi-push
+        # fail-open: the authoritative worst-wins loop never evaluated the forbidden node). A bare git/gh
+        # segment must NOT rewrite COMMAND — the full multi-segment command flows unchanged to the IR, which
+        # enumerates every push node and worst-wins across them.
+        if [ "$_peeled_this_seg" = 1 ] && [ -z "$peeled_for_policy" ]; then peeled_for_policy="$*"; fi ;;
       *)
         # not git/gh at the head. Is it a remote executor, data-only, or unknown — with a governed token later?
         local _has_gov=0 tok
