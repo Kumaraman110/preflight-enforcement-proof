@@ -92,7 +92,9 @@ jobs:
     name: Full-suite (109 shards) against the fixed tree
     runs-on: windows-latest
     timeout-minutes: 360
-    needs: diagnose        # only run the expensive full suite if the behavioral fix proof passed
+    # NOTE: intentionally NOT gated on `diagnose` while iterating — I want the full-suite manifest AND the
+    # diagnose evidence from every run so I can see the complete remaining-failure picture in one shot. The
+    # diagnose job still fails loudly on any behavioral regression; it just does not block this job.
     defaults:
       run:
         shell: bash

@@ -64,13 +64,22 @@ echo "───────── MULTI-PUSH: safe 1st + forbidden 2nd (S10/S11 
 decide "multipush ; safe-then-forbidden" "git push safe main; git push origin main"
 decide "multipush && safe-then-forbidden" "git push safe main && git push origin main"
 decide "subshell forbidden push"          "( git push origin main )"
-# IR push-count trace for the multi-push semicolon case (instrumented engine).
-echo "  --- IR push-count trace (multipush ;) ---"
-IENG="$(mktemp)"
-awk '/^_pfg_ir_identify$/ && !t {print $0; print "printf '\''  DIAG@ir push=%s status=%s\\n'\'' \"$_PFG_IR_PUSH_COUNT\" \"$_PFG_IR_STATUS\" >&2"; t=1; next} {print}' "$ENGINE" > "$IENG"
+# IR push-count + per-node trace for the multi-push semicolon case. Instrument a copy of the engine that
+# PRESERVES lib resolution: mirror hooks/ + lib/ into a temp dir so the copy's ../lib/ resolves the IR
+# (a bare mktemp copy would set _PFG_SELF_DIR to a dir with no ../lib → spurious UNAVAIL).
+echo "  --- IR push-count + per-node trace (multipush ;) ---"
+IDIR="$(mktemp -d)"; mkdir -p "$IDIR/hooks" "$IDIR/lib"
+cp "$ROOT/hooks/pre-push-gate-engine" "$IDIR/hooks/pre-push-gate-engine"
+cp "$ROOT"/lib/*.sh "$ROOT"/lib/*.awk "$IDIR/lib/" 2>/dev/null || true
+# trace: IR push count/status right after identify, and each per-node span slice in the authoritative loop.
+awk '
+  /^_pfg_ir_identify$/ && !t1 {print $0; print "printf '\''  DIAG@ir push=%s status=%s opq=%s cmp=%s\\n'\'' \"$_PFG_IR_PUSH_COUNT\" \"$_PFG_IR_STATUS\" \"$_PFG_IR_HAS_OPAQUE\" \"$_PFG_IR_HAS_COMPUTED\" >&2"; t1=1; next}
+  /for _pfg_span in "\$\{_PFG_IR_PUSH_SPANS\[@\]\}"; do/ && !t2 {print $0; print "printf '\''  DIAG@node span=%s\\n'\'' \"$_pfg_span\" >&2"; t2=1; next}
+  {print}
+' "$ROOT/hooks/pre-push-gate-engine" > "$IDIR/hooks/pre-push-gate-engine"
 _mpj="$(jq -n --arg c 'git push safe main; git push origin main' '{tool_name:"Bash",tool_input:{command:$c}}')"
-( cd "$REPO" && printf '%s' "$_mpj" | PATH="$SHIM:$PATH" _PFG_WATCHDOG_CHILD=1 CLAUDE_PROJECT_DIR="$REPO" PREFLIGHT_ENGINE_DEADLINE=60 bash "$IENG" 2>&1 | grep -aE 'DIAG@ir|BLOCKED|permissionDecision' | head -3 | sed 's/^/  /' )
-rm -f "$IENG" 2>/dev/null || true
+( cd "$REPO" && printf '%s' "$_mpj" | PATH="$SHIM:$PATH" _PFG_WATCHDOG_CHILD=1 CLAUDE_PROJECT_DIR="$REPO" PREFLIGHT_ENGINE_DEADLINE=60 bash "$IDIR/hooks/pre-push-gate-engine" 2>&1 | grep -aE 'DIAG@|BLOCKED|permissionDecision' | head -6 | sed 's/^/  /' )
+rm -rf "$IDIR" 2>/dev/null || true
 
 echo "───────── benign literal MENTIONS of gh/git (expect ALLOW — over-block check) ─────────"
 decide "single-quoted group literal" "echo '( gh pr merge 12 --repo $FORB --merge )'"
