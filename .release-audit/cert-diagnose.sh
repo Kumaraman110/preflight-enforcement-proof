@@ -81,6 +81,20 @@ _mpj="$(jq -n --arg c 'git push safe main; git push origin main' '{tool_name:"Ba
 ( cd "$REPO" && printf '%s' "$_mpj" | PATH="$SHIM:$PATH" _PFG_WATCHDOG_CHILD=1 CLAUDE_PROJECT_DIR="$REPO" PREFLIGHT_ENGINE_DEADLINE=60 bash "$IDIR/hooks/pre-push-gate-engine" 2>&1 | grep -aE 'DIAG@|BLOCKED|permissionDecision' | head -6 | sed 's/^/  /' )
 rm -rf "$IDIR" 2>/dev/null || true
 
+# DIRECT LEXER PROBE (bypass the engine): dump PFG_SS_NODE_COUNT + each git-push node + the raw PUSH lines the
+# engine's IR-identify would ingest. This isolates whether gawk 5.4 emits 2 push nodes or 1 for a `;` list.
+echo "  --- direct lexer node dump for 'git push safe main; git push origin main' ---"
+bash -c '
+  set +e
+  source "'"$ROOT"'/lib/shell-structure.sh" 2>/dev/null || { echo "  (lib source failed)"; exit 0; }
+  pfg_ss_parse "git push safe main; git push origin main"
+  echo "  STATUS=$PFG_SS_STATUS NODE_COUNT=$PFG_SS_NODE_COUNT"
+  for ((i=0; i<PFG_SS_NODE_COUNT; i++)); do
+    b="$(pfg_ss_exec_basename "$i" 2>/dev/null)"
+    printf "  node %s: base=%s subcmd=[%s] ctx=%s opacity=%s span=%s:%s\n" "$i" "$b" "${PFG_SS_SUBCMD[$i]:-}" "${PFG_SS_CTX[$i]:-}" "${PFG_SS_OPACITY[$i]:-}" "${PFG_SS_START[$i]:-}" "${PFG_SS_END[$i]:-}"
+  done
+' 2>&1 | head -12
+
 echo "───────── benign literal MENTIONS of gh/git (expect ALLOW — over-block check) ─────────"
 decide "single-quoted group literal" "echo '( gh pr merge 12 --repo $FORB --merge )'"
 decide "single-quoted subst literal" "echo '\$(gh pr merge 12 --repo $FORB --merge)'"
