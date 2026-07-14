@@ -220,7 +220,12 @@ _PFG_TAX_DATA=" echo printf grep egrep fgrep cat sed awk head tail cut tr wc sor
 # token reaches this classifier as a segment head (e.g. because we no longer SEGMENT on `(`/`)`), it must
 # DEFER — turning it into UNKNOWN→CONFIRM would BOTH over-block a benign quoted literal AND downgrade a real
 # subshell BLOCK to CONFIRM. (A `(` inside a single quote never becomes a head — the head is `echo`, DATA-ONLY.)
-_PFG_TAX_SHELL=" bash sh dash zsh ash ksh mksh pdksh rbash bash.exe sh.exe if then else elif fi while until do done for case esac select function coproc time { } ( ) ! [[ ]] "
+# Also DEFER the runtime-indirection programs `eval`/`xargs` (rc.5): the engine's inline-payload classifier
+# flags a LEADING eval/xargs as __OPAQUE__ → a DETERMINISTIC BLOCK (a governed op inside cannot be statically
+# resolved). If the taxonomy instead classified `eval "gh pr merge …"` as UNKNOWN→CONFIRM it would pre-empt
+# that deterministic block and downgrade it to a mere CONFIRM (the E27/E29 eval cases). Deferring lets the
+# authoritative opaque-block fire.
+_PFG_TAX_SHELL=" bash sh dash zsh ash ksh mksh pdksh rbash bash.exe sh.exe eval xargs if then else elif fi while until do done for case esac select function coproc time { } ( ) ! [[ ]] "
 
 # Peel a TRANSPARENT wrapper's own options/args off the front of a token array, in place, so the wrapped
 # program becomes the head. Sets _PFG_PEELED (the remaining "$@"-style array via _PFG_PEEL_OUT) and returns:

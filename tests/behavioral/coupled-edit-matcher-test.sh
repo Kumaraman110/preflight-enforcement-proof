@@ -54,7 +54,10 @@ fi
 WS="$(mktemp -d)/repo"; mkdir -p "$WS/.preflight/gate"
 ( cd "$WS" && git init -q ) >/dev/null 2>&1
 write_rc() {  # $1 = file_path; drive the gate with a WRITE-shape tool_input (file_path + content, no old/new_string)
-  ( cd "$WS" && printf '%s' "{\"tool_name\":\"Write\",\"tool_input\":{\"file_path\":\"$1\",\"content\":\"whole file rewrite\"}}" | bash "$GATE" >/dev/null 2>&1; echo $? )
+  # jq-build so a file_path carrying a Windows checkout path with BACKSLASHES (D:\a\… on windows-latest CI)
+  # is escaped to valid JSON; raw "$1" interpolation produced invalid JSON there → the gate could not read
+  # tool_input.file_path → the coupled-file Write was not gated (spurious FAIL, not a product defect).
+  ( cd "$WS" && printf '%s' "$(jq -n --arg f "$1" '{tool_name:"Write",tool_input:{file_path:$f,content:"whole file rewrite"}}')" | bash "$GATE" >/dev/null 2>&1; echo $? )
 }
 printf '[{"files":["Services/TokenProvider.cs"],"findings":["x"],"acknowledged":false}]' > "$WS/.preflight/gate/active-groups.json"
 [ "$(write_rc "$WS/Services/TokenProvider.cs")" = 2 ] \
