@@ -95,6 +95,32 @@ bash -c '
   done
 ' 2>&1 | head -12
 
+# RAW FACTS EMISSION: replicate the engine's EXACT facts sub-block (lines ~563-597) and dump the PUSH lines it
+# emits. If the lexer has NODE_COUNT=2 but this emits ONE PUSH line, the bug is in the emission for-loop /
+# pfg_ss_exec_basename on gawk 5.4; if it emits TWO but the engine counts 1, the bug is the <<< ingestion.
+echo "  --- raw engine facts emission (should print two PUSH lines) ---"
+bash -c '
+  set +e
+  source "$1" 2>/dev/null || { echo "  ST=PROTO"; exit 0; }
+  pfg_ss_parse "$2"
+  op=0; cp=0; ip=0
+  inctx() { local n="$1"; while [ "$n" != -1 ]; do [ "${PFG_SS_CTX[$n]}" = INLINE_SHELL ] && { echo 1; return; }; n="${PFG_SS_PARENT[$n]}"; done; echo 0; }
+  for ((i=0; i<PFG_SS_NODE_COUNT; i++)); do
+    [ "${PFG_SS_OPACITY[$i]}" = OPAQUE ] && op=1
+    if [ "${PFG_SS_OPACITY[$i]}" != OPAQUE ]; then
+      b="$(pfg_ss_exec_basename "$i")"
+      if [ "$b" = git ]; then
+        case " ${PFG_SS_SUBCMD[$i]} " in
+          *" push "*|*" push ")
+            if [ "${PFG_SS_CTX[$i]}" = INLINE_SHELL ] || [ "$(inctx "${PFG_SS_PARENT[$i]}")" = 1 ]; then ip=1
+            else printf "  PUSH %s %s\n" "${PFG_SS_START[$i]}" "${PFG_SS_END[$i]}"; fi ;;
+        esac
+      fi
+    fi
+  done
+  printf "  ST=%s OP=%s CP=%s IP=%s\n" "$PFG_SS_STATUS" "$op" "$cp" "$ip"
+' _ "$ROOT/lib/shell-structure.sh" "git push safe main; git push origin main" 2>&1 | head -8
+
 echo "───────── benign literal MENTIONS of gh/git (expect ALLOW — over-block check) ─────────"
 decide "single-quoted group literal" "echo '( gh pr merge 12 --repo $FORB --merge )'"
 decide "single-quoted subst literal" "echo '\$(gh pr merge 12 --repo $FORB --merge)'"
