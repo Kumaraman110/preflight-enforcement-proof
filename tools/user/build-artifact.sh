@@ -22,11 +22,19 @@ HOOKS="run-hook.cmd user-preflight-router pre-bash-risk-router pre-push-gate-eng
 # artifact (e.g. hook-arbitration.sh absent → the user router can't classify ownership).
 LIBS="config-overlay.sh heartbeat.sh shell-structure.sh shell-structure-lexer.awk hook-arbitration.sh"
 
-STAGE="$(mktemp -d)/preflight-user"; mkdir -p "$STAGE/hooks" "$STAGE/lib"
+STAGE="$(mktemp -d)/preflight-user"; mkdir -p "$STAGE/hooks" "$STAGE/lib" "$STAGE/cli"
 for h in $HOOKS; do git -C "$SRC" show "${SHA}:hooks/${h}" > "$STAGE/hooks/${h}"; done
 for l in $LIBS;  do git -C "$SRC" show "${SHA}:lib/${l}"   > "$STAGE/lib/${l}";   done
 git -C "$SRC" archive "$SHA" verifier protocol 2>/dev/null | tar -x -C "$STAGE" 2>/dev/null || true
 git -C "$SRC" show "${SHA}:tools/user/dispatcher.cmd" > "$STAGE/dispatcher.cmd"
+# v0.10.1: BUNDLE the management CLI inside the artifact (cli/preflight-user.sh). Before this, the artifact
+# carried only the runtime closure, so a from-artifact install/upgrade had no CLI to stage — the on-PATH
+# `preflight` command stayed at the OLD version while the runtime swapped (the v0.10.0 missing-CLI defect).
+# The CLI now travels WITH the generation, is covered by RUNTIME_MANIFEST.json + ARTIFACT_MANIFEST.json
+# (both walk the stage), and the installer syncs the stable on-PATH CLI from it. A missing CLI is fatal.
+git -C "$SRC" cat-file -e "${SHA}:tools/preflight-user.sh" 2>/dev/null || { echo "FATAL: tools/preflight-user.sh missing at $SHA — cannot build artifact without the CLI" >&2; exit 1; }
+git -C "$SRC" show "${SHA}:tools/preflight-user.sh" > "$STAGE/cli/preflight-user.sh"
+chmod +x "$STAGE/cli/preflight-user.sh" 2>/dev/null || true
 printf '%s\n' "$SHA" > "$STAGE/SOURCE_COMMIT"
 printf '%s\n' "$VER" > "$STAGE/RELEASE_VERSION"
 printf '%s\n' "$VER" > "$STAGE/VERSION"
@@ -69,6 +77,8 @@ json.dump({"bomFormat":"CycloneDX-min","specVersion":"1.5","metadata":{
             "properties":[{"name":"sourceRepo","value":"preflight"},{"name":"sourceCommit","value":sha}]},
            "components":[
              {"type":"application","name":"preflight-user-runtime","version":ver},
+             {"type":"application","name":"preflight-user-cli","version":ver,
+              "properties":[{"name":"path","value":"cli/preflight-user.sh"}]},
              {"type":"library","name":"bash"},{"type":"library","name":"git"},
              {"type":"library","name":"jq"},{"type":"library","name":"python3"}],
            "note":"stdlib-only Python; no third-party pip dependencies"},

@@ -130,10 +130,13 @@ cmd_install(){
   # ---- Idempotent: identical gen present + active + registered EXACTLY ONCE + intact → no-op success.
   #      If duplicate preflight entries exist (review IF2), do NOT short-circuit — fall through so the
   #      dedup merge collapses them. ----
+  # v0.10.1: also require the stable on-PATH CLI to already be in lockstep with this generation's bundled
+  # CLI — otherwise a re-install of the SAME ref (the natural repair for a stale CLI) would short-circuit
+  # and never re-sync. If the CLI drifts (or the gen predates the bundle), fall through to the full path.
   if [ -d "$GEN_DIR" ] && [ -f "$PF_ACTIVE" ] && [ "$(tr -d ' \t\r\n' < "$PF_ACTIVE")" = "$RESOLVED_SHA" ] && [ "$(_registration_count)" = 1 ]; then
-    if _verify_manifest "$GEN_DIR" "$PY"; then
+    if _verify_manifest "$GEN_DIR" "$PY" && [ -f "$GEN_DIR/cli/preflight-user.sh" ] && [ -f "$PF_CLI" ] && cmp -s "$GEN_DIR/cli/preflight-user.sh" "$PF_CLI"; then
       rm -rf "$STAGE_PARENT"
-      echo "preflight-user: already installed + active at $RESOLVED_SHA ($GEN_VERSION) — no changes."
+      echo "preflight-user: already installed + active at $RESOLVED_SHA ($GEN_VERSION), CLI in lockstep — no changes."
       return 0
     fi
   fi
@@ -146,13 +149,21 @@ cmd_install(){
   # capture prior pointers for rollback-on-failure
   local PRIOR_ACTIVE=""; [ -f "$PF_ACTIVE" ] && PRIOR_ACTIVE="$(tr -d ' \t\r\n' < "$PF_ACTIVE")"
   local PRIOR_PREVIOUS=""; [ -f "$PF_PREVIOUS" ] && PRIOR_PREVIOUS="$(tr -d ' \t\r\n' < "$PF_PREVIOUS")"
+  # v0.10.1: back up the current stable CLI bytes so the rollback can restore the CLI in lockstep with the
+  # pointer restore — otherwise a failure AFTER _sync_stable_cli (e.g. in _register_settings) would leave the
+  # NEW CLI live against the RESTORED old ACTIVE runtime: exactly the version-mismatch this release closes.
+  local CLI_RESTORE="none"
+  if [ -f "$PF_CLI" ]; then cp "$PF_CLI" "$BK/cli-preflight-user.sh"; CLI_RESTORE="file"; fi
 
-  # ---- Failure trap: restore settings + pointers EXACTLY, drop the half-staged generation ----
+  # ---- Failure trap: restore settings + pointers + CLI EXACTLY, drop the half-staged generation ----
   _install_rollback(){
     _err "install failed — restoring prior state"
     if [ "$RESTORE_KIND" = "file" ]; then cp "$BK/settings.json" "$PF_SETTINGS"; else rm -f "$PF_SETTINGS"; fi
     [ -n "$PRIOR_ACTIVE" ] && printf '%s\n' "$PRIOR_ACTIVE" > "$PF_ACTIVE" || rm -f "$PF_ACTIVE" 2>/dev/null || true
     [ -n "$PRIOR_PREVIOUS" ] && printf '%s\n' "$PRIOR_PREVIOUS" > "$PF_PREVIOUS" || rm -f "$PF_PREVIOUS" 2>/dev/null || true
+    # restore the stable CLI bytes (if we had a prior CLI); if this was a fresh install there was none → remove
+    if [ "$CLI_RESTORE" = "file" ]; then cp "$BK/cli-preflight-user.sh" "$PF_CLI" 2>/dev/null || true; chmod +x "$PF_CLI" 2>/dev/null || true
+    else rm -f "$PF_CLI" 2>/dev/null || true; fi
     # remove the just-staged gen only if it was NOT a pre-existing active generation
     [ "$PRIOR_ACTIVE" = "$RESOLVED_SHA" ] || rm -rf "$GEN_DIR" 2>/dev/null || true
     rm -rf "$STAGE_PARENT" 2>/dev/null || true
@@ -170,16 +181,14 @@ cmd_install(){
   cp "$STAGE/dispatcher.cmd" "$PF_DISPATCH" 2>/dev/null || cp "$GEN_DIR/dispatcher.cmd" "$PF_DISPATCH"
   chmod +x "$PF_DISPATCH" 2>/dev/null || true
 
-  # stable management CLI + the `preflight` launcher on PATH (version-independent, like the dispatcher).
-  # Stage the CLI from the INSTALL SOURCE so an upgrade propagates the ref's CLI (review D4). For a git
-  # install, extract the ref's tools/preflight-user.sh; for an artifact/no-source install, fall back to the
-  # running script (the self-copy guard in _install_cli_and_launcher makes a launcher-driven re-run safe).
-  local _cli_src=""
-  if [ -z "$ARTIFACT" ] && [ -n "${SRC_REPO:-}" ] && git -C "$SRC_REPO" cat-file -e "${RESOLVED_SHA}:tools/preflight-user.sh" 2>/dev/null; then
-    _cli_src="$STAGE_PARENT/preflight-user.cli.sh"
-    git -C "$SRC_REPO" show "${RESOLVED_SHA}:tools/preflight-user.sh" > "$_cli_src" 2>/dev/null || _cli_src=""
-  fi
-  _install_cli_and_launcher "$_cli_src" || _err "warning: CLI/launcher install incomplete (runtime is still active)"
+  # stable management CLI (synced FROM the just-promoted immutable generation) + the on-PATH launcher.
+  # v0.10.1: the CLI travels inside the generation (cli/preflight-user.sh, staged by _stage_from_git for a
+  # git install and carried in the artifact for a from-artifact install), so BOTH install paths sync the
+  # same source and an upgrade always moves the CLI in lockstep with the runtime. This sync is part of the
+  # ATOMIC transaction: a failure here trips the ERR trap and rolls back settings + pointers + the staged
+  # generation, so the runtime and CLI can never be left half-swapped (the CLI-version-lag defect class).
+  _sync_stable_cli "$GEN_DIR" || { _err "CLI sync from generation failed — rolling back"; false; }
+  _install_launcher || _err "warning: on-PATH launcher write incomplete (CLI + runtime are installed and active)"
 
   # ---- Pointer swap = the commit point. PREVIOUS <- old ACTIVE ; ACTIVE <- new sha ----
   if [ -n "$PRIOR_ACTIVE" ] && [ "$PRIOR_ACTIVE" != "$RESOLVED_SHA" ]; then printf '%s\n' "$PRIOR_ACTIVE" > "$PF_PREVIOUS.tmp"; mv "$PF_PREVIOUS.tmp" "$PF_PREVIOUS"; fi
@@ -215,6 +224,13 @@ _stage_from_git(){ # $1 src repo  $2 sha  $3 stage
   # dispatcher ships WITH the generation (also copied to the stable path on activation)
   cp "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/user/dispatcher.cmd" "$st/dispatcher.cmd" 2>/dev/null \
     || git -C "$src" show "${sha}:tools/user/dispatcher.cmd" > "$st/dispatcher.cmd" 2>/dev/null || { _err "dispatcher.cmd unavailable"; return 1; }
+  # v0.10.1: the management CLI ships WITH the generation (cli/preflight-user.sh). It is covered by the
+  # generation manifest and is the single source the stable on-PATH CLI is synced from — so an upgrade
+  # (git OR artifact) always moves the CLI in lockstep with the runtime (fixes the v0.10.0 CLI-version lag).
+  mkdir -p "$st/cli"
+  git -C "$src" cat-file -e "${sha}:tools/preflight-user.sh" 2>/dev/null || { _err "tools/preflight-user.sh missing at ${sha}"; return 1; }
+  git -C "$src" show "${sha}:tools/preflight-user.sh" > "$st/cli/preflight-user.sh" || return 1
+  chmod +x "$st/cli/preflight-user.sh" 2>/dev/null || true
   chmod +x "$st/hooks/"* "$st/dispatcher.cmd" 2>/dev/null || true
   return 0
 }
@@ -345,31 +361,34 @@ _register_settings(){ # $1 py
 }
 
 # ═══════════════════════════════ CLI + LAUNCHER ════════════════════════════════════════════════════════
-# Install a STABLE copy of the management CLI at $PF_CLI and a thin `preflight` launcher on PATH that execs
-# it. The launcher path never changes across upgrades; only $PF_CLI's contents refresh. Best-effort: a
-# failure here never aborts a successful runtime activation (the runtime is what governs; the launcher is UX).
+# v0.10.1 model: the management CLI ships INSIDE each immutable generation (runtime/<sha>/cli/preflight-user.sh,
+# covered by RUNTIME_MANIFEST.json). The stable on-PATH copy at $PF_CLI is SYNCED FROM THE ACTIVE GENERATION on
+# every install AND every rollback — so `preflight version` can never lag the runtime again (the v0.10.0 defect:
+# a from-artifact upgrade swapped the runtime but had no CLI to stage, leaving the old CLI in place). The sync
+# is ATOMIC (stage a temp beside $PF_CLI, then mv) and, during install, FATAL (rolled back with the runtime);
+# the on-PATH launcher write stays best-effort (version-independent UX, not the governing surface).
 #
-# $1 (optional) = the CLI script to stage into $PF_CLI. cmd_install passes the CLI from the INSTALL SOURCE
-# (the ref's committed tools/preflight-user.sh) so an UPGRADE actually propagates new CLI code (review D4:
-# when invoked via the launcher, BASH_SOURCE is the OLD installed $PF_CLI, so copying "self" would stage the
-# old CLI onto itself — new CLI bugfixes would never land, and `cp self self` errored out with a scary
-# "install incomplete" warning). If no source is given, fall back to the running script, but NEVER cp a file
-# onto itself (skip the copy when it already IS $PF_CLI).
-_install_cli_and_launcher(){
-  local cli_src="${1:-}" self bindir launcher
-  self="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
-  [ -n "$cli_src" ] && [ -f "$cli_src" ] || cli_src="$self"
+# _sync_stable_cli <gen-dir>: copy the generation's bundled CLI to $PF_CLI atomically. Returns non-zero on any
+# failure so the caller can decide (install → fatal+rollback; rollback → warn). NEVER cp a file onto itself.
+_sync_stable_cli(){ # $1 = generation dir
+  local gen="$1"; local cli_src="$gen/cli/preflight-user.sh"
+  [ -f "$cli_src" ] || { _err "generation $gen has no bundled cli/preflight-user.sh"; return 1; }
   mkdir -p "$(dirname "$PF_CLI")" || return 1
-  # Stage the CLI into the stable location. Resolve both sides to absolute real paths so a self-copy is
-  # detected regardless of symlinks/relative spelling; skip the copy (not an error) when they are the SAME
-  # file (launcher re-running the already-installed CLI with no distinct source).
   local src_abs dst_abs
   src_abs="$(cd "$(dirname "$cli_src")" 2>/dev/null && pwd)/$(basename "$cli_src")"
   dst_abs="$(cd "$(dirname "$PF_CLI")" 2>/dev/null && pwd)/$(basename "$PF_CLI")"
-  if [ "$src_abs" != "$dst_abs" ]; then
-    cp "$cli_src" "$PF_CLI" 2>/dev/null || return 1
-  fi
-  chmod +x "$PF_CLI" 2>/dev/null || true
+  if [ "$src_abs" = "$dst_abs" ]; then chmod +x "$PF_CLI" 2>/dev/null || true; return 0; fi
+  local tmp="$PF_CLI.stage.$$"
+  cp "$cli_src" "$tmp" 2>/dev/null || { _err "failed to stage CLI from $cli_src"; rm -f "$tmp" 2>/dev/null; return 1; }
+  chmod +x "$tmp" 2>/dev/null || true
+  mv -f "$tmp" "$PF_CLI" 2>/dev/null || { _err "failed to activate staged CLI"; rm -f "$tmp" 2>/dev/null; return 1; }
+  return 0
+}
+
+# _install_launcher: write the thin `preflight` launcher (+ Windows .cmd) on PATH. Best-effort UX; the launcher
+# path never changes across upgrades — it hard-codes ONLY the stable $PF_CLI path, so upgrades never rewrite it.
+_install_launcher(){
+  local bindir launcher
   bindir="$(_pf_bin_dir)"; mkdir -p "$bindir" || return 1
   launcher="$bindir/preflight"
   # Thin polyglot launcher: on Git-Bash/Unix it execs the stable CLI with bash; it forwards all args and
@@ -556,6 +575,20 @@ cmd_verify(){
     v[0-9]*) if [ "$ver" = "$RELEASE_VERSION" ]; then echo "OK version $ver"; else echo "OK version $ver (active generation differs from CLI $RELEASE_VERSION — expected after a rollback)"; fi ;;
     *) _err "active generation has no valid RELEASE_VERSION"; rc=1 ;;
   esac
+  # v0.10.1: CLI / runtime lockstep. The stable on-PATH CLI ($PF_CLI) MUST be byte-identical to the ACTIVE
+  # generation's bundled cli/preflight-user.sh — that is the invariant a from-artifact upgrade violated in
+  # v0.10.0 (runtime swapped, CLI stale). If the generation bundles a CLI and it drifts from $PF_CLI, that is
+  # a real integrity fault (FAIL). A generation predating the bundle (no cli/, e.g. an older rolled-back gen)
+  # is exempted with a note — its runtime still governs; there is simply nothing to compare against.
+  if [ -f "$gen/cli/preflight-user.sh" ]; then
+    if [ -f "$PF_CLI" ] && cmp -s "$gen/cli/preflight-user.sh" "$PF_CLI"; then
+      echo "OK CLI in lockstep with active generation"
+    else
+      _err "CLI/runtime MISMATCH: on-PATH CLI ($PF_CLI) differs from the active generation's bundled CLI — run 'preflight install --user --ref <ACTIVE>' or 'rollback' to re-sync"; rc=1
+    fi
+  else
+    echo "OK (active generation predates the bundled CLI — CLI lockstep check skipped)"
+  fi
   [ "$rc" = 0 ] && echo "VERIFY: PASS" || echo "VERIFY: FAIL"
   return $rc
 }
@@ -681,6 +714,15 @@ cmd_rollback(){
   # swap: ACTIVE <- prev ; PREVIOUS <- cur (so a second rollback returns)
   printf '%s\n' "$prev" > "$PF_ACTIVE.tmp"; mv "$PF_ACTIVE.tmp" "$PF_ACTIVE"
   [ -n "$cur" ] && { printf '%s\n' "$cur" > "$PF_PREVIOUS.tmp"; mv "$PF_PREVIOUS.tmp" "$PF_PREVIOUS"; }
+  # v0.10.1: re-sync the stable on-PATH CLI from the now-active generation so `preflight version` reports the
+  # rolled-back version, not the version that happened to be installed last. The generation was manifest-
+  # verified above, so its bundled cli/ is trusted. A generation predating the bundled-CLI change (no cli/)
+  # keeps the current CLI (best-effort) — the runtime, which governs, is still correctly rolled back.
+  if [ -f "$gen/cli/preflight-user.sh" ]; then
+    _sync_stable_cli "$gen" || _err "warning: CLI re-sync after rollback incomplete (runtime IS rolled back to $prev)"
+  else
+    _err "note: generation $prev predates the bundled CLI (v0.10.1) — leaving the current management CLI in place"
+  fi
   echo "preflight-user: rolled back → ACTIVE=$prev (was $cur)"
   return 0
 }
