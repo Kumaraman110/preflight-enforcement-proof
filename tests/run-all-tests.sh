@@ -1632,6 +1632,22 @@ run_behavioral_tests() {
   else
     yellow "SKIP: release-version-coupling-test.sh not found"
   fi
+
+  # ── v0.11 result-code wire-contract parity + learning-loop promotion gate. The rule adjudicated from
+  # the real PR-12 CPSL SessionToken finding must catch the equivalent Service N+1 drift and pass the
+  # corrected fixture, and rule promotion must be gated by a distinct-approver signed approval (the
+  # producer cannot self-promote). Protects the survival-thesis artifact against regression. ──
+  local rcp_test="$SCRIPT_DIR/behavioral/resultcode-parity-loop-test.sh"
+  if [ -f "$rcp_test" ]; then
+    if bash "$rcp_test"; then
+      PASSES=$((PASSES + 5))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: resultcode-parity-loop tests failed (the parity rule must catch introduced/dropped result codes and pass the corrected fixture; promotion must require a distinct-approver signed approval — no self-promotion)"
+    fi
+  else
+    yellow "SKIP: resultcode-parity-loop-test.sh not found"
+  fi
 }
 
 # ═══════════════════════════════════════════════════════════════
