@@ -39,8 +39,12 @@ command -v tar >/dev/null 2>&1 || { bad "tar required"; trailer; exit $?; }
 [ -f "$CLI_SRC" ] || { bad "CLI source missing at $CLI_SRC"; trailer; exit $?; }
 [ -f "$BUILD" ]   || { bad "build-artifact.sh missing at $BUILD"; trailer; exit $?; }
 
-# All scratch normalized to forward slashes (cygwin resolves \ and / identically; / is JSON/argv safe).
-ROOT="$(mktemp -d)"; ROOT="${ROOT//\\//}"
+# Scratch must be a POSIX path: on the windows-latest runner TMPDIR is a drive-qualified BACKSLASH path
+# (D:\a\_temp), so mktemp -d yields backslashes that break `tar -C` and git worktree paths. cygpath -u
+# converts the whole path correctly (a naive `${ROOT//\\//}` eats the separator after the drive letter,
+# e.g. `_temp\tmp.X` -> `_temptmp.X`). Off-cygwin (real POSIX) mktemp is already clean.
+ROOT="$(mktemp -d)"
+if command -v cygpath >/dev/null 2>&1; then ROOT="$(cygpath -u "$ROOT" 2>/dev/null || printf '%s' "$ROOT")"; fi
 OUT="$ROOT/out"; mkdir -p "$OUT"
 HEADSHA="$(git -C "$SRC_REPO" rev-parse HEAD)"
 
