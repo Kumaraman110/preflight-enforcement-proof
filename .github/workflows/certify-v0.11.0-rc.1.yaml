@@ -1,0 +1,141 @@
+---
+# certify-v0.11.0-rc.1 — AIRTIGHT full-suite certification of the v0.11 Enterprise Pilot RC on a quiet
+# windows-latest runner (bash cygwin), the sanctioned qualification environment. Two jobs:
+#   • diagnose   — proves the v0.11 additions behaviorally: the result-code wire-contract parity rule +
+#                  learning-loop promotion gate (resultcode-parity-loop-test 5/5), and that the tree
+#                  descends from v0.10.1 with the gate/push-safety surface BYTE-IDENTICAL (this RC does
+#                  not change the local-core enforcement engine).
+#   • full-suite — the full 111-shard verifier against the RC tree (104 behavioral + 7 in-file).
+#                  Must be 111/111 unique PASS for v0.11.0-rc.1 to cut.
+# Push-triggered on the v0.11 branch; permissions: contents:read; no continue-on-error; a
+# timeout/cancel/missing-output is NEVER a pass; exits success only for exactly 111 unique PASS.
+name: Certify v0.11.0-rc.1
+
+on:
+  push:
+    branches:
+      - feature/v0.11-enterprise-pilot
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: certify-v0110rc1-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  GIT_AUTHOR_NAME: Preflight Certify
+  GIT_AUTHOR_EMAIL: certify@preflight.test
+  GIT_COMMITTER_NAME: Preflight Certify
+  GIT_COMMITTER_EMAIL: certify@preflight.test
+  # v0.10.1 tag commit — the RC must descend from it with the gate surface byte-identical.
+  PRIOR_COMMIT: c47c1bb24c7a98b991f94c0464d34cfa0d7f45c8
+
+jobs:
+  diagnose:
+    name: Behavioral proof of the v0.11 additions (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout v0.11 branch
+        uses: actions/checkout@v4
+        with:
+          ref: feature/v0.11-enterprise-pilot
+          fetch-depth: 0
+      - name: PROVE descent from v0.10.1 + gate surface byte-identical (no local-core change)
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor "$PRIOR_COMMIT" HEAD || { echo "FATAL: v0.10.1 ($PRIOR_COMMIT) is not an ancestor" >&2; exit 1; }
+          # The push-safety enforcement surfaces must be BYTE-IDENTICAL to v0.10.1 — this RC adds proof,
+          # a rule module, docs, and a version bump; it must NOT change the local-core gate behavior.
+          GATE_DELTA="$(git diff --name-only "$PRIOR_COMMIT" HEAD -- hooks lib | sort | tr '\n' ' ')"
+          [ -z "$GATE_DELTA" ] || { echo "FATAL: local-core push-safety surface (hooks/lib) changed in this RC: $GATE_DELTA" >&2; exit 1; }
+          echo "delta v0.10.1..HEAD:"; git diff --name-only "$PRIOR_COMMIT" HEAD | sed 's/^/  /'
+          echo "PROVEN: descends from v0.10.1; hooks/lib byte-identical (no local-core enforcement change)."
+      - name: Tooling
+        run: |
+          bash --version | head -1; jq --version; awk --version 2>/dev/null | head -1; git --version
+          for c in python3 python; do command -v "$c" >/dev/null 2>&1 && "$c" --version 2>&1 | head -1; done
+      - name: Prove the result-code parity rule + learning-loop promotion gate (isolated)
+        run: |
+          set -uo pipefail
+          bash tests/behavioral/resultcode-parity-loop-test.sh 2>&1 | tee "$GITHUB_WORKSPACE/v11-diagnose.log"
+          rc="${PIPESTATUS[0]}"
+          tail -1 "$GITHUB_WORKSPACE/v11-diagnose.log" | grep -qE '5 passed, 0 failed' || { echo "FATAL: learning-loop rule/gate not fully proven"; exit 1; }
+          exit "$rc"
+      - name: Upload diagnose log (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v11-diagnose
+          path: v11-diagnose.log
+          if-no-files-found: warn
+          retention-days: 90
+
+  full-suite:
+    name: Full-suite (111 shards) against the v0.11 RC tree (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 360
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout v0.11 branch
+        uses: actions/checkout@v4
+        with:
+          ref: feature/v0.11-enterprise-pilot
+          fetch-depth: 0
+      - name: Record env
+        run: |
+          {
+            echo "image_os=${ImageOS:-unknown} image_version=${ImageVersion:-unknown}"
+            echo "head=$(git rev-parse HEAD)"
+            echo "bash=$(bash --version | head -1)"; echo "jq=$(jq --version)"; echo "awk=$(awk --version 2>/dev/null | head -1)"
+          } | tee "$GITHUB_WORKSPACE/v11-env.txt"
+      - name: Run full-suite verifier
+        env:
+          PF_HEAVY_TIMEOUT: "900"
+          PF_LIGHT_TIMEOUT: "600"
+        run: |
+          set -o pipefail
+          bash .release-audit/verify-full-suite.sh "$GITHUB_WORKSPACE/verify-out" 2>&1 | tee "$GITHUB_WORKSPACE/v11-verify-driver.log"
+          exit "${PIPESTATUS[0]}"
+      - name: Independently adjudicate the manifest (re-derive counts; expect 111)
+        if: always()
+        run: |
+          set -uo pipefail
+          RES="$GITHUB_WORKSPACE/verify-out/results"
+          [ -d "$RES" ] || { echo "NO RESULTS — not a pass"; exit 1; }
+          mapfile -t BEH < <(ls tests/behavioral/*-test.sh 2>/dev/null | sort)
+          INFILE=(stage1 operative coupling crosscheck scan-profiles dependency-map-validator protocol)
+          EXPECTED=$(( ${#BEH[@]} + ${#INFILE[@]} ))
+          PASSN=$(awk -F'\t' '$2=="PASS"{n++}END{print n+0}' "$RES"/*.result 2>/dev/null)
+          FAILN=$(awk -F'\t' '$2=="FAIL"{n++}END{print n+0}' "$RES"/*.result 2>/dev/null)
+          TON=$(awk -F'\t'  '$2=="TIMEOUT"{n++}END{print n+0}' "$RES"/*.result 2>/dev/null)
+          RECN=$(ls "$RES"/*.result 2>/dev/null | wc -l | tr -d ' ')
+          SUMF=$(awk -F'\t' '$4 ~ /^[0-9]+$/{f+=$4}END{print f+0}' "$RES"/*.result 2>/dev/null)
+          DUPS=$(awk -F'\t' '{c[$1]++}END{d=0;for(k in c)if(c[k]>1)d++;print d}' "$RES"/*.result 2>/dev/null)
+          echo "expected=$EXPECTED recorded=$RECN PASS=$PASSN FAIL=$FAILN TIMEOUT=$TON dups=$DUPS failedAssert=$SUMF" | tee "$GITHUB_WORKSPACE/v11-adjudication.txt"
+          if [ "$EXPECTED" -eq 111 ] && [ "$RECN" -eq 111 ] && [ "$PASSN" -eq 111 ] && [ "$FAILN" -eq 0 ] && [ "$TON" -eq 0 ] && [ "$DUPS" -eq 0 ] && [ "$SUMF" -eq 0 ]; then
+            echo "GREEN — v0.11.0-rc.1 certified 111/111 unique PASS" | tee -a "$GITHUB_WORKSPACE/v11-adjudication.txt"
+          else
+            echo "NOT GREEN" | tee -a "$GITHUB_WORKSPACE/v11-adjudication.txt"; exit 1
+          fi
+      - name: Upload manifest + logs (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v11-fullsuite
+          path: |
+            verify-out/MANIFEST.tsv
+            verify-out/results/**
+            verify-out/logs/**
+            v11-verify-driver.log
+            v11-env.txt
+            v11-adjudication.txt
+          if-no-files-found: warn
+          retention-days: 90

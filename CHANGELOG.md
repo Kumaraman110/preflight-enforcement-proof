@@ -3,6 +3,61 @@
 All notable changes to Preflight are recorded here. This project uses annotated tags on the
 `feature/preflight-framework` line; releases are cut as tags (see `docs/`).
 
+## v0.11.0-rc.1 — Enterprise Pilot: remote gate as a required check + first real learning loop
+
+**Release candidate.** Linear descendant of the `v0.10.1` commit (`c47c1bb`); the `v0.10.0` and
+`v0.10.1` tags, artifacts, and checksums are immutable and stay in place. This RC does not change the
+local-core enforcement engine; it consolidates the mainline and adds operational proof + docs for the
+independent remote decision gate.
+
+### Mainline
+- The authoritative development line `feature/preflight-framework` now contains `v0.10.1` and the full
+  remote-gate protocol (verifier, policy/schemas, two-stage workflows, learning-loop). PRs #12/#13 and
+  the release-only packaging branch are superseded on one linear history; future work builds on the dev
+  line, not a release-only branch.
+
+### Remote decision gate — proven as a REQUIRED check (non-production)
+- Deployed on a disposable non-production repo with branch protection requiring the
+  `preflight-remote-decision-gate` status (`strict`, `enforce_admins`, and pinned to `app_id:15368`
+  GitHub Actions). Producer / signer / judge / approver authorities are separated (the evidence
+  generator and the PR context hold no signing or approval key). Every enforcement case is labeled by
+  evidence kind in `.release-audit/v11-live-proofs/PROOF-LEDGER.md` — honesty over headline count:
+  - **LIVE on real GitHub**: valid→ALLOW; forged local ALLOW→BLOCK; protected-path→BLOCK; review→
+    REQUIRE_APPROVAL; missing secret→fail-closed (rc 30); a PR-authored/foreign-key approval is
+    **rejected under the deployed judge public key**; and GitHub refuses to merge a BLOCKed PR without
+    admin bypass — the required check is app-id-pinned, so a forged user-PAT status does NOT bypass it
+    (verified adversarially live).
+  - **OFFLINE protocol suites on the byte-identical deployed modules** (correct-algorithm proofs, not
+    live GitHub observations): wrong commit/repo→BLOCK (`identity-reresolution` 18/0); tamper/replay→
+    BLOCK (`attestation` 12/0).
+  - **Not proven live**: a valid independent approval upgrading REQUIRE_APPROVAL→ALLOW — the deployed
+    `approve.yaml` enforces `prevent_self_review` and a single operator cannot complete it (adding a
+    second human was refused: EMU HTTP 422). The upgrade path is proven at the algorithm layer
+    (`approval` 8/0 with matching keys + real digests); a live completion needs a distinct second human
+    or OIDC→KMS. Documented, not smoothed over.
+
+### First real self-improvement loop closed (survival thesis)
+- A genuine historical finding (PR-12 CPSL SessionToken **result-code wire-contract drift** — invented
+  `S0000`/`W0024`, dropped `W0011`; the code-quality reviewer had no wire-contract check) was
+  adjudicated into a candidate rule `R-RESULTCODE-PARITY`, promoted through the distinct-approver
+  signed-approval path (the producer cannot self-promote), and shown to catch the **equivalent** drift
+  in a second real service (`CTI.MicroService.TokenManager`) on a disposable, never-merged branch
+  before delivery — with the corrected change passing. Evidence:
+  `.release-audit/v11-learning-loop/LEARNING-LOOP-RECORD.md`.
+
+### Operations
+- Added `docs/remote-gate-operations.md`: installation, rollback, policy ownership, key
+  rotation/revocation, approval ownership, break-glass, audit retention, incident response,
+  onboarding, and honest enforcement-limitation boundaries.
+
+### Honest boundaries (unchanged from the gate's design)
+- The required check is app-id-pinned (GitHub Actions), so a forged status from a user/broad PAT does
+  NOT bypass the merge gate (verified live); the signed attestation remains the proof-of-record for
+  defense-in-depth. HMAC is symmetric (asymmetric OIDC→KMS is future work). Human dual-control is
+  enforced but needs two distinct humans (single-account / Enterprise-Managed-User setups cannot
+  complete the approval upgrade — the separation proven is cryptographic). No persistent nonce ledger;
+  the tier classifier is path-based.
+
 ## v0.10.1 — artifact CLI-packaging fix
 
 **Patch release.** Linear descendant of the `v0.10.0` commit (`173bccd`); the `v0.10.0` tag, its
