@@ -3,6 +3,45 @@
 All notable changes to Preflight are recorded here. This project uses annotated tags on the
 `feature/preflight-framework` line; releases are cut as tags (see `docs/`).
 
+## v0.10.1 — artifact CLI-packaging fix
+
+**Patch release.** Linear descendant of the `v0.10.0` commit (`173bccd`); the `v0.10.0` tag, its
+published artifact, and its checksum are immutable and stay in place. This release fixes ONE defect: a
+from-artifact install/upgrade left the on-PATH `preflight` management CLI at its previously-installed
+version while the runtime generation swapped correctly.
+
+### Fixed — artifact did not carry the management CLI (CLI-version lag)
+- **Root cause.** `tools/user/build-artifact.sh` packed only the runtime closure (hooks, lib, protocol,
+  verifier, dispatcher) — never `tools/preflight-user.sh` — and `cmd_install` sourced a fresh CLI ONLY on
+  the git-object path (`[ -z "$ARTIFACT" ]`). So a from-artifact install had no CLI to stage: the
+  self-copy guard correctly skipped, the runtime generation swapped, and the stable on-PATH CLI stayed at
+  the prior version. After the v0.10.0 stable install, `preflight version` reported
+  `v0.10.0 (active runtime; CLI v0.10.0-rc.4)` — the runtime was v0.10.0 but the CLI label lagged at rc.4.
+  The published **v0.10.0 artifact (`a30df67…`) does not contain the management CLI**; it cannot be used
+  to refresh the CLI. (The v0.10.0 tag/artifact/checksum are NOT modified by this release.)
+- **Fix — the CLI ships inside every generation and syncs in lockstep.**
+  - `build-artifact.sh` bundles `cli/preflight-user.sh` into the artifact; it is covered by
+    `RUNTIME_MANIFEST.json` + `ARTIFACT_MANIFEST.json` (both walk the stage) and listed as an SBOM
+    component. A missing CLI is fatal at build.
+  - `_stage_from_git` stages the same `cli/preflight-user.sh` into a git-sourced generation, so BOTH
+    install paths carry the CLI inside the immutable generation.
+  - The stable on-PATH CLI is **synced from the ACTIVE generation** (atomic temp+`mv`) on install AND on
+    rollback, so the CLI matches ACTIVE after fresh install, upgrade, rollback, and roll-forward.
+  - The CLI sync is part of the **atomic install transaction**: a failure trips the ERR trap, which now
+    also restores the prior CLI bytes — a runtime/CLI half-swap is impossible.
+  - `verify` reports CLI/runtime lockstep and **FAILs on drift** (mismatch detection); the idempotent
+    short-circuit requires lockstep, so a re-install repairs a stale CLI instead of no-opping.
+- **Regression test.** `tests/behavioral/artifact-cli-packaging-test.sh` (10 assertions) proves, in
+  isolated HOME dirs: artifact-contains-CLI (tarball+manifest+SBOM); artifact-only fresh install;
+  artifact-only upgrade; interrupted CLI staging rolls both back; CLI/runtime mismatch detection + repair;
+  rollback restores both runtime and CLI; and self-contained operation after the source checkout is deleted.
+
+### Known boundary
+- An in-place upgrade **driven by a pre-v0.10.1 launcher** cannot self-heal the CLI: the launcher execs
+  the OLD (buggy) installed CLI, whose `cmd_install` predates this fix. Once a v0.10.1+ CLI drives an
+  install (or a one-time manual CLI refresh is performed), every subsequent install/upgrade/rollback keeps
+  the CLI in lockstep. This is the same bootstrapping boundary as any installer-self-update.
+
 ## v0.10.0 — stable
 
 **Stable release.** Cut from the exact `v0.10.0-rc.5` product commit (`f8e63ff`) with **no code changes** —
