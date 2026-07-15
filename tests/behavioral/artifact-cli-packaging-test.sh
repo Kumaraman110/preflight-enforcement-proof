@@ -53,8 +53,9 @@ ART="$OUT/preflight-user-v0.10.1-pkgtest.tar.gz"
 
 # ── 1. artifact CONTAINS the CLI (tarball + ARTIFACT_MANIFEST + SBOM) ────────────────────────────────
 # List members to a file first: `tar | grep -q` would SIGPIPE tar (grep -q closes the pipe on match) and
-# pipefail would then misreport a present file as missing.
-tar -tzf "$ART" > "$OUT/members.txt" 2>/dev/null || true
+# pipefail would then misreport a present file as missing. Read the archive via stdin (`-f -` implied by the
+# redirect) so a drive-qualified path (D:/a/... on the Windows runner) is not parsed as a tar remote host:path.
+tar -tz < "$ART" > "$OUT/members.txt" 2>/dev/null || true
 if grep -qE '(^|\./|/)cli/preflight-user\.sh$' "$OUT/members.txt"; then
   ok "artifact tarball bundles cli/preflight-user.sh"
 else
@@ -204,7 +205,7 @@ fi
 mkhome selfcontained
 THROW="$ROOT/throwaway"; mkdir -p "$THROW"
 cp "$ART" "$THROW/art.tar.gz"
-tar -xzf "$ART" -C "$THROW" >/dev/null 2>&1     # extracts ./cli/preflight-user.sh among others
+tar -xz -C "$THROW" < "$ART" >/dev/null 2>&1     # extracts ./cli/preflight-user.sh (stdin: drive-path safe)
 if [ -f "$THROW/cli/preflight-user.sh" ]; then
   PREFLIGHT_CLAUDE_HOME="$ROOT/selfcontained/.claude" PREFLIGHT_BIN_DIR="$ROOT/selfcontained/bin" \
     bash "$THROW/cli/preflight-user.sh" install --user --ref v0.10.1-pkgtest --from-artifact "$THROW/art.tar.gz" >"$OUT/sc.log" 2>&1

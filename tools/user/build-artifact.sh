@@ -54,8 +54,11 @@ PY
 
 TARBALL="$OUT/preflight-user-${VER}.tar.gz"
 # Pack the CONTENTS flat (SOURCE_COMMIT at the tar root) so `install --from-artifact` extracts a
-# self-contained generation directly, with no wrapper subdir.
-tar -czf "$TARBALL" -C "$STAGE" .
+# self-contained generation directly, with no wrapper subdir. Write via `-f -` + shell redirection rather
+# than `-f "$TARBALL"`: on Windows the OUT path can be drive-qualified (e.g. D:/a/...), and cygwin GNU tar
+# parses the `D:` as a REMOTE host:path and fails with "Cannot connect to D:". Redirection sidesteps it
+# entirely (the shell opens the file; tar sees only a stream) and is portable across GNU/BSD/cygwin tar.
+tar -cz -C "$STAGE" . > "$TARBALL"
 # checksum
 if command -v sha256sum >/dev/null 2>&1; then ( cd "$OUT" && sha256sum "$(basename "$TARBALL")" > "$(basename "$TARBALL").sha256" )
 else ( cd "$OUT" && shasum -a 256 "$(basename "$TARBALL")" > "$(basename "$TARBALL").sha256" ); fi

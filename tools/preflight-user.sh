@@ -96,7 +96,10 @@ cmd_install(){
   local GEN_VERSION="$RELEASE_VERSION"
   if [ -n "$ARTIFACT" ]; then
     [ -f "$ARTIFACT" ] || { rm -rf "$STAGE_PARENT"; _die "artifact not found: $ARTIFACT"; }
-    tar -xzf "$ARTIFACT" -C "$STAGE" 2>/dev/null || { rm -rf "$STAGE_PARENT"; _die "cannot extract artifact"; }
+    # Extract via `-f -` + shell redirection, NOT `-f "$ARTIFACT"`: on Windows a user passes a drive-qualified
+    # artifact path (e.g. C:/Downloads/preflight-user.tar.gz) and cygwin GNU tar treats the `C:` as a REMOTE
+    # host:path, failing with "Cannot connect to C:". The shell opens the file so tar only sees a stream.
+    tar -xz -C "$STAGE" < "$ARTIFACT" 2>/dev/null || { rm -rf "$STAGE_PARENT"; _die "cannot extract artifact"; }
     # a self-contained artifact carries SOURCE_COMMIT
     if [ -f "$STAGE/SOURCE_COMMIT" ]; then RESOLVED_SHA="$(tr -d ' \t\r\n' < "$STAGE/SOURCE_COMMIT")"; fi
     [ -n "$RESOLVED_SHA" ] || { rm -rf "$STAGE_PARENT"; _die "artifact missing SOURCE_COMMIT"; }
