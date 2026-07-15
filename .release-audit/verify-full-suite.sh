@@ -56,7 +56,7 @@ case_heavy() {  # $1 = shard id ; 0 = heavy
   case "$1" in
     beh__pre-push-*|beh__router-*|beh__ir-push-*|beh__alt-git-context-push-test|beh__pre-bash-structure-*|\
     beh__wrapper-taxonomy-test|beh__wrapper-prefix-failopen-test|beh__no-duplicate-exec-test|\
-    beh__spec-divergence-*|beh__install-*|beh__branch-stable-runtime-test|beh__runtime-*|\
+    beh__spec-divergence-*|beh__install-*|beh__artifact-cli-packaging-test|beh__branch-stable-runtime-test|beh__runtime-*|\
     beh__cli-usability-test|beh__resolve-config-test|beh__review-thread-resolution-test|\
     beh__coverage-gap-detection-test|beh__detector-test|suite__*) return 0 ;;
     *) return 1 ;;

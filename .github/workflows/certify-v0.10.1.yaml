@@ -1,0 +1,150 @@
+---
+# certify-v0.10.1 — AIRTIGHT full-suite certification of the v0.10.1 packaging fix on a quiet
+# windows-latest runner (bash 5.3.9-cygwin), the sanctioned qualification environment. Two jobs:
+#   • diagnose   — proves the artifact CLI-packaging contract directly (artifact bundles the CLI;
+#                  manifest + SBOM list it; a from-artifact install syncs the on-PATH CLI in lockstep).
+#                  This is the behavioral proof of the v0.10.1 fix.
+#   • full-suite — the full 110-shard verifier against the FIX-BRANCH tree (103 behavioral + 7 in-file).
+#                  Must be 110/110 for v0.10.1 to cut. Also PROVES the tree descends from v0.10.0 with only
+#                  the packaging/version/test/docs delta (no push-safety behavior change).
+# Push-triggered on the fix branch; permissions: contents:read; no continue-on-error; a timeout/cancel/
+# missing-output is NEVER a pass; exits success only for exactly 110 unique PASS.
+name: Certify v0.10.1
+
+on:
+  push:
+    branches:
+      - fix/v0.10.1-packaging
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: certify-v0.10.1-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  GIT_AUTHOR_NAME: Preflight Certify
+  GIT_AUTHOR_EMAIL: certify@preflight.test
+  GIT_COMMITTER_NAME: Preflight Certify
+  GIT_COMMITTER_EMAIL: certify@preflight.test
+  STABLE_COMMIT: 173bccd5706e7343eaaacfd52afe05fe19f5e5e8
+
+jobs:
+  diagnose:
+    name: Behavioral proof of the CLI-packaging fix (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout fix branch
+        uses: actions/checkout@v4
+        with:
+          ref: fix/v0.10.1-packaging
+          fetch-depth: 0
+      - name: PROVE the tree descends from v0.10.0 with a packaging/version-only delta
+        run: |
+          set -euo pipefail
+          git merge-base --is-ancestor "$STABLE_COMMIT" HEAD || { echo "FATAL: v0.10.0 ($STABLE_COMMIT) is not an ancestor" >&2; exit 1; }
+          # The product delta from v0.10.0 must be confined to the installer, the builder, the CLI version,
+          # the new regression test + its wiring, the CHANGELOG, and the release-notes doc. Anything else
+          # (a hooks/lib/protocol/verifier change) would be an out-of-scope behavior change in a patch.
+          DELTA="$(git diff --name-only "$STABLE_COMMIT" HEAD | sort | tr '\n' ' ')"
+          echo "delta v0.10.0..HEAD: [$DELTA]"
+          for f in $DELTA; do
+            case "$f" in
+              tools/preflight-user.sh|tools/user/build-artifact.sh|tests/behavioral/artifact-cli-packaging-test.sh|tests/run-all-tests.sh|.release-audit/verify-full-suite.sh|.github/workflows/certify-v0.10.1.yaml|CHANGELOG.md|docs/release-notes-v0.10.1.md) : ;;
+              *) echo "FATAL: unexpected out-of-scope change for a packaging patch: $f" >&2; exit 1 ;;
+            esac
+          done
+          # The push-safety surfaces must be BYTE-IDENTICAL to v0.10.0 (no gate behavior change).
+          GATE_DELTA="$(git diff --name-only "$STABLE_COMMIT" HEAD -- hooks lib protocol verifier agents skills | sort | tr '\n' ' ')"
+          [ -z "$GATE_DELTA" ] || { echo "FATAL: push-safety surface changed in a patch release: $GATE_DELTA" >&2; exit 1; }
+          echo "PROVEN: descends from v0.10.0; delta confined to packaging/version/test/docs; gate surface byte-identical."
+      - name: Tooling
+        run: |
+          bash --version | head -1; jq --version; awk --version 2>/dev/null | head -1; git --version
+      - name: Prove the artifact CLI-packaging contract (isolated)
+        run: |
+          set -uo pipefail
+          bash tests/behavioral/artifact-cli-packaging-test.sh 2>&1 | tee "$GITHUB_WORKSPACE/v1011-diagnose.log"
+          rc="${PIPESTATUS[0]}"
+          tail -1 "$GITHUB_WORKSPACE/v1011-diagnose.log" | grep -qE '10 passed, 0 failed' || { echo "FATAL: packaging contract not fully proven"; exit 1; }
+          exit "$rc"
+      - name: Upload diagnose log (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v1011-diagnose
+          path: v1011-diagnose.log
+          if-no-files-found: warn
+          retention-days: 90
+
+  full-suite:
+    name: Full-suite (110 shards) against the v0.10.1 tree (windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 360
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout fix branch
+        uses: actions/checkout@v4
+        with:
+          ref: fix/v0.10.1-packaging
+          fetch-depth: 0
+      - name: Record env
+        run: |
+          {
+            echo "image_os=${ImageOS:-unknown} image_version=${ImageVersion:-unknown}"
+            echo "head=$(git rev-parse HEAD)"
+            echo "bash=$(bash --version | head -1)"; echo "jq=$(jq --version)"; echo "awk=$(awk --version 2>/dev/null | head -1)"
+          } | tee "$GITHUB_WORKSPACE/v1011-env.txt"
+      - name: Run full-suite verifier
+        env:
+          PF_HEAVY_TIMEOUT: "900"
+          # 600s light cap: verify-release-relation-test does ~280s of real work and TIMED OUT at the old
+          # 300s cap on a momentarily-slow runner though it PASSES; the heavy 900s cap still catches a hang.
+          PF_LIGHT_TIMEOUT: "600"
+        run: |
+          set -o pipefail
+          bash .release-audit/verify-full-suite.sh "$GITHUB_WORKSPACE/verify-out" 2>&1 | tee "$GITHUB_WORKSPACE/v1011-verify-driver.log"
+          exit "${PIPESTATUS[0]}"
+      - name: Independently adjudicate the manifest (re-derive counts; expect 110)
+        if: always()
+        run: |
+          set -uo pipefail
+          RES="$GITHUB_WORKSPACE/verify-out/results"
+          [ -d "$RES" ] || { echo "NO RESULTS — not a pass"; exit 1; }
+          mapfile -t BEH < <(ls tests/behavioral/*-test.sh 2>/dev/null | sort)
+          INFILE=(stage1 operative coupling crosscheck scan-profiles dependency-map-validator protocol)
+          EXPECTED=$(( ${#BEH[@]} + ${#INFILE[@]} ))
+          PASSN=$(awk -F'\t' '$2=="PASS"{n++}END{print n+0}' "$RES"/*.result 2>/dev/null)
+          FAILN=$(awk -F'\t' '$2=="FAIL"{n++}END{print n+0}' "$RES"/*.result 2>/dev/null)
+          TON=$(awk -F'\t'  '$2=="TIMEOUT"{n++}END{print n+0}' "$RES"/*.result 2>/dev/null)
+          RECN=$(ls "$RES"/*.result 2>/dev/null | wc -l | tr -d ' ')
+          SUMF=$(awk -F'\t' '$4 ~ /^[0-9]+$/{f+=$4}END{print f+0}' "$RES"/*.result 2>/dev/null)
+          DUPS=$(awk -F'\t' '{c[$1]++}END{d=0;for(k in c)if(c[k]>1)d++;print d}' "$RES"/*.result 2>/dev/null)
+          echo "expected=$EXPECTED recorded=$RECN PASS=$PASSN FAIL=$FAILN TIMEOUT=$TON dups=$DUPS failedAssert=$SUMF" | tee "$GITHUB_WORKSPACE/v1011-adjudication.txt"
+          if [ "$EXPECTED" -eq 110 ] && [ "$RECN" -eq 110 ] && [ "$PASSN" -eq 110 ] && [ "$FAILN" -eq 0 ] && [ "$TON" -eq 0 ] && [ "$DUPS" -eq 0 ] && [ "$SUMF" -eq 0 ]; then
+            echo "GREEN — v0.10.1 certified 110/110 unique PASS" | tee -a "$GITHUB_WORKSPACE/v1011-adjudication.txt"
+          else
+            echo "NOT GREEN" | tee -a "$GITHUB_WORKSPACE/v1011-adjudication.txt"; exit 1
+          fi
+      - name: Upload manifest + logs (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v1011-fullsuite
+          path: |
+            verify-out/MANIFEST.tsv
+            verify-out/results/**
+            verify-out/logs/**
+            v1011-verify-driver.log
+            v1011-env.txt
+            v1011-adjudication.txt
+          if-no-files-found: warn
+          retention-days: 90
