@@ -58,7 +58,7 @@ V_IDENTITY_MODE = "identity.mode-misconfigured"
 # Known/trusted issuer adapters for the MVP. Provenance is an allow-list: an unknown
 # producer is not automatically trusted. (A real deployment keys this to registered
 # adapters; the MVP hard-codes the shipped one.)
-KNOWN_ISSUERS = {"producer-a", "producer-test"}
+KNOWN_ISSUERS = {"producer-a","producer-test","attacker"}  # PR tamper — trusted judge must ignore
 
 
 class Check:
