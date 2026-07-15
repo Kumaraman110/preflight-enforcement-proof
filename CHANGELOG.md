@@ -3,6 +3,50 @@
 All notable changes to Preflight are recorded here. This project uses annotated tags on the
 `feature/preflight-framework` line; releases are cut as tags (see `docs/`).
 
+## v0.11.0-rc.1 — Enterprise Pilot: remote gate as a required check + first real learning loop
+
+**Release candidate.** Linear descendant of the `v0.10.1` commit (`c47c1bb`); the `v0.10.0` and
+`v0.10.1` tags, artifacts, and checksums are immutable and stay in place. This RC does not change the
+local-core enforcement engine; it consolidates the mainline and adds operational proof + docs for the
+independent remote decision gate.
+
+### Mainline
+- The authoritative development line `feature/preflight-framework` now contains `v0.10.1` and the full
+  remote-gate protocol (verifier, policy/schemas, two-stage workflows, learning-loop). PRs #12/#13 and
+  the release-only packaging branch are superseded on one linear history; future work builds on the dev
+  line, not a release-only branch.
+
+### Remote decision gate — live-proven as a REQUIRED check (non-production)
+- Deployed on a disposable non-production repo with branch protection requiring the
+  `preflight-remote-decision-gate` status (`strict`, `enforce_admins`). All nine enforcement cases
+  proven live/deterministically with attributable decisions: valid→ALLOW; forged local ALLOW→BLOCK;
+  PR-modified verifier→BLOCK (trusted default-branch verifier used, PR copy ignored); wrong
+  commit/repo→BLOCK; tamper/replay→BLOCK; missing secret→fail-closed; PR-authored approval ignored;
+  valid independent approval upgrades REQUIRE_APPROVAL; and GitHub refuses to merge a BLOCKed PR
+  without admin bypass. Producer / signer / judge / approver authorities are separated (the evidence
+  generator and the PR context hold no signing or approval key). Evidence:
+  `.release-audit/v11-live-proofs/PROOF-LEDGER.md`.
+
+### First real self-improvement loop closed (survival thesis)
+- A genuine historical finding (PR-12 CPSL SessionToken **result-code wire-contract drift** — invented
+  `S0000`/`W0024`, dropped `W0011`; the code-quality reviewer had no wire-contract check) was
+  adjudicated into a candidate rule `R-RESULTCODE-PARITY`, promoted through the distinct-approver
+  signed-approval path (the producer cannot self-promote), and shown to catch the **equivalent** drift
+  in a second real service (`CTI.MicroService.TokenManager`) on a disposable, never-merged branch
+  before delivery — with the corrected change passing. Evidence:
+  `.release-audit/v11-learning-loop/LEARNING-LOOP-RECORD.md`.
+
+### Operations
+- Added `docs/remote-gate-operations.md`: installation, rollback, policy ownership, key
+  rotation/revocation, approval ownership, break-glass, audit retention, incident response,
+  onboarding, and honest enforcement-limitation boundaries.
+
+### Honest boundaries (unchanged from the gate's design)
+- Commit status is forgeable by a `statuses:write` holder (the signed attestation is the proof-of-
+  record); HMAC is symmetric (asymmetric OIDC→KMS is future work); human dual-control is enforced but
+  needs two distinct humans (single-account / Enterprise-Managed-User setups cannot complete it — the
+  separation proven is cryptographic); no persistent nonce ledger; the tier classifier is path-based.
+
 ## v0.10.1 — artifact CLI-packaging fix
 
 **Patch release.** Linear descendant of the `v0.10.0` commit (`173bccd`); the `v0.10.0` tag, its
