@@ -69,6 +69,17 @@ _sha256(){ # $1 = file
 }
 _py(){ for c in python3 python; do if command -v "$c" >/dev/null 2>&1 && "$c" -c 'import sys;sys.exit(0 if sys.version_info[0]>=3 else 1)' >/dev/null 2>&1; then echo "$c"; return 0; fi; done; return 1; }
 
+# ── POSIX-form scratch dir. On Windows/cygwin, TMPDIR can be a drive-qualified, BACKSLASH path (e.g. a
+# Windows-shell `TMPDIR=C:\Temp`, or CI's RUNNER_TEMP=D:\a\_temp). `mktemp -d` then returns a backslash path,
+# and passing that to `tar -C` fails ("C\:\\... Cannot open"): cygwin tar cannot parse the backslashes/colon.
+# `cygpath -u` converts it correctly to /c/... (a naive backslash→slash sed corrupts the drive letter). We
+# emit a POSIX path so every downstream tar/extract works regardless of the inherited TMPDIR spelling.
+_pf_mktemp_d(){
+  local d; d="$(mktemp -d)" || return 1
+  if command -v cygpath >/dev/null 2>&1; then cygpath -u "$d" 2>/dev/null || printf '%s\n' "$d"
+  else printf '%s\n' "$d"; fi
+}
+
 # ── source repo resolution for the git-object install path ───────────────────────────────────────────────
 _resolve_source(){ # sets SRC_REPO ; honors --source / CODE_FORGE_DIR / this script's repo
   if [ -n "${OPT_SOURCE:-}" ]; then SRC_REPO="$OPT_SOURCE"
@@ -84,7 +95,7 @@ cmd_install(){
   local PY; PY="$(_py)" || _die "no working python3/python"
 
   # ---- Stage the generation into a temp dir from committed objects OR the artifact ----
-  local STAGE_PARENT; STAGE_PARENT="$(mktemp -d)"; local STAGE="$STAGE_PARENT/gen"
+  local STAGE_PARENT; STAGE_PARENT="$(_pf_mktemp_d)"; local STAGE="$STAGE_PARENT/gen"
   mkdir -p "$STAGE"
   local RESOLVED_SHA=""
   # The version STAMPED into this generation. For a git-object install it is the CLI's compiled constant;

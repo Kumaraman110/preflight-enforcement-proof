@@ -34,6 +34,11 @@ RES="$OUT/results"; LOGS="$OUT/logs"; mkdir -p "$RES" "$LOGS"
 # DESCENDANT of the repo, so `git rev-parse` walks up and finds .git → those tests spuriously FAIL. Anchor
 # TMPDIR under $RUNNER_TEMP (CI) or $HOME (local) — never under the repo — and confirm it is non-git.
 _PF_TMP_BASE="${RUNNER_TEMP:-$HOME}"
+# On the windows-latest runner RUNNER_TEMP is a drive-qualified BACKSLASH path (D:\a\_temp). If TMPDIR keeps
+# backslashes, every test's `mktemp -d` inherits them and any test that shells out to `tar -C <mktemp-dir>`
+# fails (cygwin tar cannot parse "D:\..."). Normalize the base to a POSIX path with cygpath so the whole
+# suite gets clean /d/... scratch dirs (a naive backslash→slash sed would corrupt the drive letter).
+if command -v cygpath >/dev/null 2>&1; then _PF_TMP_BASE="$(cygpath -u "$_PF_TMP_BASE" 2>/dev/null || printf '%s' "$_PF_TMP_BASE")"; fi
 export TMPDIR="$_PF_TMP_BASE/.pf-fullsuite-tmp"; mkdir -p "$TMPDIR"
 MANIFEST="$OUT/MANIFEST.tsv"
 HEAVY_TO="${PF_HEAVY_TIMEOUT:-900}"     # 15 min for heavy engine tests

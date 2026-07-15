@@ -16,13 +16,18 @@ PY=""; for c in python3 python; do command -v "$c" >/dev/null 2>&1 && "$c" -c 'i
 [ -n "$PY" ] || { echo "no python" >&2; exit 1; }
 mkdir -p "$OUT"
 
+# POSIX-form scratch: TMPDIR may be a drive-qualified backslash path (Windows shell / CI RUNNER_TEMP=D:\a\_temp),
+# and a backslash STAGE passed to `tar -C` fails on cygwin ("C\:\\... Cannot open"). cygpath -u normalizes it
+# to /c/... (a naive sed corrupts the drive letter); no cygpath (real POSIX) → mktemp is already clean.
+_mktemp_d(){ local d; d="$(mktemp -d)" || return 1; if command -v cygpath >/dev/null 2>&1; then cygpath -u "$d" 2>/dev/null || printf '%s\n' "$d"; else printf '%s\n' "$d"; fi; }
+
 # Runtime closure (kept in lockstep with tools/preflight-user.sh RUNTIME_HOOKS/LIBS).
 HOOKS="run-hook.cmd user-preflight-router pre-bash-risk-router pre-push-gate-engine pre-push-gate session-start"
 # MUST stay in lockstep with tools/preflight-user.sh RUNTIME_LIBS — a lib missing here ships a broken
 # artifact (e.g. hook-arbitration.sh absent → the user router can't classify ownership).
 LIBS="config-overlay.sh heartbeat.sh shell-structure.sh shell-structure-lexer.awk hook-arbitration.sh"
 
-STAGE="$(mktemp -d)/preflight-user"; mkdir -p "$STAGE/hooks" "$STAGE/lib" "$STAGE/cli"
+STAGE="$(_mktemp_d)/preflight-user"; mkdir -p "$STAGE/hooks" "$STAGE/lib" "$STAGE/cli"
 for h in $HOOKS; do git -C "$SRC" show "${SHA}:hooks/${h}" > "$STAGE/hooks/${h}"; done
 for l in $LIBS;  do git -C "$SRC" show "${SHA}:lib/${l}"   > "$STAGE/lib/${l}";   done
 git -C "$SRC" archive "$SHA" verifier protocol 2>/dev/null | tar -x -C "$STAGE" 2>/dev/null || true
