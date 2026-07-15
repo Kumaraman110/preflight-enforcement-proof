@@ -484,6 +484,18 @@ run_behavioral_tests() {
     yellow "SKIP: copilot-reviewer-path-test.sh not found"
   fi
 
+  local artifact_cli_test="$SCRIPT_DIR/behavioral/artifact-cli-packaging-test.sh"
+  if [ -f "$artifact_cli_test" ]; then
+    if bash "$artifact_cli_test"; then
+      PASSES=$((PASSES + 9))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: artifact CLI-packaging tests failed (v0.10.1 CLI-version-lag regression)"
+    fi
+  else
+    yellow "SKIP: artifact-cli-packaging-test.sh not found"
+  fi
+
   local ci_liveness_test="$SCRIPT_DIR/behavioral/ci-gate-liveness-template-test.sh"
   if [ -f "$ci_liveness_test" ]; then
     if bash "$ci_liveness_test"; then
