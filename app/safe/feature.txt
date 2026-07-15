@@ -2,3 +2,4 @@ v1
 probe
 v11 valid safe change v11p1
 # re-trigger missing-secret proof
+# restore-check
