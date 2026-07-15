@@ -137,7 +137,11 @@ fi
 # and confirm the on-PATH CLI moves to the new generation's CLI.
 WT="$ROOT/wt-genB"
 if git -C "$SRC_REPO" worktree add -q --detach "$WT" "$HEADSHA" 2>>"$OUT/wt.log"; then
-  sed -i 's/^RELEASE_VERSION="v0\.10\.[0-9].*"/RELEASE_VERSION="v0.10.1-genB"/' "$WT/tools/preflight-user.sh"
+  # Version-agnostic: replace WHATEVER RELEASE_VERSION the CLI currently carries with the genB marker
+  # (do NOT couple to a v0.10.x literal — the constant is bumped every release, and a non-matching sed
+  # would leave genB byte-identical to genA, making the "upgrade" a no-op that fails the move/rollback
+  # assertions below).
+  sed -i 's/^RELEASE_VERSION=.*/RELEASE_VERSION="v0.10.1-genB"/' "$WT/tools/preflight-user.sh"
   git -C "$WT" add tools/preflight-user.sh >/dev/null 2>&1
   git -C "$WT" -c user.name=t -c user.email=t@t commit -q -m "test-only genB CLI marker" >/dev/null 2>&1
   GENB_SHA="$(git -C "$WT" rev-parse HEAD)"

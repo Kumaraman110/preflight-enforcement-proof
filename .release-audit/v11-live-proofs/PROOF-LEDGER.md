@@ -33,23 +33,64 @@ Authority separation (verified in workflow source):
 Tier→decision mapping (from decision artifacts): AUTO→ALLOW · CONFIRM→REQUIRE_APPROVAL · BLOCK→BLOCK.
 Every decision artifact (`gate-out/decision.json`) + sealed bundle downloaded under `.release-audit/v11-live-proofs/final-p<N>/`.
 
-## Remaining cases (identity + attestation + approval layers)
+## Remaining cases — with an honest LIVE vs OFFLINE-SUITE label
 
-| # | scenario | decision | how proven | evidence |
-|---|----------|----------|-----------|----------|
-| 6 | valid independent approval upgrades REQUIRE_APPROVAL → ALLOW | ALLOW | Ed25519: approver-signed scoped payload verifies under the judge's PUBLIC key | `v11-approval-harness` (a): exit 0 |
-| 7 | PR-authored / self-approval ignored | REJECTED | approval signed by any non-approver key (a PR author cannot hold the env-scoped private key) fails signature verify; an unsigned ALLOW json also fails | harness (b) exit 20, (b2) exit 20; protocol `approval-test.sh` 8/0 |
-| 8 | wrong commit → BLOCK | BLOCK | trusted remote re-resolution: `identity.commit-mismatch` | `identity-reresolution-test.sh` 18/0 |
-| 8 | wrong repo → BLOCK | BLOCK | `identity.repo-mismatch` (forged origin AND expected-repo-disagrees) | same suite |
-| 9 | tamper / replay → BLOCK | BLOCK | attestation digest/signature/expiry/wrong-key all fail-closed; approval replay onto a different commit fails payload-equality | `attestation-test.sh` 12/0; harness (c) exit 20 |
-| 10 | forged local ALLOW dies remotely (core threat) | BLOCK | a bundle that ALLOWs locally with a forged head → BLOCK `identity.commit-mismatch` remotely | `identity-reresolution-test.sh` |
-| 11 | missing secret → failed check (LIVE) | fail-closed rc=30 | deleted `PREFLIGHT_ATTEST_KEY`, re-ran decide → `final_rc=30`, decision BLOCK, commit-status FAILURE; restored key → ALLOW again | decide run **29394711281** (FAILURE) → **29395201817** (SUCCESS after restore) |
+An independent adversarial reviewer (byte-verified the deployed gate == live `main`, then probed each
+claim; see `ADVERSARIAL-REVIEW-COREECTIONS` below) required these to be labeled by *evidence kind*.
+"LIVE" = observed on real GitHub against the deployed gate. "OFFLINE-SUITE" = proven by a protocol test
+on the byte-identical deployed module (stubbed git / matching keys) — a correct algorithm proof, NOT a
+live GitHub enforcement observation.
 
-## Merge-refusal (DONE-WHEN #4)
-`gh pr merge 11 --merge` → **"the base branch policy prohibits the merge"**. GitHub refuses to merge a BLOCKed PR. `--admin` break-glass offered but NOT used.
+| # | scenario | decision | evidence kind | how proven |
+|---|----------|----------|---------------|-----------|
+| 6 | wrong commit → BLOCK | BLOCK | **OFFLINE-SUITE** | `identity-reresolution-test.sh` 18/0 (`identity.commit-mismatch`); no live PR forced an identity mismatch |
+| 7 | wrong repo → BLOCK | BLOCK | **OFFLINE-SUITE** | same suite (`identity.repo-mismatch`, forged origin AND expected-repo-disagrees) |
+| 8 | tamper / replay → BLOCK | BLOCK | **OFFLINE-SUITE** | `attestation-test.sh` 12/0 (digest/signature/expiry/wrong-key fail-closed); approval replay onto a different commit fails payload-equality |
+| 9 | forged local ALLOW dies remotely (core threat) | BLOCK | **OFFLINE-SUITE** + LIVE analog | `identity-reresolution-test.sh` (offline); the LIVE analog is PR#13 (forged `.gate` ALLOW → BLOCK) |
+| 10 | PR-authored / foreign approval REJECTED by the DEPLOYED judge | REJECTED | **LIVE-KEY** | a Ed25519 approval signed by a NON-deployed key fails verification **under the deployed `gate/approval-pub.pem`** (`O86e…`): exit 20. A PR author cannot hold the env-scoped private key, so any approval they mint is rejected by the deployed public key. Positive control: it verifies under its own key (exit 0). |
+| 11 | valid independent approval upgrades REQUIRE_APPROVAL → ALLOW | ALLOW | **OFFLINE-SUITE only — NOT proven live** | `approval-test.sh` 8/0 exercises the deployed `pfverify.approval` + `check-approval.sh` with MATCHING keys and REAL reconstructed digests. **No live REQUIRE_APPROVAL→ALLOW upgrade has occurred on this repo** — both `approve.yaml` runs were cancelled (single-operator `prevent_self_review` blocks the initiator; the deployed private key is correctly inaccessible). See ceilings. |
+| 12 | missing secret → failed check | fail-closed rc=30 | **LIVE** | deleted `PREFLIGHT_ATTEST_KEY`, re-ran decide → `final_rc=30`, decision BLOCK (`attestation-key-unavailable`), commit-status FAILURE; restored → ALLOW. decide run **29394711281** (FAILURE) → **29395201817** (SUCCESS) |
 
-## Honest platform ceilings (re-confirmed live, not faked)
-- **Human dual-control is deployed AND enforced but not completable with one human.** The `preflight-approval-authority` environment has `required_reviewers` + `prevent_self_review:true` + `can_admins_bypass:false`, reviewer=`Kumaraman110`. When `Kumaraman110` dispatched `approve.yaml`, the pending deployment reported **`current_user_can_approve:false`** — the initiator is genuinely blocked from self-releasing the signer. Completing it needs a DISTINCT second human.
-- **A distinct second human is unavailable on these accounts.** Adding `v173617_ual` (the only other account) as a collaborator was refused by GitHub: **HTTP 422 "Enterprise Managed Users cannot be invited to this repository because this Enterprise uses personal accounts."** This is a concrete external-authorization boundary. The approval SEPARATION proven here is therefore **cryptographic** (the judge holds only the public key → can verify, never mint) plus **enforced-but-uncompletable human dual-control**; true two-human completion needs a Team/Enterprise org with two members, or OIDC→KMS. Documented, not smoothed over.
-- **Commit status is forgeable by any `statuses:write` holder** (branch protection matches context+state, not poster identity). The unforgeable proof-of-record is the signed `gate-out/attestation.json`. A hardened deployment should use a GitHub-App check-run with a pinned app-id. (Documented in the workflow + ops docs.)
-- **HMAC is symmetric**: seal (sign) and judge (verify) share `PREFLIGHT_BUNDLE_KEY`. Full disjoint custody needs asymmetric OIDC→KMS. The security-critical separation still holds: the evidence GENERATOR (which ingests the untrusted subject) holds NO key.
+> Note: an earlier `v11-approval-harness` "valid approval → ALLOW" step used a FRESHLY-GENERATED key
+> (`WeOf1…`, not the deployed `O86e…`) with placeholder digests. That proved only the Ed25519
+> algorithm, NOT the deployed judge. It is superseded by row 10 (deployed-key rejection, LIVE) + row 11
+> (algorithm with matching keys/real digests, OFFLINE-SUITE, explicitly not-live). Corrected per review.
+
+## Merge-refusal (DONE-WHEN #4) — CONFIRMED, and stronger than first stated
+`gh pr merge 11 --merge` → **"the base branch policy prohibits the merge"**. GitHub refuses to merge a
+BLOCKed PR. `--admin` break-glass offered but NOT used. **The required check is pinned to `app_id:15368`
+(GitHub Actions):** an adversarial live test posted a forged `success` on the
+`preflight-remote-decision-gate` context **as a user PAT** — the PR **stayed BLOCKED** (the non-Actions-app
+status does not satisfy the app-id-pinned required check). Status restored to failure afterwards.
+
+## Correction to Claim 3 (PR#12, PR-modified verifier)
+CONFIRMED that the judge uses the TRUSTED default-branch verifier (workflow checks out `ref: main`,
+`--pkg-root $PWD/gate`; offline `verifier-decision-test.sh` case4 proves an in-subject malicious
+policy+verifier is ignored). BUT for **this** PR the `KNOWN_ISSUERS += "attacker"` edit was doubly
+INERT — `verifier/` is a protected path (tier=BLOCK short-circuits) AND the bundle issuer `producer-a`
+was already trusted. So PR#12's BLOCK is attributable to the protected-path rule, not to a live
+demonstration of trusted-checkout beating a hostile verifier. The trusted-checkout guarantee rests on
+the byte-identical workflow structure + the offline case4, not on this live PR. A live PR editing a
+NON-protected verifier constant to attempt forced-ALLOW was not run.
+
+## Honest platform ceilings (re-confirmed live; corrected per adversarial review)
+- **Human dual-control is deployed AND enforced but not completable with one human.** The
+  `preflight-approval-authority` environment has `required_reviewers` + `prevent_self_review:true` +
+  `can_admins_bypass:false`, reviewer=`Kumaraman110`. When `Kumaraman110` dispatched `approve.yaml`, the
+  pending deployment reported **`current_user_can_approve:false`** — the initiator is genuinely blocked.
+  Completing an upgrade needs a DISTINCT second human, which is why **claim 11 is not proven live.**
+- **A distinct second human is unavailable on these accounts.** Adding `v173617_ual` as a collaborator
+  was refused: **HTTP 422 "Enterprise Managed Users cannot be invited to this repository because this
+  Enterprise uses personal accounts."** The approval separation proven is therefore **cryptographic**
+  (deployed judge holds only the public key → verifies, never mints; a foreign-key approval is rejected
+  under the deployed key — row 10, LIVE) plus **enforced-but-uncompletable human dual-control**.
+- **Commit status forgeability — CORRECTED (was overstated pessimistic).** The required check on this
+  deployment is pinned to **`app_id:15368` (GitHub Actions)**, so a forged `success` from a user PAT /
+  broad PAT does **not** satisfy the gate (verified live — the forged status left PR#11 BLOCKED). Only a
+  status posted by the GitHub Actions app from the trusted default branch counts; a fork/PR `collect.yaml`
+  has `contents:read` only and cannot post it. The signed `attestation.json` remains the proof-of-record
+  for defense-in-depth, but the "any `statuses:write` holder can bypass the merge gate" framing is
+  empirically FALSE on this deployment — the app-id pin strengthens the required-check guarantee.
+- **HMAC is symmetric**: seal (sign) and judge (verify) share `PREFLIGHT_BUNDLE_KEY`. Full disjoint
+  custody needs asymmetric OIDC→KMS. The security-critical separation still holds: the evidence
+  GENERATOR (which ingests the untrusted subject) holds NO key.

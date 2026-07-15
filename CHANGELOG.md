@@ -16,16 +16,25 @@ independent remote decision gate.
   the release-only packaging branch are superseded on one linear history; future work builds on the dev
   line, not a release-only branch.
 
-### Remote decision gate — live-proven as a REQUIRED check (non-production)
+### Remote decision gate — proven as a REQUIRED check (non-production)
 - Deployed on a disposable non-production repo with branch protection requiring the
-  `preflight-remote-decision-gate` status (`strict`, `enforce_admins`). All nine enforcement cases
-  proven live/deterministically with attributable decisions: valid→ALLOW; forged local ALLOW→BLOCK;
-  PR-modified verifier→BLOCK (trusted default-branch verifier used, PR copy ignored); wrong
-  commit/repo→BLOCK; tamper/replay→BLOCK; missing secret→fail-closed; PR-authored approval ignored;
-  valid independent approval upgrades REQUIRE_APPROVAL; and GitHub refuses to merge a BLOCKed PR
-  without admin bypass. Producer / signer / judge / approver authorities are separated (the evidence
-  generator and the PR context hold no signing or approval key). Evidence:
-  `.release-audit/v11-live-proofs/PROOF-LEDGER.md`.
+  `preflight-remote-decision-gate` status (`strict`, `enforce_admins`, and pinned to `app_id:15368`
+  GitHub Actions). Producer / signer / judge / approver authorities are separated (the evidence
+  generator and the PR context hold no signing or approval key). Every enforcement case is labeled by
+  evidence kind in `.release-audit/v11-live-proofs/PROOF-LEDGER.md` — honesty over headline count:
+  - **LIVE on real GitHub**: valid→ALLOW; forged local ALLOW→BLOCK; protected-path→BLOCK; review→
+    REQUIRE_APPROVAL; missing secret→fail-closed (rc 30); a PR-authored/foreign-key approval is
+    **rejected under the deployed judge public key**; and GitHub refuses to merge a BLOCKed PR without
+    admin bypass — the required check is app-id-pinned, so a forged user-PAT status does NOT bypass it
+    (verified adversarially live).
+  - **OFFLINE protocol suites on the byte-identical deployed modules** (correct-algorithm proofs, not
+    live GitHub observations): wrong commit/repo→BLOCK (`identity-reresolution` 18/0); tamper/replay→
+    BLOCK (`attestation` 12/0).
+  - **Not proven live**: a valid independent approval upgrading REQUIRE_APPROVAL→ALLOW — the deployed
+    `approve.yaml` enforces `prevent_self_review` and a single operator cannot complete it (adding a
+    second human was refused: EMU HTTP 422). The upgrade path is proven at the algorithm layer
+    (`approval` 8/0 with matching keys + real digests); a live completion needs a distinct second human
+    or OIDC→KMS. Documented, not smoothed over.
 
 ### First real self-improvement loop closed (survival thesis)
 - A genuine historical finding (PR-12 CPSL SessionToken **result-code wire-contract drift** — invented
@@ -42,10 +51,12 @@ independent remote decision gate.
   onboarding, and honest enforcement-limitation boundaries.
 
 ### Honest boundaries (unchanged from the gate's design)
-- Commit status is forgeable by a `statuses:write` holder (the signed attestation is the proof-of-
-  record); HMAC is symmetric (asymmetric OIDC→KMS is future work); human dual-control is enforced but
-  needs two distinct humans (single-account / Enterprise-Managed-User setups cannot complete it — the
-  separation proven is cryptographic); no persistent nonce ledger; the tier classifier is path-based.
+- The required check is app-id-pinned (GitHub Actions), so a forged status from a user/broad PAT does
+  NOT bypass the merge gate (verified live); the signed attestation remains the proof-of-record for
+  defense-in-depth. HMAC is symmetric (asymmetric OIDC→KMS is future work). Human dual-control is
+  enforced but needs two distinct humans (single-account / Enterprise-Managed-User setups cannot
+  complete the approval upgrade — the separation proven is cryptographic). No persistent nonce ledger;
+  the tier classifier is path-based.
 
 ## v0.10.1 — artifact CLI-packaging fix
 

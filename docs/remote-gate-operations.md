@@ -181,10 +181,15 @@ generation.
 
 These are enforcement ceilings the mechanism does **not** cross. Stating them is load-bearing.
 
-- **Commit status is forgeable by any `statuses:write` holder.** Branch protection matches
-  context+state, not poster identity, so a same-repo actor / broad PAT could post a `success`. The
-  **unforgeable** proof-of-record is the signed `attestation.json`. A hardened deployment should use
-  a GitHub-App check-run with a pinned app-id and/or verify the attestation out-of-band.
+- **Required-check forgeability — pin the check to an app-id.** Plain branch protection matches
+  context+state, not poster identity, so a same-repo actor / broad PAT could post a `success`.
+  **Mitigation (deployed and verified live):** pin the required check to the GitHub Actions app-id
+  (on the proof repo, `required_status_checks.checks[].app_id = 15368`). With the pin, a forged
+  `success` posted by a user/broad PAT does **not** satisfy the required check — an adversarial live
+  test confirmed a forged user-PAT status left the BLOCKed PR still BLOCKED. A fork/PR `collect.yaml`
+  has `contents:read` only and cannot post the status at all. The signed `attestation.json` remains the
+  proof-of-record for defense-in-depth (verify it out-of-band). To reproduce the pin:
+  `gh api repos/<repo>/branches/<b>/protection/required_status_checks -X PATCH -f 'checks[][context]=preflight-remote-decision-gate' -F 'checks[][app_id]=15368'`.
 - **HMAC is symmetric.** `seal` (sign) and `decide` (verify) share `PREFLIGHT_BUNDLE_KEY`; full
   disjoint sign/verify custody needs asymmetric signing (OIDC→KMS). The security-critical separation
   still holds: the evidence GENERATOR (which ingests the untrusted subject) holds NO key.
