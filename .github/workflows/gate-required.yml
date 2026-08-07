@@ -1,0 +1,45 @@
+name: gate-required
+# A REQUIRED status check driven by PR CONTENT: reads .smoke/tier.txt from the PR head, runs the real
+# fail-closed gate, and exits with its verdict. AUTO -> check GREEN (merge allowed); BLOCK -> gate exit
+# 20 -> check RED (merge refused by branch protection). This is the end-to-end proof that a tripping PR
+# leaves the required check RED and the merge blocked.
+on:
+  pull_request: {}
+permissions:
+  contents: read
+jobs:
+  decide:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run the fail-closed gate on the PR-declared tier
+        env:
+          PREFLIGHT_ATTEST_KEY: req-attest-key
+        run: |
+          set -uo pipefail
+          TIER="$(tr -d ' \r\n' < .smoke/tier.txt)"
+          echo "PR-declared tier: $TIER"
+          REPO="$RUNNER_TEMP/repo"; mkdir -p "$REPO/artifacts"
+          printf 'all tests passed\n' > "$REPO/artifacts/tests.log"
+          printf 'tier=%s\n' "$TIER" > "$REPO/artifacts/tier.txt"
+          SLUG="$GITHUB_REPOSITORY"
+          ( cd "$REPO" && git init -q && git config user.email ci@ci && git config user.name ci \
+            && echo x > a.txt && git add a.txt artifacts && git -c commit.gpgsign=false commit -qm init \
+            && git remote add origin "https://github.com/$SLUG.git" )
+          HEAD="$(cd "$REPO" && git rev-parse HEAD)"
+          cat > "$RUNNER_TEMP/intent.json" <<JSON
+          {"schemaVersion":"1.0.0","intentId":"i-req","action":{"type":"git-push","attributes":{"remote":"origin","refspec":"HEAD:main"}},"actor":{"kind":"model","id":"claude"},"subject":{"repo":"github.com/$SLUG","head":"$HEAD","branch":"main"}}
+          JSON
+          cat > "$RUNNER_TEMP/bundle.json" <<JSON
+          {"schemaVersion":"1.0.0","intentRef":{"intentId":"i-req","subjectHead":"$HEAD"},"issuer":{"adapter":"preflight-test","version":"0.1.0"},"evidence":[{"type":"tests-pass","producedAt":"2026-07-11T09:00:00Z","boundHead":"$HEAD","artifact":{"path":"artifacts/tests.log","sha256":"0"},"claims":{"passed":true}},{"type":"push-tier","producedAt":"2026-07-11T09:00:05Z","boundHead":"$HEAD","artifact":{"path":"artifacts/tier.txt","sha256":"0"},"claims":{"tier":"$TIER"}}],"attestation":{"algo":"sha256","bundleDigest":"0"}}
+          JSON
+          python3 verifier/tools/seal_bundle.py --bundle "$RUNNER_TEMP/bundle.json" --evidence-root "$REPO" >/dev/null
+          rc=0
+          bash verifier/ci/remote-gate.sh --repo-root "$REPO" \
+            --intent "$RUNNER_TEMP/intent.json" --bundle "$RUNNER_TEMP/bundle.json" \
+            --policy protocol/policies/push-safety.v1.policy.json --expected-repo "$SLUG" \
+            --now 2026-07-11T09:05:00Z --issued-at 2026-07-11T09:05:00Z --expires-at 2026-07-11T10:05:00Z \
+            --out-dir "$RUNNER_TEMP/out" --pkg-root "$GITHUB_WORKSPACE" || rc=$?
+          echo "gate rc=$rc"
+          [ "$rc" -eq 0 ] || { echo "::error::gate verdict is not ALLOW (rc=$rc) — required check RED"; exit 1; }
+          echo "::notice::gate ALLOW — required check GREEN"
