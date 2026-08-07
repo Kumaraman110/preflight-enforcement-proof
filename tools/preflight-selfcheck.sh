@@ -206,14 +206,18 @@ check_gate "adjudication-output-gate" \
   "$ADJ_WS" '{"tool_name":"Write","tool_input":{"file_path":".preflight/adjudications/pr-9.json","content":"{\"adjudications\":[{\"commentId\":\"c1\",\"parentVerdict\":\"DEFENDED\",\"citedEvidence\":\"Legacy/PaymentService.cs:42\"}]}"}}'
 
 # ══ 5. rubric-validity-gate ═══════════════════════════════════════════════════
-# BLOCK workspace: an EMPTY dir — a code-reviewer spawn with no preflight
-#        config in cwd → "No preflight config found" block
-#        (hooks/rubric-validity-gate:115-119).
-# ALLOW workspace: .preflight/config.json with "rubric": "rubric.md" and the
-#        rubric file present → all paths resolve → exit 0 (:131-143).
-RUB_BLOCK_WS="$WORK/rubric-none"
+# BLOCK workspace: a config with a CONFIGURED-BUT-BROKEN rubric path (points at a file that does not
+#        exist) → the gate BLOCKs (a review against a phantom rubric is worse than none). This is the
+#        gate's fail-closed signal that SURVIVES the G2 zero-config base-rubric fallback: an ABSENT
+#        rubric now falls back to the shipped base (day-0 useful, exit 0), but a CONFIGURED path that
+#        does not resolve still exit-2 blocks — that is the liveness signal, and it does not depend on
+#        the base rubric being reachable from this probe workspace.
+# ALLOW workspace: .preflight/config.json with "rubric": "rubric.md" and the rubric file present →
+#        all paths resolve → exit 0.
+RUB_BLOCK_WS="$WORK/rubric-broken"
 RUB_ALLOW_WS="$WORK/rubric-ok"
-mkdir -p "$RUB_BLOCK_WS" "$RUB_ALLOW_WS/.preflight"
+mkdir -p "$RUB_BLOCK_WS/.preflight" "$RUB_ALLOW_WS/.preflight"
+printf '%s\n' '{ "rubric": "does-not-exist-phantom.md" }' > "$RUB_BLOCK_WS/.preflight/config.json"
 printf '%s\n' '{ "rubric": "rubric.md" }' > "$RUB_ALLOW_WS/.preflight/config.json"
 printf '%s\n' '# review rubric' > "$RUB_ALLOW_WS/rubric.md"
 RUB_JSON='{"tool_name":"Agent","tool_input":{"subagent_type":"code-reviewer","prompt":"review the diff"}}'
