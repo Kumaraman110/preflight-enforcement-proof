@@ -1,0 +1,42 @@
+{
+  "stage": 1,
+  "rubric": ".claude/defaults/base-rubric.md",
+  "rubricKind": "shipped-stack-neutral-base (zero-config fallback)",
+  "stack": "python (non-.NET)",
+  "target": "payments.py (staged diff)",
+  "findings": [
+    {
+      "id": "F1",
+      "category": "§BASE1.1",
+      "title": "Hardcoded AWS key id in source",
+      "severity": "critical",
+      "location": "payments.py:5",
+      "evidence": "api_key = \"AKIA1234567890EXAMPLE\"",
+      "why": "A credential-shaped literal (AKIA… AWS key id) is committed to tracked source rather than read from config/env/secret store.",
+      "fix": "Move to an environment variable / secret manager; rotate the exposed key."
+    },
+    {
+      "id": "F2",
+      "category": "§BASE1.1",
+      "title": "Hardcoded live Stripe secret key",
+      "severity": "critical",
+      "location": "payments.py:6",
+      "evidence": "stripe_secret = \"sk_live_...\"",
+      "why": "A secret assigned to a variable named `stripe_secret` (sk_live_ prefix) is a live credential literal in source.",
+      "fix": "Load from a secret store; rotate immediately."
+    },
+    {
+      "id": "F3",
+      "category": "§BASE3.1",
+      "title": "Swallowed exception hides charge failure",
+      "severity": "major",
+      "location": "payments.py:12-13",
+      "evidence": "except Exception:\n    pass",
+      "why": "A failed charge is silently dropped; the caller cannot observe the failure — a real error is discarded.",
+      "fix": "Propagate or fail closed; if intentional, document why."
+    }
+  ],
+  "findingCount": 3,
+  "clean": false,
+  "note": "Real Stage-1 review against the SHIPPED base rubric on a fresh install (no hand-authored rubric). Non-empty, non-no-op — proves G2 criterion 2. §BASE2.1 (injection) and §BASE4.1 (untested new surface) also evaluated; F3 covers error-handling, and the secret findings dominate. §BASE4.1 would additionally flag charge() as an untested new public function."
+}
