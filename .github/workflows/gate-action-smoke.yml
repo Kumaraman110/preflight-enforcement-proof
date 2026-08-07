@@ -28,9 +28,14 @@ jobs:
         run: |
           set -euo pipefail
           command -v python3 >/dev/null
-          REPO="$RUNNER_TEMP/repo"; mkdir -p "$REPO"
+          REPO="$RUNNER_TEMP/repo"; mkdir -p "$REPO/artifacts"
+          # seal_bundle.py hashes the evidence artifacts by path, so they MUST exist (and be committed)
+          # before sealing — same as tests/protocol/remote-gate-e2e-test.sh.
+          printf 'all tests passed\n' > "$REPO/artifacts/tests.log"
+          printf 'tier=AUTO\n'        > "$REPO/artifacts/tier.txt"
           ( cd "$REPO" && git init -q && git config user.email ci@ci && git config user.name ci \
-            && echo x > a.txt && git add a.txt && git -c commit.gpgsign=false commit -qm init )
+            && echo x > a.txt && git add a.txt artifacts \
+            && git -c commit.gpgsign=false commit -qm init )
           HEAD="$(cd "$REPO" && git rev-parse HEAD)"
           SLUG="${GITHUB_REPOSITORY:-o/r}"
           mkfix() {  # $1 tier  $2 intent  $3 bundle
