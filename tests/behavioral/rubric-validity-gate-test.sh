@@ -56,35 +56,39 @@ else
   FAILURES=$((FAILURES + 1))
 fi
 
-# ─── Test 2: Code-reviewer, no config file → BLOCK ───────────
+# ─── Test 2: Code-reviewer, no config file → ALLOW via base rubric (G2) ───────────
+# G2 CHANGE: pre-G2 this BLOCKED (a fresh repo could not spawn the reviewer — the day-0 loop was dead).
+# Now the gate falls back to the shipped stack-neutral base rubric (defaults/base-rubric.md), so a fresh
+# install is day-0 useful. (Fail-closed is preserved for a CONFIGURED-but-broken path — see Tests 5/8.)
 
-echo "Test 2: code-reviewer spawn, no config file"
+echo "Test 2: code-reviewer spawn, no config file (expect ALLOW via base rubric)"
 setup_workspace
 
 run_task_hook "code-reviewer"
 
-if [ "$RC" -eq 2 ] && echo "$OUT" | grep -q "BLOCKED"; then
-  green "PASS: no config file blocks code-reviewer"
+if [ "$RC" -eq 0 ]; then
+  green "PASS: no config file → ALLOW via base rubric (day-0 usefulness, G2)"
   PASSES=$((PASSES + 1))
 else
-  red "FAIL: expected block (exit 2), got exit $RC"
+  red "FAIL: expected allow via base fallback (exit 0), got exit $RC (output: $OUT)"
   FAILURES=$((FAILURES + 1))
 fi
 
-# ─── Test 3: Code-reviewer, config exists, no rubric key → BLOCK ─
+# ─── Test 3: Code-reviewer, config exists, no rubric key → ALLOW via base rubric (G2) ─
+# Same rationale as Test 2: config present but declaring no rubric = no INTENDED rubric → base fallback.
 
-echo "Test 3: code-reviewer spawn, config exists but no rubric key"
+echo "Test 3: code-reviewer spawn, config exists but no rubric key (expect ALLOW via base rubric)"
 setup_workspace
 mkdir -p .preflight
 echo '{"mode":"generic"}' > .preflight/config.json
 
 run_task_hook "code-reviewer"
 
-if [ "$RC" -eq 2 ] && echo "$OUT" | grep -q "no.*rubric"; then
-  green "PASS: config without rubric key blocks"
+if [ "$RC" -eq 0 ]; then
+  green "PASS: config without rubric key → ALLOW via base rubric (G2)"
   PASSES=$((PASSES + 1))
 else
-  red "FAIL: expected block for missing rubric key (exit $RC, output: $OUT)"
+  red "FAIL: expected allow via base fallback (exit 0), got exit $RC (output: $OUT)"
   FAILURES=$((FAILURES + 1))
 fi
 

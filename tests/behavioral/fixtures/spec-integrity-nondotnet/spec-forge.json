@@ -1,0 +1,7 @@
+{
+  "service": "TokenService python - FORGED: a legacy code was deleted from the spec though source emits it",
+  "result_codes": [
+    { "code": "E0007", "meaning": "connect-failure" },
+    { "code": "E1000", "meaning": "internal" }
+  ]
+}

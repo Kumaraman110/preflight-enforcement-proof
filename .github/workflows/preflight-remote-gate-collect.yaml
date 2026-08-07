@@ -13,10 +13,14 @@
 
 name: Preflight Remote Gate — Collect
 
+# BRANCH SCOPE: this collect step runs on PRs targeting the branches a consumer wants gated. It was
+# pinned to a single dev branch (feature/preflight-remote-decision-gate-v0.1), which coupled the workflow
+# to THIS repo's development branch and made it non-portable. A consumer should gate PRs into their
+# protected branch(es) — commonly `main`/`master`, plus any release lines. Left broad by default (all PRs)
+# so it works out-of-the-box on any repo; narrow the `branches:` list to your protected branch(es) to
+# scope it. (Stage 1 carries no verdict and is not a required check, so a broad trigger is safe.)
 on:
-  pull_request:
-    branches:
-      - feature/preflight-remote-decision-gate-v0.1
+  pull_request: {}
 
 permissions:
   contents: read

@@ -38,10 +38,18 @@ _write_heartbeat "rubric-validity-gate"
 #   Agent calls that merely MENTION code-reviewer in their prompt.
 #
 # Gate semantics (differ from drift-detector's informational signal):
-#   - No config file found         → BLOCK (Stage 1 without rubric has no value)
-#   - Config found, no rubric key  → BLOCK (same reason)
-#   - Rubric paths don't resolve   → BLOCK (review against phantom rubric is worse than no review)
+#   - No config file found         → fall back to the shipped stack-neutral base rubric if present
+#                                     (zero-config day-0 usefulness, G2); BLOCK only if even the base
+#                                     is missing (a broken install, not a fresh consumer)
+#   - Config found, no rubric key  → same base-rubric fallback (the consumer did not INTEND a rubric)
+#   - Rubric paths don't resolve   → BLOCK (a CONFIGURED-but-unresolvable path is a typo/broken config;
+#                                     silently degrading it to the base would hide that the team's
+#                                     intended rubric is not running — the fail-open the fallback must
+#                                     NOT introduce. Only the ABSENT case falls back, never the broken one)
 #   - All rubric paths resolve     → ALLOW
+#
+# The base-rubric fallback is the G2 mechanism: a fresh repo on any stack gets a working Stage-1 review
+# without hand-authoring, while a MISCONFIGURED rubric still fails closed.
 #
 # Path reachability is delegated to the OS's existence check. Any unreachable
 # path — missing file, broken symlink, permission-denied, unmounted volume —
@@ -78,6 +86,22 @@ fi
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PLUGIN_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# The shipped stack-neutral base rubric (G2). Installed under the plugin root via the `defaults` surface.
+# Used as the ALLOW fallback ONLY when a consumer has NOT configured a rubric (no config / no rubric key).
+BASE_RUBRIC="$PLUGIN_ROOT/defaults/base-rubric.md"
+
+# allow_via_base <reason> — if the shipped base rubric exists, ALLOW (a fresh repo is day-0 useful);
+# if even the base is missing the install is broken, so fail closed (BLOCK). Never called for a
+# CONFIGURED-but-broken rubric path — that must BLOCK regardless (see gate semantics above).
+allow_via_base() {
+  if [ -f "$BASE_RUBRIC" ]; then
+    exit 0
+  fi
+  echo "BLOCKED: $1 and the shipped base rubric is missing ($BASE_RUBRIC)." >&2
+  echo "This indicates a broken install — reinstall preflight or configure a 'rubric' path." >&2
+  exit 2
+}
 
 # Detect a working Python interpreter (handles Windows Store stubs)
 PYTHON_CMD=""
@@ -126,9 +150,8 @@ for candidate in ".preflight/config.json" ".cpsl/config.json" ".forge.json"; do
 done
 
 if [ -z "$CONFIG_FILE" ]; then
-  echo "BLOCKED: No preflight config found (.preflight/config.json, .cpsl/config.json, .forge.json)." >&2
-  echo "Stage 1 review requires a rubric. Configure one via .preflight/config.json." >&2
-  exit 2
+  # No config = the consumer has not INTENDED a specific rubric → day-0 base-rubric fallback (G2).
+  allow_via_base "No preflight config found (fresh install)"
 fi
 
 # ─── Extract and validate rubric paths ───────────────────────
@@ -136,9 +159,8 @@ fi
 RUBRIC_PATH=$(read_rubric_field "$CONFIG_FILE")
 
 if [ -z "$RUBRIC_PATH" ]; then
-  echo "BLOCKED: Config ($CONFIG_FILE) has no 'rubric' field." >&2
-  echo "Stage 1 review requires a rubric path. Add a \"rubric\" key to your config." >&2
-  exit 2
+  # Config exists but declares no rubric = still no INTENDED rubric → day-0 base-rubric fallback (G2).
+  allow_via_base "Config ($CONFIG_FILE) has no 'rubric' field"
 fi
 
 # Validate all rubric paths (supports array — one path per line)

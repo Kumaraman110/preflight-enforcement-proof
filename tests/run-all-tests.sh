@@ -905,6 +905,23 @@ run_behavioral_tests() {
     yellow "SKIP: rubric-source-check-test.sh not found"
   fi
 
+  # ── G2: zero-config rubric bootstrap. A fresh install on any stack must be day-0 useful — the
+  # rubric-validity-gate falls back to the shipped stack-neutral base rubric when no rubric is
+  # configured (fresh repo / no rubric key -> ALLOW), while a CONFIGURED-but-broken rubric path still
+  # BLOCKs (the fallback must not introduce a fail-open). The base must be stack-neutral (no .NET
+  # tokens) and a real floor (>=3 provenanced rules), so it loads and fires on a non-.NET repo too. ──
+  local rubric_bootstrap_test="$SCRIPT_DIR/behavioral/rubric-bootstrap-test.sh"
+  if [ -f "$rubric_bootstrap_test" ]; then
+    if bash "$rubric_bootstrap_test"; then
+      PASSES=$((PASSES + 6))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: rubric-bootstrap tests failed (G2: fresh install must ALLOW via the stack-neutral base rubric — day-0 useful — while a broken configured rubric path still BLOCKs; the base must be stack-neutral and a real provenanced floor)"
+    fi
+  else
+    yellow "SKIP: rubric-bootstrap-test.sh not found"
+  fi
+
   local codeowners_test="$SCRIPT_DIR/behavioral/base-owners-codeowners-test.sh"
   if [ -f "$codeowners_test" ]; then
     if bash "$codeowners_test"; then
@@ -951,6 +968,23 @@ run_behavioral_tests() {
     fi
   else
     yellow "SKIP: spec-integrity-cluster-test.sh not found"
+  fi
+
+  # ── G3: the spec<->source anti-forgery guarantee generalizes to a NON-.NET stack via the source-
+  # language profile, WITHOUT weakening it. A python fixture must: pass clean, catch the source->spec
+  # forge (E0005 emitted but dropped from spec), fail-closed as could-not-verify when no recognizable
+  # source exists, AND fail-closed could-not-verify for a category the profile can't extract (the
+  # generalization fail-open trap). The .NET path stays byte-identical under the default profile. ──
+  local spec_integ_nondotnet_test="$SCRIPT_DIR/behavioral/spec-integrity-nondotnet-test.sh"
+  if [ -f "$spec_integ_nondotnet_test" ]; then
+    if bash "$spec_integ_nondotnet_test"; then
+      PASSES=$((PASSES + 5))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: spec-integrity-nondotnet tests failed (G3: the drift guarantee must apply to a non-.NET stack — clean passes, forge caught, could-not-verify fail-closed incl. an unsupported category — and the .NET path must stay byte-identical)"
+    fi
+  else
+    yellow "SKIP: spec-integrity-nondotnet-test.sh not found"
   fi
 
   local spec_div_sem_test="$SCRIPT_DIR/behavioral/spec-divergence-semantic-poc-test.sh"
@@ -1647,6 +1681,41 @@ run_behavioral_tests() {
     fi
   else
     yellow "SKIP: resultcode-parity-loop-test.sh not found"
+  fi
+
+  # ── v0.11 error-path HTTP-status parity — the SECOND genuine defect CLASS (n=2 by defect class, not
+  # by service). The rule adjudicated from the real PR-12 CPSL audit §4.4/#11-13 (legacy 400 for all
+  # downstream failures -> migration introduced 500) must catch the equivalent status drift, pass the
+  # corrected fixture, be LOAD-BEARING (removing the rule lets the drift escape), and its promotion must
+  # be gated by a distinct-approver signed approval. Proves the promotion machinery is rule-agnostic and
+  # the loop is closed on a second distinct defect class (NOT a second service, NOT an organic catch). ──
+  local esp_test="$SCRIPT_DIR/behavioral/errorpath-status-parity-loop-test.sh"
+  if [ -f "$esp_test" ]; then
+    if bash "$esp_test"; then
+      PASSES=$((PASSES + 6))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: errorpath-status-parity-loop tests failed (the status-parity rule must catch introduced/dropped error-path HTTP statuses, pass the corrected fixture, be load-bearing, and its promotion must require a distinct-approver signed approval — no self-promotion)"
+    fi
+  else
+    yellow "SKIP: errorpath-status-parity-loop-test.sh not found"
+  fi
+
+  # ── G1: the fail-closed gate packaged as a zero-workstation CI Action (action.yml wrapping
+  # verifier/ci/remote-gate.sh). Locally-provable criteria: a verdict is produced with only
+  # bash+python3+git (no framework install), and a missing key / unparseable intent resolves to a
+  # NON-success the Action maps to a FAILED check (never a silent pass). The live-PR RED/green criterion
+  # is outward-facing and intentionally not asserted here (see the test's honesty note). ──
+  local gate_action_test="$SCRIPT_DIR/behavioral/gate-action-failclosed-test.sh"
+  if [ -f "$gate_action_test" ]; then
+    if bash "$gate_action_test"; then
+      PASSES=$((PASSES + 4))
+    else
+      FAILURES=$((FAILURES + 1))
+      red "FAIL: gate-action-failclosed tests failed (G1: the CI Action must produce a verdict with zero workstation footprint and map missing-key/unparseable/BLOCK to a FAILED check — never a silent pass)"
+    fi
+  else
+    yellow "SKIP: gate-action-failclosed-test.sh not found"
   fi
 }
 

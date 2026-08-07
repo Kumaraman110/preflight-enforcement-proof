@@ -22,18 +22,28 @@ import re
 import sys
 import json
 
-CODE_RE = re.compile(r'"([WES]\d{4})"')
+# The result-code SHAPE ([WES]\d{4}) is the CPSL domain contract. It is matched inside a string
+# literal delimited by any of the three common quote styles — double ("E0005"), single ('E0005'),
+# or backtick (`E0005`). The original rule matched ONLY double quotes, which FAILED OPEN on
+# single-quote / backtick stacks (Python, JS/TS): a dropped/introduced code in 'E0005' was invisible
+# and the drift passed green. Accepting all three quote styles is a strict SUPERSET of the original
+# double-quote behavior — the verdict on the existing double-quoted .NET fixtures is unchanged — and
+# closes the fail-open (this is the G3 language-decoupling seam; the SHAPE can also be overridden per
+# stack via rule["codePattern"], keeping the set-diff guarantee identical). Requiring a quote
+# delimiter (not a bare token) avoids matching a code that only appears in prose/comments.
+_DEFAULT_CODE_RE = r'''["'`]([WES]\d{4})["'`]'''
+CODE_RE = re.compile(_DEFAULT_CODE_RE)
 
 
-def emitted_codes(source: str) -> set:
-    """The set of result codes a service source assigns/emits (string literals like "W0011")."""
-    return set(CODE_RE.findall(source))
+def emitted_codes(source: str, code_pattern: str = _DEFAULT_CODE_RE) -> set:
+    """The set of result codes a service source assigns/emits (quoted literals like "W0011"/'W0011')."""
+    return set(re.findall(code_pattern, source))
 
 
 def check(rule: dict, migrated_source: str) -> list:
     """Apply R-RESULTCODE-PARITY. Returns a list of violation dicts (empty == parity holds)."""
     legacy = set(rule["legacyContract"])
-    emitted = emitted_codes(migrated_source)
+    emitted = emitted_codes(migrated_source, rule.get("codePattern", _DEFAULT_CODE_RE))
     violations = []
     for c in sorted(emitted - legacy):
         violations.append({"ruleId": rule["id"], "kind": "introduced-code", "code": c,

@@ -1,0 +1,99 @@
+name: "Preflight Fail-Closed Gate"
+description: >-
+  Run the Preflight independent remote decision gate as a hosted CI check with ZERO developer-workstation
+  footprint. Consumes a pre-produced Action Intent + Evidence Bundle, verifies them with the stdlib-only
+  verifier, and exits so the required status check is RED on BLOCK/REQUIRE_APPROVAL/unverifiable and green
+  only on a verified ALLOW. Nothing is installed on any developer machine — the check runs entirely on the
+  runner (this is the post-Nx-s1ngularity, AppSec-friendly deployment: the gate lives where security
+  already governs — CI — not as a workstation-footprint tool).
+author: "Preflight"
+
+# Composite (not Docker): the verifier is stdlib python3 + bash + git, all present on ubuntu-latest.
+# No third-party dependency, no container build — the lowest-friction, fastest wrapper.
+inputs:
+  intent:
+    description: "Path to the Action Intent JSON (intent.json), produced by a prior collect/producer step."
+    required: true
+  bundle:
+    description: "Path to the Evidence Bundle JSON (bundle.json)."
+    required: true
+  policy:
+    description: "Path to the policy JSON."
+    required: false
+    default: ""
+  expected-repo:
+    description: "The repository identity the intent MUST bind to (owner/name). Guards against a bundle lifted from another repo."
+    required: false
+    default: ""
+  out-dir:
+    description: "Directory to write decision.json (+ attestation.json on a passing decision)."
+    required: false
+    default: "preflight-gate-out"
+  approval:
+    description: "Path to a signed approval JSON (upgrades a REQUIRE_APPROVAL to ALLOW). Omit if none."
+    required: false
+    default: ""
+  require-attestation:
+    description: "When 'true', fail CLOSED (non-success) if no signing key is available — never a silent pass."
+    required: false
+    default: "true"
+  now:
+    description: "RFC3339 timestamp to evaluate expiry against (defaults to the runner clock)."
+    required: false
+    default: ""
+
+# Secrets are passed via env by the CALLER (attest/approval keys are NEVER repo secrets baked into the
+# Action). See docs/remote-gate-operations.md for the trusted two-workflow split.
+outputs:
+  decision:
+    description: "The decision file path (decision.json) written under out-dir."
+    value: "${{ steps.gate.outputs.decision_path }}"
+
+runs:
+  using: "composite"
+  steps:
+    - name: Verify python3 is present (stdlib-only; no pip install)
+      shell: bash
+      run: |
+        command -v python3 >/dev/null 2>&1 || { echo "::error::python3 not found on runner"; exit 1; }
+        command -v git >/dev/null 2>&1 || { echo "::error::git not found on runner"; exit 1; }
+
+    - name: Run the Preflight fail-closed gate
+      id: gate
+      shell: bash
+      env:
+        # Keys come from the CALLER's env (workflow secrets injected in the trusted job), not this Action.
+        PREFLIGHT_ATTEST_KEY: ${{ env.PREFLIGHT_ATTEST_KEY }}
+        PREFLIGHT_APPROVAL_KEY: ${{ env.PREFLIGHT_APPROVAL_KEY }}
+      run: |
+        set -uo pipefail
+        ACTION_DIR="${{ github.action_path }}"
+        OUT="${{ inputs.out-dir }}"
+        mkdir -p "$OUT"
+        echo "decision_path=$OUT/decision.json" >> "$GITHUB_OUTPUT"
+
+        args=( --repo-root "${{ github.workspace }}"
+               --intent    "${{ inputs.intent }}"
+               --bundle    "${{ inputs.bundle }}"
+               --out-dir   "$OUT"
+               --pkg-root  "$ACTION_DIR" )
+        [ -n "${{ inputs.policy }}" ]         && args+=( --policy        "${{ inputs.policy }}" )
+        [ -n "${{ inputs.expected-repo }}" ]  && args+=( --expected-repo "${{ inputs.expected-repo }}" )
+        [ -n "${{ inputs.approval }}" ]       && args+=( --approval      "${{ inputs.approval }}" )
+        [ -n "${{ inputs.now }}" ]            && args+=( --now           "${{ inputs.now }}" )
+        [ "${{ inputs.require-attestation }}" = "true" ] && args+=( --require-attestation )
+
+        bash "$ACTION_DIR/verifier/ci/remote-gate.sh" "${args[@]}"
+        rc=$?
+
+        # Map the entrypoint's exit contract to a REQUIRED-CHECK pass/fail. Only a verified ALLOW (0)
+        # passes; REQUIRE_APPROVAL (10), BLOCK (20), and usage/internal (30) all FAIL the check — and
+        # ANY other/unknown code fails closed too (never a silent pass). This is S1/S2: the pass/fail
+        # decision is mechanical and fail-closed; a timeout/killed invocation surfaces as a non-0 rc.
+        case "$rc" in
+          0)  echo "::notice::Preflight gate: ALLOW (verified)"; exit 0 ;;
+          10) echo "::error::Preflight gate: REQUIRE_APPROVAL — a valid distinct-approver approval is required"; exit 1 ;;
+          20) echo "::error::Preflight gate: BLOCK — denied or unverifiable"; exit 1 ;;
+          30) echo "::error::Preflight gate: usage/internal error — failing closed (never a silent pass)"; exit 1 ;;
+          *)  echo "::error::Preflight gate: unexpected exit $rc — failing closed"; exit 1 ;;
+        esac

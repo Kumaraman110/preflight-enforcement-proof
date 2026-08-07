@@ -57,15 +57,39 @@ if [ ! -d "$SOURCE_DIR" ]; then
   exit 2
 fi
 
-# (M4) Compute the .cs-presence fact ONCE — the single source for "can we read source to verify against".
-# The source-anchor extraction below is gated on this. PRE-FIX, each category inlined this `find` guard,
-# so a SOURCE_DIR that exists but holds ZERO .cs files (wrong/mistyped-but-real path, partial/shallow
-# checkout, non-.NET target) left every SOURCE_* empty -> BOTH directions skipped -> "PASSED" exit 0:
-# "nothing to compare" read as "verified" (a silent fail-open of an anti-forgery check). With HAS_CS=false
-# AND a spec that DECLARES an anchor of a type, we now emit a could-not-verify FAIL per category (below),
-# so an unverifiable spec FAILS rather than passing green.
-HAS_CS=false
-if find "$SOURCE_DIR" -name '*.cs' -print -quit 2>/dev/null | grep -q .; then HAS_CS=true; fi
+# (G3) SOURCE-LANGUAGE PROFILE. The anti-forgery guarantee (spec<->source, both directions) is
+# language-NEUTRAL in concept, but the source-side EXTRACTION is stack-specific. A profile supplies the
+# source file glob, the pure-comment-line prefix (to skip commented codes), and the SET OF CATEGORIES
+# this stack has a source extractor for. Default is 'dotnet' — BYTE-IDENTICAL to the pre-G3 behavior.
+# Resolution: 3rd positional arg > $PREFLIGHT_SOURCE_LANG > 'dotnet'. (Auto-detection via detect-stack.sh
+# is deliberately NOT wired here — a spawn on the hot path — so the default stays deterministic; a caller
+# that knows the stack passes it. An UNKNOWN stack yields an empty glob => HAS_SOURCE=false => every
+# declared category fails could-not-verify, i.e. fail-CLOSED.)
+SRC_LANG="${3:-${PREFLIGHT_SOURCE_LANG:-dotnet}}"
+case "$SRC_LANG" in
+  dotnet)                             PF_GLOB='*.cs'; PF_COMMENT='//'; PF_CATS="result_code wire_contract proc_name route" ;;
+  python|py)                          PF_GLOB='*.py'; PF_COMMENT='#';  PF_CATS="result_code" ;;
+  node|typescript|javascript|ts|js)   PF_GLOB='*.ts'; PF_COMMENT='//'; PF_CATS="result_code" ;;
+  *)                                  PF_GLOB='';     PF_COMMENT='';   PF_CATS="" ;;
+esac
+
+# cat_supported <category> — true iff the active profile defines a source extractor for it.
+# CRITICAL (the fail-open trap): a category the profile does NOT support must NEVER be silently
+# skipped. If the spec DECLARES such a category, the could-not-verify guard below FAILS it — otherwise
+# generalizing the source-presence gate would silence the anti-forge guard for categories we cannot read
+# (e.g. wire_contract on a python profile: MODEL_FIELDS would be empty, the source->spec forge-catch
+# would never fire, and a dropped wire field would pass green). Per-category could-not-verify closes that.
+cat_supported() { case " $PF_CATS " in *" $1 "*) return 0 ;; *) return 1 ;; esac; }
+
+# (M4/G3) Compute the SOURCE-PRESENCE fact ONCE from the profile glob — "can we read source to verify
+# against". PRE-FIX each category inlined a `.cs` find guard, so a SOURCE_DIR with ZERO matching files
+# (wrong/mistyped path, shallow checkout, unsupported stack) left every SOURCE_* empty -> BOTH directions
+# skipped -> "PASSED" exit 0: "nothing to compare" read as "verified" (a silent fail-open of an anti-
+# forgery check). Now HAS_SOURCE=false (or an unsupported category) AND a spec that DECLARES that anchor
+# type emits a could-not-verify FAIL per category (below), so an unverifiable spec FAILS rather than green.
+# For SRC_LANG=dotnet, PF_GLOB='*.cs' so HAS_SOURCE is identical to the former HAS_CS.
+HAS_SOURCE=false
+if [ -n "$PF_GLOB" ] && find "$SOURCE_DIR" -name "$PF_GLOB" -print -quit 2>/dev/null | grep -q .; then HAS_SOURCE=true; fi
 
 FAILURES=0
 FAILURE_DETAILS=""
@@ -83,32 +107,37 @@ fail() {
 # Extract result codes from spec
 SPEC_CODES=$(grep -oE '[EWS][0-9]{4}' "$SPEC" | sort -u || true)
 
-# (M4) Could-not-verify: the spec DECLARES result codes but the source has no .cs to check them against.
-if [ "$HAS_CS" = false ] && [ -n "$SPEC_CODES" ]; then
-  fail "result_code could-not-verify: spec declares result codes but the source scan found ZERO .cs files under '$SOURCE_DIR' — cannot confirm consistency (treated as FAIL, not verified)"
+# (M4/G3) Could-not-verify: the spec DECLARES result codes but the source cannot be read (no matching
+# source files under the active profile glob) OR this profile has no result_code extractor. Either way
+# the anchor is UNVERIFIABLE -> FAIL, never a silent skip.
+if [ -n "$SPEC_CODES" ] && { [ "$HAS_SOURCE" = false ] || ! cat_supported result_code; }; then
+  fail "result_code could-not-verify: spec declares result codes but no verifiable source was found under '$SOURCE_DIR' for stack '$SRC_LANG' (glob '${PF_GLOB:-none}') — cannot confirm consistency (treated as FAIL, not verified)"
 fi
 
 # Find emitted result codes in source
 SOURCE_CODES=""
-if [ "$HAS_CS" = true ]; then
-  # Get all lines with result-code pattern in .cs files
-  ALL_CODE_LINES=$(grep -rn --include="*.cs" -E '[EWS][0-9]{4}' "$SOURCE_DIR" 2>/dev/null || true)
+if [ "$HAS_SOURCE" = true ] && cat_supported result_code; then
+  # Get all lines with result-code pattern in profile-glob source files
+  ALL_CODE_LINES=$(grep -rn --include="$PF_GLOB" -E '[EWS][0-9]{4}' "$SOURCE_DIR" 2>/dev/null || true)
 
   # Filter: keep lines that are NOT pure comments and NOT pure log calls
   # grep -rn output format is "filepath:linenum:content"
   # We strip to content and test, but pass the whole line for code extraction
   # Strategy: use awk to extract content portion and test it
-  EMITTED_LINES=$(echo "$ALL_CODE_LINES" | awk -F: '{
+  EMITTED_LINES=$(echo "$ALL_CODE_LINES" | awk -F: -v cprefix="$PF_COMMENT" '{
     # Reconstruct content after file:linenum:
     content = ""
     for (i=3; i<=NF; i++) content = content (i>3 ? ":" : "") $i
     # Strip leading whitespace for pattern matching
     gsub(/^[[:space:]]+/, "", content)
-    # Skip pure comment lines
+    # Skip pure comment lines — C# forms (kept so the dotnet path is byte-identical)...
     if (content ~ /^\/\//) next
     if (content ~ /^\/\*/) next
     if (content ~ /^\*/) next
-    # Skip log-only lines
+    # ...plus the active profile comment prefix (e.g. # for python). Literal-prefix match (not regex).
+    if (cprefix != "" && substr(content, 1, length(cprefix)) == cprefix) next
+    # Skip log-only lines (C# logger idioms; harmless on other stacks — a code inside a log call there
+    # simply errs toward inclusion, the fail-closed direction for the forge-catch).
     if (content ~ /\.(Log|LogDebug|LogInformation|LogWarning|LogError)\(/) next
     # Pass through
     print $0
@@ -160,14 +189,16 @@ SPEC_FIELDS_ALT=$(grep -oE '"[A-Z][a-zA-Z]+"[[:space:]]*:[[:space:]]*"(string|in
   grep -oE '^"[A-Z][a-zA-Z]+"' | tr -d '"' | sort -u || true)
 SPEC_FIELDS=$(printf '%s\n%s' "$SPEC_FIELDS" "$SPEC_FIELDS_ALT" | sort -u | grep -v '^$' || true)
 
-# (M4) Could-not-verify: the spec DECLARES wire fields but the source has no .cs to check them against.
-if [ "$HAS_CS" = false ] && [ -n "$SPEC_FIELDS" ]; then
-  fail "wire_contract could-not-verify: spec declares wire fields but the source scan found ZERO .cs files under '$SOURCE_DIR' — cannot confirm consistency (treated as FAIL, not verified)"
+# (M4/G3) Could-not-verify: spec DECLARES wire fields but no verifiable source OR this profile has no
+# wire_contract extractor (the fail-open trap: a python profile must FAIL a declared wire_contract, not
+# silently skip its source->spec forge-catch).
+if [ -n "$SPEC_FIELDS" ] && { [ "$HAS_SOURCE" = false ] || ! cat_supported wire_contract; }; then
+  fail "wire_contract could-not-verify: spec declares wire fields but no verifiable source was found under '$SOURCE_DIR' for stack '$SRC_LANG' — cannot confirm consistency (treated as FAIL, not verified)"
 fi
 
 # Find public properties on model/response/request classes
 MODEL_FIELDS=""
-if [ "$HAS_CS" = true ]; then
+if [ "$HAS_SOURCE" = true ] && cat_supported wire_contract; then
   MODEL_FILES=$(find "$SOURCE_DIR" \( -name '*Response*.cs' -o -name '*Request*.cs' -o -name '*Model*.cs' \) 2>/dev/null | grep -v '/obj/' | grep -v '/bin/' || true)
   if [ -n "$MODEL_FILES" ]; then
     # (M7) Drop TYPE-DECLARATION lines BEFORE harvesting a field name. The property regex
@@ -225,15 +256,16 @@ fi
 # Extract proc names from spec
 SPEC_PROCS=$(grep -oE '"(cpsl_|sp_|fn_)[a-zA-Z0-9_]+"' "$SPEC" 2>/dev/null | tr -d '"' | sort -u || true)
 
-# (M4) Could-not-verify: the spec DECLARES proc names but the source has no .cs to check them against.
-if [ "$HAS_CS" = false ] && [ -n "$SPEC_PROCS" ]; then
-  fail "proc_name could-not-verify: spec declares proc names but the source scan found ZERO .cs files under '$SOURCE_DIR' — cannot confirm consistency (treated as FAIL, not verified)"
+# (M4/G3) Could-not-verify: spec DECLARES proc names but no verifiable source OR this profile has no
+# proc_name extractor.
+if [ -n "$SPEC_PROCS" ] && { [ "$HAS_SOURCE" = false ] || ! cat_supported proc_name; }; then
+  fail "proc_name could-not-verify: spec declares proc names but no verifiable source was found under '$SOURCE_DIR' for stack '$SRC_LANG' — cannot confirm consistency (treated as FAIL, not verified)"
 fi
 
 # Find proc names in source
 SOURCE_PROCS=""
-if [ "$HAS_CS" = true ]; then
-  SOURCE_PROCS=$(grep -rhE '"(cpsl_|sp_|fn_)[a-zA-Z0-9_]+"' "$SOURCE_DIR" --include="*.cs" 2>/dev/null | \
+if [ "$HAS_SOURCE" = true ] && cat_supported proc_name; then
+  SOURCE_PROCS=$(grep -rhE '"(cpsl_|sp_|fn_)[a-zA-Z0-9_]+"' "$SOURCE_DIR" --include="$PF_GLOB" 2>/dev/null | \
     grep -oE '(cpsl_|sp_|fn_)[a-zA-Z0-9_]+' | sort -u || true)
 fi
 
@@ -268,15 +300,16 @@ fi
 SPEC_ROUTES=$(grep -oE '"path"[[:space:]]*:[[:space:]]*"[^"]+"' "$SPEC" 2>/dev/null | \
   grep -oE '"[a-z/][^"]*"$' | tr -d '"' | sort -u || true)
 
-# (M4) Could-not-verify: the spec DECLARES routes but the source has no .cs to check them against.
-if [ "$HAS_CS" = false ] && [ -n "$SPEC_ROUTES" ]; then
-  fail "route could-not-verify: spec declares routes but the source scan found ZERO .cs files under '$SOURCE_DIR' — cannot confirm consistency (treated as FAIL, not verified)"
+# (M4/G3) Could-not-verify: spec DECLARES routes but no verifiable source OR this profile has no route
+# extractor.
+if [ -n "$SPEC_ROUTES" ] && { [ "$HAS_SOURCE" = false ] || ! cat_supported route; }; then
+  fail "route could-not-verify: spec declares routes but no verifiable source was found under '$SOURCE_DIR' for stack '$SRC_LANG' — cannot confirm consistency (treated as FAIL, not verified)"
 fi
 
 # Find route segments from source attributes: [Route("x")], [HttpPost("x")], etc.
 SOURCE_ROUTES=""
-if [ "$HAS_CS" = true ]; then
-  SOURCE_ROUTES=$(grep -rhE '\[(Route|HttpPost|HttpGet|HttpPut|HttpDelete|HttpPatch)\("[^"]+"\)' "$SOURCE_DIR" --include="*.cs" 2>/dev/null | \
+if [ "$HAS_SOURCE" = true ] && cat_supported route; then
+  SOURCE_ROUTES=$(grep -rhE '\[(Route|HttpPost|HttpGet|HttpPut|HttpDelete|HttpPatch)\("[^"]+"\)' "$SOURCE_DIR" --include="$PF_GLOB" 2>/dev/null | \
     grep -oE '"[^"]+"' | tr -d '"' | sort -u || true)
 fi
 

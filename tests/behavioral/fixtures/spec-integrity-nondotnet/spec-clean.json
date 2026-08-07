@@ -1,0 +1,8 @@
+{
+  "service": "TokenService (python)",
+  "result_codes": [
+    { "code": "E0005", "meaning": "timeout" },
+    { "code": "E0007", "meaning": "connect-failure" },
+    { "code": "E1000", "meaning": "internal" }
+  ]
+}

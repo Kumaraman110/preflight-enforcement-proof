@@ -19,7 +19,7 @@ If session context is empty or this skill was invoked cold (no hook ran):
 
 1. Search for config: `.preflight/config.json` > `.cpsl/config.json` > `.forge.json` (in working directory, then up to 5 parent levels).
 2. If found: extract `mode`, `rubric`, `branch.base`, `test.command`, `loop.*`, `capture.*`.
-3. If not found: use defaults — mode `generic`, rubric from `${FRAMEWORK_ROOT}/examples/rubrics/rubric-generic-dotnet.md` (resolve `FRAMEWORK_ROOT="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/.claude"` — never the empty `CLAUDE_PLUGIN_ROOT`), base branch `main`, test command auto-detected.
+3. If not found: use defaults — mode `generic`, rubric from `${FRAMEWORK_ROOT}/defaults/base-rubric.md`, the shipped STACK-NEUTRAL base rubric (the same day-0 fallback the `rubric-validity-gate` allows through — prose and mechanism agree; resolve `FRAMEWORK_ROOT="${CLAUDE_PROJECT_DIR:-$(git rev-parse --show-toplevel 2>/dev/null || pwd)}/.claude"` — never the empty `CLAUDE_PLUGIN_ROOT`), base branch `main`, test command auto-detected. This base is a working floor on any stack, not a deep stack-tuned review; teams layer depth via a configured rubric. (`examples/rubrics/rubric-generic-dotnet.md` is a .NET-specific EXAMPLE, no longer the default.)
 4. Check for `CLAUDE.md` at project root for supplementary conventions.
 5. Confirm the rubric file exists at the resolved path. If missing, warn and fall back to the generic default.
 
