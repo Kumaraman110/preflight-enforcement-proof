@@ -33,59 +33,62 @@ jobs:
           # before sealing — same as tests/protocol/remote-gate-e2e-test.sh.
           printf 'all tests passed\n' > "$REPO/artifacts/tests.log"
           printf 'tier=AUTO\n'        > "$REPO/artifacts/tier.txt"
+          SLUG="${GITHUB_REPOSITORY:-o/r}"
           ( cd "$REPO" && git init -q && git config user.email ci@ci && git config user.name ci \
             && echo x > a.txt && git add a.txt artifacts \
-            && git -c commit.gpgsign=false commit -qm init )
+            && git -c commit.gpgsign=false commit -qm init \
+            && git remote add origin "https://github.com/$SLUG.git" )   # identity.repo re-resolves from origin
           HEAD="$(cd "$REPO" && git rev-parse HEAD)"
-          SLUG="${GITHUB_REPOSITORY:-o/r}"
           mkfix() {  # $1 tier  $2 intent  $3 bundle
             cat > "$2" <<JSON
           {"schemaVersion":"1.0.0","intentId":"i-ci","action":{"type":"git-push","attributes":{"remote":"origin","refspec":"HEAD:main"}},"actor":{"kind":"model","id":"claude"},"subject":{"repo":"github.com/$SLUG","head":"$HEAD","branch":"main"}}
           JSON
             cat > "$3" <<JSON
-          {"schemaVersion":"1.0.0","intentRef":{"intentId":"i-ci","subjectHead":"$HEAD"},"issuer":{"adapter":"preflight-smoke","version":"0.1.0"},"evidence":[{"type":"tests-pass","producedAt":"2026-07-11T09:00:00Z","boundHead":"$HEAD","artifact":{"path":"artifacts/tests.log","sha256":"0"},"claims":{"passed":true}},{"type":"push-tier","producedAt":"2026-07-11T09:00:05Z","boundHead":"$HEAD","artifact":{"path":"artifacts/tier.txt","sha256":"0"},"claims":{"tier":"$1"}}],"attestation":{"algo":"sha256","bundleDigest":"0"}}
+          {"schemaVersion":"1.0.0","intentRef":{"intentId":"i-ci","subjectHead":"$HEAD"},"issuer":{"adapter":"preflight-test","version":"0.1.0"},"evidence":[{"type":"tests-pass","producedAt":"2026-07-11T09:00:00Z","boundHead":"$HEAD","artifact":{"path":"artifacts/tests.log","sha256":"0"},"claims":{"passed":true}},{"type":"push-tier","producedAt":"2026-07-11T09:00:05Z","boundHead":"$HEAD","artifact":{"path":"artifacts/tier.txt","sha256":"0"},"claims":{"tier":"$1"}}],"attestation":{"algo":"sha256","bundleDigest":"0"}}
           JSON
             ( cd "$GITHUB_WORKSPACE" && python3 verifier/tools/seal_bundle.py --bundle "$3" --evidence-root "$REPO" >/dev/null )
           }
-          mkfix AUTO    "$RUNNER_TEMP/allow-intent.json"   "$RUNNER_TEMP/allow-bundle.json"
-          mkfix PROTECTED "$RUNNER_TEMP/block-intent.json" "$RUNNER_TEMP/block-bundle.json"
+          mkfix AUTO  "$RUNNER_TEMP/allow-intent.json" "$RUNNER_TEMP/allow-bundle.json"
+          mkfix BLOCK "$RUNNER_TEMP/block-intent.json" "$RUNNER_TEMP/block-bundle.json"
           echo "repo=$REPO" >> "$GITHUB_OUTPUT"
           echo "head=$HEAD" >> "$GITHUB_OUTPUT"
+          echo "slug=$SLUG" >> "$GITHUB_OUTPUT"
 
       - name: ALLOW case — the Action must turn the check GREEN (verified ALLOW)
-        id: allow
         env:
           PREFLIGHT_ATTEST_KEY: smoke-attest-key
         run: |
           set -uo pipefail
+          rc=0
           bash "$GITHUB_WORKSPACE/verifier/ci/remote-gate.sh" \
             --repo-root "${{ steps.fixtures.outputs.repo }}" \
             --intent "$RUNNER_TEMP/allow-intent.json" \
             --bundle "$RUNNER_TEMP/allow-bundle.json" \
-            --now "2026-07-11T09:00:10Z" --expires-at "2099-01-01T00:00:00Z" \
-            --out-dir "$RUNNER_TEMP/out-allow" --pkg-root "$GITHUB_WORKSPACE"
-          rc=$?
+            --policy "protocol/policies/push-safety.v1.policy.json" \
+            --expected-repo "${{ steps.fixtures.outputs.slug }}" \
+            --now "2026-07-11T09:05:00Z" --issued-at "2026-07-11T09:05:00Z" --expires-at "2026-07-11T10:05:00Z" \
+            --out-dir "$RUNNER_TEMP/out-allow" --pkg-root "$GITHUB_WORKSPACE" || rc=$?
           echo "ALLOW-case rc=$rc"
           [ "$rc" -eq 0 ] || { echo "::error::ALLOW case did not go green (rc=$rc)"; exit 1; }
-          echo "::notice::ALLOW case -> GREEN (rc=0), verdict produced with zero framework install"
+          [ -s "$RUNNER_TEMP/out-allow/decision.json" ] || { echo "::error::no decision.json"; exit 1; }
+          echo "::notice::ALLOW case -> GREEN (rc=0) + decision.json written, zero framework install"
 
-      - name: BLOCK case — the Action must turn the check RED (REQUIRE_APPROVAL, no approval)
-        id: block
+      - name: BLOCK case — the Action must turn the check RED (forbidden tier)
         env:
           PREFLIGHT_ATTEST_KEY: smoke-attest-key
         run: |
           set -uo pipefail
+          rc=0
           bash "$GITHUB_WORKSPACE/verifier/ci/remote-gate.sh" \
             --repo-root "${{ steps.fixtures.outputs.repo }}" \
             --intent "$RUNNER_TEMP/block-intent.json" \
             --bundle "$RUNNER_TEMP/block-bundle.json" \
-            --now "2026-07-11T09:00:10Z" --expires-at "2099-01-01T00:00:00Z" \
-            --out-dir "$RUNNER_TEMP/out-block" --pkg-root "$GITHUB_WORKSPACE"
-          rc=$?
+            --policy "protocol/policies/push-safety.v1.policy.json" \
+            --expected-repo "${{ steps.fixtures.outputs.slug }}" \
+            --now "2026-07-11T09:05:00Z" --issued-at "2026-07-11T09:05:00Z" --expires-at "2026-07-11T10:05:00Z" \
+            --out-dir "$RUNNER_TEMP/out-block" --pkg-root "$GITHUB_WORKSPACE" || rc=$?
           echo "BLOCK-case rc=$rc"
-          # A PROTECTED-tier push with no approval must NOT be a silent pass. rc 0 here is a FAILURE of
-          # the smoke (it would mean a block turned green). Any non-0 (10 REQUIRE_APPROVAL / 20 BLOCK /
-          # 30 usage) is the correct RED — assert non-0.
+          # A BLOCK-tier push must NOT be a silent pass. rc 0 here would be a fail-open. exit 20 = BLOCK.
           if [ "$rc" -eq 0 ]; then echo "::error::BLOCK case wrongly went GREEN (rc=0) — fail-open!"; exit 1; fi
           echo "::notice::BLOCK case -> RED (rc=$rc), the required check would block the merge"
 
@@ -94,13 +97,16 @@ jobs:
           PREFLIGHT_ATTEST_KEY: smoke-attest-key
         run: |
           set -uo pipefail
+          rc=0
           printf 'not json {{{' > "$RUNNER_TEMP/garbage.json"
           bash "$GITHUB_WORKSPACE/verifier/ci/remote-gate.sh" \
             --repo-root "${{ steps.fixtures.outputs.repo }}" \
             --intent "$RUNNER_TEMP/garbage.json" \
             --bundle "$RUNNER_TEMP/allow-bundle.json" \
-            --now "2026-07-11T09:00:10Z" \
-            --out-dir "$RUNNER_TEMP/out-garbage" --pkg-root "$GITHUB_WORKSPACE"
-          rc=$?
+            --policy "protocol/policies/push-safety.v1.policy.json" \
+            --expected-repo "${{ steps.fixtures.outputs.slug }}" \
+            --now "2026-07-11T09:05:00Z" --issued-at "2026-07-11T09:05:00Z" --expires-at "2026-07-11T10:05:00Z" \
+            --out-dir "$RUNNER_TEMP/out-garbage" --pkg-root "$GITHUB_WORKSPACE" || rc=$?
+          echo "garbage-case rc=$rc"
           if [ "$rc" -eq 0 ]; then echo "::error::garbage intent wrongly went GREEN (rc=0)"; exit 1; fi
           echo "::notice::unparseable intent -> RED (rc=$rc), fail-closed on bad input"
